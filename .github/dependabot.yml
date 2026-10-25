@@ -1,0 +1,12 @@
+# Weekly update pull requests, grouped so each ecosystem opens at most one at a time.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      github-actions:
+        patterns: ["*"]
