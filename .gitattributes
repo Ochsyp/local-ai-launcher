@@ -1,0 +1,13 @@
+# Store text with LF; Windows launchers check out with CRLF because cmd.exe
+# misparses labels in LF batch files.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+*.psd1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+*.ico binary
+*.lnk binary
+*.gguf binary
+*.safetensors binary
