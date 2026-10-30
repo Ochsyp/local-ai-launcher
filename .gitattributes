@@ -7,6 +7,11 @@
 *.cmd text eol=crlf
 *.bat text eol=crlf
 
+# The launcher hashes these to notice a change, so they keep LF whatever git guesses.
+*.Modelfile text eol=lf
+package.json text eol=lf
+package-lock.json text eol=lf
+
 *.ico binary
 *.lnk binary
 *.gguf binary

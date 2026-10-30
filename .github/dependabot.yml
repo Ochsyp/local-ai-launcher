@@ -10,3 +10,25 @@ updates:
     groups:
       github-actions:
         patterns: ["*"]
+  # The files server's package.json and package-lock.json. Config.Tests.ps1 pins the versions in
+  # them, so its update pull request also needs Files.ServerVersion and those tests changed.
+  - package-ecosystem: npm
+    directory: /config/files-server
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: deps
+    groups:
+      files-server:
+        patterns: ["*"]
+  # tests\requirements.txt, which CI installs for the image gate tests. The gate itself runs
+  # with the aiohttp that ComfyUI's venv holds, so merging such a bump does not change it.
+  - package-ecosystem: pip
+    directory: /tests
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: deps
+    groups:
+      test-requirements:
+        patterns: ["*"]

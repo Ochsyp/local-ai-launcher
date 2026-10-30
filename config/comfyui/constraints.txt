@@ -1,0 +1,5 @@
+# Constraints for every uv pip install into ComfyUI's .venv (uv pip install -c). ComfyUI
+# v0.42.5's requirements.txt lists torch and torchvision without versions; uv's
+# --torch-backend cu130 takes the +cu130 builds of these versions from download.pytorch.org.
+torch==2.14.1
+torchvision==0.29.1

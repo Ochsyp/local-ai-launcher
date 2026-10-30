@@ -1,0 +1,3 @@
+# Packages tests\test_image_gate.py needs, pinned to the versions in ComfyUI's venv, which runs the image gate; Dependabot proposes updates.
+aiohttp==3.14.5
+yarl==1.25.1

@@ -1,0 +1,79 @@
+# Runs PSScriptAnalyzer and Pester in Windows PowerShell 5.1, and the image gate tests in
+# Python 3.13, on every push and pull request.
+# Actions are pinned to commit SHAs; Dependabot proposes updates.
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run per branch or pull request at a time: a newer pull request run cancels the older one,
+# and a newer branch run waits for it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  powershell:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install PSScriptAnalyzer 1.25.0 and Pester 6.2.0
+        shell: powershell
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+          # Install-Module asks before it installs the NuGet provider, so it is installed first.
+          if (-not (Get-PackageProvider -ListAvailable | Where-Object { $_.Name -eq 'NuGet' -and $_.Version -ge [version]'2.8.5.201' })) {
+            $null = Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force
+          }
+          # -Force skips the prompt for the untrusted PSGallery; -SkipPublisherCheck lets Pester 6
+          # install beside the in-box Pester 3.4, which another publisher signed.
+          foreach ($module in @(@{ Name = 'PSScriptAnalyzer'; Version = '1.25.0' }, @{ Name = 'Pester'; Version = '6.2.0' })) {
+            for ($attempt = 1; ; $attempt++) {
+              try {
+                Install-Module -Name $module.Name -RequiredVersion $module.Version -Repository PSGallery -Scope CurrentUser -Force -SkipPublisherCheck
+                break
+              } catch {
+                if ($attempt -ge 3) { throw }
+                Write-Host "Installing $($module.Name) failed, trying again: $($_.Exception.Message)"
+                Start-Sleep -Seconds 15
+              }
+            }
+          }
+          Get-Module -ListAvailable -Name PSScriptAnalyzer, Pester | Format-Table -AutoSize Name, Version, ModuleBase
+      - name: Run tests\run-checks.ps1
+        shell: powershell
+        run: |
+          # The runner's TEMP is an 8.3 short path (C:\Users\RUNNER~1\...), which the launcher
+          # spells out in full; RUNNER_TEMP has no short names, so TestDrive paths stay comparable.
+          $env:TEMP = $env:RUNNER_TEMP
+          $env:TMP = $env:RUNNER_TEMP
+          # Continue, so a line the checks write to stderr does not stop this step; the exit code decides.
+          $ErrorActionPreference = 'Continue'
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-checks.ps1
+          exit $LASTEXITCODE
+
+  python:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+      - name: Install tests\requirements.txt
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check --no-input -r tests/requirements.txt
+      - name: Run the image gate tests
+        shell: pwsh
+        run: python -I -B -m unittest discover -s tests -p "test_*.py"

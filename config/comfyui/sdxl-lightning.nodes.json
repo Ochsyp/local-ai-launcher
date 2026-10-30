@@ -1,0 +1,9 @@
+[
+  {"type": "prompt", "key": "text", "node_ids": ["6"]},
+  {"type": "model", "key": "ckpt_name", "node_ids": ["4"]},
+  {"type": "width", "key": "width", "node_ids": ["5"]},
+  {"type": "height", "key": "height", "node_ids": ["5"]},
+  {"type": "n", "key": "batch_size", "node_ids": ["5"]},
+  {"type": "steps", "key": "steps", "node_ids": ["3"]},
+  {"type": "seed", "key": "seed", "node_ids": ["3"]}
+]

@@ -7,7 +7,10 @@ end_of_line = lf
 insert_final_newline = true
 trim_trailing_whitespace = true
 
+# No BOM: the sources stay ASCII, which Windows PowerShell 5.1 reads the same either way, while
+# cmd.exe misreads a BOM before @echo off and tests\Config.Tests.ps1 fails on one.
 [*.{ps1,psm1,psd1,cmd,bat}]
+charset = utf-8
 end_of_line = crlf
 indent_style = space
 indent_size = 4

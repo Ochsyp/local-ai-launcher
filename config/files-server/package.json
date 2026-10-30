@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "dependencies": {
+    "@modelcontextprotocol/server-filesystem": "2.0.1"
+  },
+  "overrides": {
+    "@modelcontextprotocol/core": "2.3.1",
+    "@modelcontextprotocol/server": "2.3.1"
+  }
+}

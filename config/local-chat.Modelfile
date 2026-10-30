@@ -1,0 +1,34 @@
+# -------------------------------------------------------
+#                 LOCAL-CHAT MODELFILE
+# -------------------------------------------------------
+#
+# Builds the local-chat alias: install runs `ollama create local-chat -f <this file>` whenever this
+# file or the pulled weights change. To change it, copy it to
+# %LOCALAPPDATA%\local-ai\local-chat.Modelfile, which then replaces this file, and run install.
+# Options sent with a request win over these PARAMETER lines, which win over OLLAMA_CONTEXT_LENGTH
+# and the Ollama app's context slider.
+
+# Must equal Model.Source in config\defaults.psd1, and be the only FROM line. The hf.co manifest
+# also brings a BF16 vision projector, so local-chat reads images and needs about 2 GB more VRAM
+# than the text model alone (the projector plus the 1 GiB headroom Ollama reserves for it).
+FROM hf.co/HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive:Q6_K
+
+# Ollama renders the prompt and parses tool calls and thinking with its own Qwen 3.5 code instead
+# of the GGUF's chat template. Ollama 0.40.11 accepts both lines but does not pick them for qwen35
+# models by itself, and its Modelfile docs do not list them.
+RENDERER qwen3.5
+PARSER qwen3.5
+
+PARAMETER num_ctx 32768
+
+# The Qwen3.5-9B model card's settings for thinking mode, which Ollama's qwen3.5 library model
+# also ships. presence_penalty is missing from Ollama's Modelfile docs; 0.40.11 accepts it and
+# passes it to llama-server.
+PARAMETER temperature 1.0
+PARAMETER top_p 0.95
+PARAMETER top_k 20
+PARAMETER min_p 0
+PARAMETER presence_penalty 1.5
+
+# Caps each answer, so a repetition loop cannot hold Ollama's single slot for long.
+PARAMETER num_predict 8192

@@ -5,11 +5,10 @@
 .webui_secret_key
 webui.db
 
-# Model weights, partial downloads and the temporary Ollama Modelfile.
+# Model weights and partial downloads.
 *.gguf
 *.safetensors
 *.part
-*.Modelfile
 
 # Start Menu shortcuts are generated with absolute paths.
 *.lnk
