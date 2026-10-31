@@ -1180,6 +1180,23 @@ Describe 'Invoke-LocalAI' {
         @(Get-ChildItem -LiteralPath $logs -Filter 'launcher-*-status.log').Count | Should -Be 20
     }
 
+    It 'prunes the earlier transcripts of a verb to 19 before its own starts, however late Start-Transcript creates the file' {
+        Mock Get-LocalAIVerb -ModuleName LocalAI -MockWith { Get-TestVerbTable -Function 'Invoke-TestVerbOk' }
+        # This Start-Transcript writes no file, like one that creates it only on its first write, as on a hosted CI runner.
+        Mock Start-Transcript -ModuleName LocalAI
+        Mock Stop-Transcript -ModuleName LocalAI
+        $logs = Join-Path $root 'logs'
+        $null = New-Item -ItemType Directory -Force -Path $logs
+        foreach ($i in 1..21) {
+            $old = Join-Path $logs ('launcher-20261027-1100{0:00}-000-status.log' -f $i)
+            [IO.File]::WriteAllText($old, 'status')
+            (Get-Item -LiteralPath $old).LastWriteTime = (Get-Date).AddMinutes(-60 + $i)
+        }
+        $null = Invoke-Dispatcher @{ Verb = 'status'; Root = $root; LockName = $lock }
+        @(Get-ChildItem -LiteralPath $logs -Filter 'launcher-*-status.log' | Sort-Object Name | ForEach-Object Name) |
+            Should -Be @(3..21 | ForEach-Object { 'launcher-20261027-1100{0:00}-000-status.log' -f $_ })
+    }
+
     It 'keeps the status transcript in %TEMP%, so status writes nothing below Root, and never takes the lock for status' {
         $verbs = InModuleScope -ModuleName LocalAI -ScriptBlock { Get-LocalAIVerb }
         $verbs.status.TranscriptInTemp | Should -BeTrue

@@ -7276,10 +7276,11 @@ function Invoke-LocalAI {
             $null = [IO.Directory]::CreateDirectory($logDir)
         }
         $transcript = Join-Path $logDir ('{0}-{1:yyyyMMdd-HHmmss-fff}-{2}.log' -f $prefix, (Get-Date), $Verb)
+        # The newest 20 per verb stay, so frequent status runs never push out the transcript of an install or update. The earlier
+        # ones are pruned to 19 before this run's starts, as Start-Transcript may create its file only once it first writes.
+        Remove-OldLogs -Directory $logDir -Filter "$prefix-*-$Verb.log" -KeepCount 19
         $null = Start-Transcript -LiteralPath $transcript
         $transcribing = $true
-        # The newest 20 per verb stay, so frequent status runs never push out the transcript of an install or update.
-        Remove-OldLogs -Directory $logDir -Filter "$prefix-*-$Verb.log"
 
         $moduleName = $MyInvocation.MyCommand.ModuleName
         $command = Get-Command -Name $spec.Function -CommandType Function -ErrorAction SilentlyContinue |

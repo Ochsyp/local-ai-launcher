@@ -94,6 +94,11 @@ keeps the key out of `settings.psd1`. Names that a proxy needs, such as `HTTPS_P
 service that an earlier start left running keeps the environment it started with, so run
 `local-ai stop`, then `local-ai start`.
 
+### Fixed
+
+- Each verb keeps its newest 20 transcripts also where Windows creates the new transcript file
+  late, as on GitHub's hosted runners, where one more was kept.
+
 ### Security
 
 - Open WebUI asks for a sign-in, and sign-up closes after the first account.
