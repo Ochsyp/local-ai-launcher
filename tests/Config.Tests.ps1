@@ -4,10 +4,10 @@
 #
 # Pester 6 checks on the tracked configuration and source files: defaults.psd1 must load and
 # validate on its own, its hash and commit pins, shortcut folder and backup count must be set,
-# it must list no superseded alias, the tracked Modelfile must match
-# Model.Source, the ComfyUI workflow, node mapping and constraints must have the shape the image
-# path needs, the files server's package.json and lockfile must pin Files.ServerVersion and the
-# overridden MCP packages, and source files must stay ASCII.
+# it must list no superseded alias and no further variable for a service to inherit, the
+# tracked Modelfile must match Model.Source, the ComfyUI workflow, node mapping and constraints
+# must have the shape the image path needs, the files server's package.json and lockfile must
+# pin Files.ServerVersion and the overridden MCP packages, and source files must stay ASCII.
 
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', '',
     Justification = 'Pester shares BeforeDiscovery and BeforeAll variables with the It blocks.')]
@@ -92,6 +92,18 @@ Describe 'config\defaults.psd1' {
         ($defaults.Model.SupersededAliases -is [array]) | Should -BeTrue
         @($defaults.Model.SupersededAliases).Count | Should -Be 0
         @((Get-LocalAISettings -DefaultsPath $defaultsPath).Model.SupersededAliases) | Should -BeNullOrEmpty
+    }
+
+    # The lists of names Open WebUI and ComfyUI inherit beyond their own stay empty lists a settings.psd1 can fill; the rules for those
+    # names are tested with Get-LocalAISettings, and the names each service inherits with Get-LocalAIService, in LocalAI.Tests.ps1.
+    It 'names no further variable for Open WebUI or ComfyUI to inherit, as empty lists' {
+        $defaults = Import-PowerShellDataFile -LiteralPath $defaultsPath
+        $settings = Get-LocalAISettings -DefaultsPath $defaultsPath
+        foreach ($service in 'OpenWebUI', 'ComfyUI') {
+            ($defaults[$service].InheritEnvironment -is [array]) | Should -BeTrue -Because "$service.InheritEnvironment must be a list"
+            @($defaults[$service].InheritEnvironment).Count | Should -Be 0
+            @($settings[$service].InheritEnvironment) | Should -BeNullOrEmpty
+        }
     }
 
     It 'keeps the 3 newest Open WebUI backups that update makes' {

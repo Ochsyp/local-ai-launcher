@@ -185,9 +185,10 @@ Describe 'Get-LocalAISettings' {
     Ports     = @{ OpenWebUI = 8080; ComfyUI = 8188; ImageGate = 8190 }
     Model     = @{ Alias = 'local-chat'; Source = 'hf.co/Org/Chat-GGUF:Q6_K'; Sha256 = ''; SupersededAliases = @('old-chat') }
     Shortcuts = @{ Folder = '%LOCALAI_TEST_DIR%\menu' }
-    OpenWebUI = @{ DataDir = '%LOCALAI_TEST_DIR%\data'; HealthTimeoutSeconds = 600; Env = @{ WEBUI_AUTH = 'True' } }
+    OpenWebUI = @{ DataDir = '%LOCALAI_TEST_DIR%\data'; HealthTimeoutSeconds = 600; InheritEnvironment = @(); Env = @{ WEBUI_AUTH = 'True' } }
     Images    = @{ Enabled = $true; Steps = 6; Resolution = '1024x1024'; Revision = '561086c22aba3925b1e8803a73857f061635c7c3'; UnloadChat = $true; UnloadTimeoutSeconds = 30 }
-    ComfyUI   = @{ Args = @('--one', '--two'); Dir = '%LOCALAI_TEST_DIR%\ComfyUI'; Commit = '483dae4326356b81de05d27aca3f433dd323cc25'; ExcludeNewer = '2026-10-23T00:07:14Z' }
+    ComfyUI   = @{ Args = @('--one', '--two'); Dir = '%LOCALAI_TEST_DIR%\ComfyUI'; Commit = '483dae4326356b81de05d27aca3f433dd323cc25'; ExcludeNewer = '2026-10-23T00:07:14Z'
+        InheritEnvironment = @() }
     Winget    = @{ Packages = @{ Node = @{ Id = 'OpenJS.NodeJS.LTS'; Command = 'node'; Scope = 'machine' } } }
     Logs      = @{ Keep = 5 }
     Update    = @{ KeepBackups = 3 }
@@ -328,9 +329,45 @@ Describe 'Get-LocalAISettings' {
         @{ Name = 'superseded aliases given as one string'; Text = "@{ Model = @{ SupersededAliases = 'old-chat' } }"; Message = "*'Model.SupersededAliases' = 'old-chat' must be a list*" }
         @{ Name = 'a relative shortcuts folder'; Text = "@{ Shortcuts = @{ Folder = 'Local AI' } }"; Message = "*'Shortcuts.Folder' = 'Local AI' must be a full path on a drive letter*" }
         @{ Name = 'an empty shortcuts folder'; Text = "@{ Shortcuts = @{ Folder = '' } }"; Message = "*'Shortcuts.Folder' = '' must be a full path on a drive letter*" }
+        @{ Name = 'an inherited variable with "="'; Text = "@{ OpenWebUI = @{ InheritEnvironment = @('HTTPS_PROXY=http://proxy:3128') } }"
+            Message = "*'OpenWebUI.InheritEnvironment' = 'HTTPS_PROXY=http://proxy:3128' must list variable names such as 'HTTPS_PROXY': letters, digits, '_', '.', '-' and parentheses*" }
+        @{ Name = 'an inherited variable with a space'; Text = "@{ ComfyUI = @{ InheritEnvironment = @('CUDA DEVICE') } }"; Message = "*'ComfyUI.InheritEnvironment' = 'CUDA DEVICE' must list variable names*" }
+        @{ Name = 'an empty inherited variable'; Text = "@{ OpenWebUI = @{ InheritEnvironment = @('HTTPS_PROXY', '') } }"; Message = "*'OpenWebUI.InheritEnvironment'*must list variable names*" }
+        @{ Name = 'an inherited variable as a pattern'; Text = "@{ OpenWebUI = @{ InheritEnvironment = @('HF_*') } }"; Message = "*'OpenWebUI.InheritEnvironment' = 'HF_*' must list variable names*" }
+        @{ Name = 'an inherited variable left as %VAR%'; Text = "@{ ComfyUI = @{ InheritEnvironment = @('%LOCALAI_TEST_UNSET%') } }"; Message = "*'ComfyUI.InheritEnvironment' = '%LOCALAI_TEST_UNSET%' must list variable names*" }
+        @{ Name = 'inherited variables given as one string'; Text = "@{ OpenWebUI = @{ InheritEnvironment = 'HTTPS_PROXY' } }"; Message = "*'OpenWebUI.InheritEnvironment' = 'HTTPS_PROXY' must be a list*" }
+        @{ Name = 'an inherited token'; Text = "@{ OpenWebUI = @{ InheritEnvironment = @('HTTPS_PROXY', 'HF_TOKEN') } }"
+            Message = "*'OpenWebUI.InheritEnvironment' names HF_TOKEN, which no service gets: start withholds every variable whose name ends in _TOKEN or _API_KEY*" }
+        @{ Name = 'an inherited API key in other case'; Text = "@{ ComfyUI = @{ InheritEnvironment = @('Openai_Api_Key') } }"; Message = "*'ComfyUI.InheritEnvironment' names Openai_Api_Key, which no service gets*" }
     ) {
         $user = Write-UserSetting $Text
         { Get-LocalAISettings -DefaultsPath $defaults -UserPath $user } | Should -Throw -ExpectedMessage $Message
+    }
+
+    It 'refuses <Withheld> in <Setting>, which points Python or Node.js at other code and never reaches a service' -ForEach @(
+        @{ Withheld = 'PYTHONHOME'; Setting = 'OpenWebUI' }
+        @{ Withheld = 'PYTHONPATH'; Setting = 'ComfyUI' }
+        @{ Withheld = 'PYTHONSTARTUP'; Setting = 'OpenWebUI' }
+        @{ Withheld = 'pythonuserbase'; Setting = 'ComfyUI' }
+        @{ Withheld = 'NODE_OPTIONS'; Setting = 'OpenWebUI' }
+        @{ Withheld = 'NODE_PATH'; Setting = 'ComfyUI' }
+    ) {
+        $user = Write-UserSetting "@{ $Setting = @{ InheritEnvironment = @('$Withheld') } }"
+        { Get-LocalAISettings -DefaultsPath $defaults -UserPath $user } |
+            Should -Throw -ExpectedMessage "*'$Setting.InheritEnvironment' names $Withheld, which no service gets*point Python or Node.js at other code*"
+    }
+
+    It 'accepts more variables for Open WebUI and ComfyUI to inherit, parentheses, dots and dashes included, and none at all' {
+        $user = Write-UserSetting ("@{ OpenWebUI = @{ InheritEnvironment = @('HTTPS_PROXY', 'NO_PROXY', 'SSL_CERT_FILE', 'ProgramFiles(x86)') }; " +
+            "ComfyUI = @{ InheritEnvironment = @('CUDA_DEVICE_ORDER', 'my.tool-home') } }")
+        $settings = Get-LocalAISettings -DefaultsPath $defaults -UserPath $user
+        $settings.OpenWebUI.InheritEnvironment | Should -Be @('HTTPS_PROXY', 'NO_PROXY', 'SSL_CERT_FILE', 'ProgramFiles(x86)')
+        $settings.ComfyUI.InheritEnvironment | Should -Be @('CUDA_DEVICE_ORDER', 'my.tool-home')
+        # A key of the open map OpenWebUI.Env named so is a value Open WebUI gets, not a list of names.
+        $user = Write-UserSetting "@{ OpenWebUI = @{ InheritEnvironment = @(); Env = @{ InheritEnvironment = 'not a name' } } }"
+        $settings = Get-LocalAISettings -DefaultsPath $defaults -UserPath $user
+        @($settings.OpenWebUI.InheritEnvironment) | Should -BeNullOrEmpty
+        $settings.OpenWebUI.Env.InheritEnvironment | Should -BeExactly 'not a name'
     }
 
     It 'accepts another free image gate port and turns the unload off' {
@@ -4636,6 +4673,19 @@ Describe 'Get-LocalAIService' {
     BeforeAll {
         $repoRoot = Split-Path $PSScriptRoot -Parent
         $url = 'http://127.0.0.1:11434'
+        # What Windows and Python need to run, which Open WebUI, ComfyUI and the image gate all inherit, in the launcher's order.
+        $windowsNames = @('SystemRoot', 'SystemDrive', 'windir', 'ComSpec', 'PATHEXT', 'Path', 'TEMP', 'TMP', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+            'USERNAME', 'USERDOMAIN', 'COMPUTERNAME', 'APPDATA', 'LOCALAPPDATA', 'ProgramData', 'ALLUSERSPROFILE', 'PUBLIC', 'ProgramFiles',
+            'ProgramFiles(x86)', 'ProgramW6432', 'CommonProgramFiles', 'CommonProgramFiles(x86)', 'CommonProgramW6432', 'OS', 'NUMBER_OF_PROCESSORS',
+            'PROCESSOR_ARCHITECTURE', 'PROCESSOR_IDENTIFIER', 'PROCESSOR_LEVEL', 'PROCESSOR_REVISION', 'DriverData')
+
+        # Fail when the list $Names names a variable that could hold a secret or a proxy's sign-in, or names one twice in any case.
+        function Assert-NoSecretName([string[]]$Names) {
+            foreach ($name in $Names) {
+                foreach ($pattern in '*KEY*', '*TOKEN*', '*SECRET*', '*PASSWORD*', '*PROXY*') { $name | Should -Not -BeLike $pattern }
+            }
+            @($Names | Sort-Object -Unique).Count | Should -Be @($Names).Count
+        }
     }
 
     BeforeEach {
@@ -4672,6 +4722,24 @@ Describe 'Get-LocalAIService' {
         $service.Pin.Setting | Should -Be 'OpenWebUI.Version'
         $service.Pin.Version | Should -Be '0.12.4'
         $service.Pin.Stamped | Should -Be '0.12.3'
+    }
+
+    It 'lets Open WebUI inherit only what Windows and Python need and where its embedding model is kept' {
+        @($service.InheritEnvironment) | Should -Be (@($windowsNames) + @('HF_HOME', 'HF_HUB_CACHE', 'HUGGINGFACE_HUB_CACHE', 'XDG_CACHE_HOME',
+                'SENTENCE_TRANSFORMERS_HOME', 'HF_HUB_OFFLINE'))
+        Assert-NoSecretName $service.InheritEnvironment
+    }
+
+    It 'adds OpenWebUI.InheritEnvironment to that list, each name once whatever its case' {
+        $settings.OpenWebUI.InheritEnvironment = @('HTTPS_PROXY', 'path', 'hf_home', 'SSL_CERT_FILE')
+        $listed = @(Get-LocalAIService -Settings $settings -Paths $paths -OllamaUrl $url -OpenWebUI $installed)[0]
+        @($listed.InheritEnvironment) | Should -Be (@($service.InheritEnvironment) + @('HTTPS_PROXY', 'SSL_CERT_FILE'))
+    }
+
+    It 'leaves the list as it is for settings without OpenWebUI.InheritEnvironment' {
+        $settings.OpenWebUI.Remove('InheritEnvironment')
+        $listed = @(Get-LocalAIService -Settings $settings -Paths $paths -OllamaUrl $url -OpenWebUI $installed)[0]
+        @($listed.InheritEnvironment) | Should -Be @($service.InheritEnvironment)
     }
 
     It 'identifies Open WebUI by GET /health and GET /api/version' {
@@ -4730,6 +4798,19 @@ Describe 'Get-LocalAIService' {
             $comfy.ErrLog | Should -Be (Join-Path $paths.Logs 'comfyui.err.log')
             $comfy.TimeoutSeconds | Should -Be 300
             $comfy.Environment.Count | Should -Be 0
+        }
+
+        It 'lets ComfyUI inherit only what Windows and Python need, its GPU choice and order, the allocator settings and CUDA_PATH' {
+            @($comfy.InheritEnvironment) | Should -Be (@($windowsNames) + @('CUDA_VISIBLE_DEVICES', 'CUDA_DEVICE_ORDER', 'PYTORCH_CUDA_ALLOC_CONF', 'PYTORCH_ALLOC_CONF',
+                    'CUDA_PATH'))
+            Assert-NoSecretName $comfy.InheritEnvironment
+        }
+
+        It 'adds ComfyUI.InheritEnvironment to ComfyUI only, each name once whatever its case' {
+            $settings.ComfyUI.InheritEnvironment = @('CUDA_CACHE_PATH', 'cuda_visible_devices')
+            $listed = @(Get-LocalAIService -Settings $settings -Paths $paths -OllamaUrl $url -OpenWebUI $installed -ComfyUI $stamped -ImageWorkflow $workflow)
+            @($listed[0].InheritEnvironment) | Should -Be (@($comfy.InheritEnvironment) + @('CUDA_CACHE_PATH'))
+            @($listed[1].InheritEnvironment) | Should -Not -Contain 'CUDA_CACHE_PATH'
         }
 
         It 'judges drift by the stamped commit against ComfyUI.Commit' {
@@ -4832,6 +4913,14 @@ Describe 'Get-LocalAIService' {
                 $gate.HealthUrl | Should -Be 'http://127.0.0.1:18190/local-ai/image-gate'
                 $gate.OutLog | Should -Be (Join-Path $paths.Logs 'imagegate.log')
                 $gate.ErrLog | Should -Be (Join-Path $paths.Logs 'imagegate.err.log')
+            }
+
+            It 'lets the gate inherit only what Windows and Python need, also when ComfyUI.InheritEnvironment names more' {
+                @($gate.InheritEnvironment) | Should -Be $windowsNames
+                Assert-NoSecretName $gate.InheritEnvironment
+                $settings.ComfyUI.InheritEnvironment = @('CUDA_CACHE_PATH')
+                $listed = @(Get-LocalAIService -Settings $settings -Paths $paths -OllamaUrl $url -OpenWebUI $installed -ComfyUI $stamped -ImageWorkflow $workflow)
+                @($listed[1].InheritEnvironment) | Should -Be $windowsNames
             }
 
             It 'waits 15 s for it, carries no pin, names the err log in the repair hint and says what happens without it' {
@@ -4939,7 +5028,9 @@ Describe 'Get-LocalAIService' {
             @($mcpo.InheritEnvironment | Sort-Object) | Should -Be @('APPDATA', 'ComSpec', 'HOMEDRIVE', 'HOMEPATH', 'LOCALAPPDATA', 'NUMBER_OF_PROCESSORS', 'Path',
                 'PATHEXT', 'PROCESSOR_ARCHITECTURE', 'SystemDrive', 'SystemRoot', 'TEMP', 'TMP', 'USERNAME', 'USERPROFILE', 'windir')
             foreach ($name in $mcpo.InheritEnvironment) { $name | Should -Not -BeLike '*KEY*'; $name | Should -Not -BeLike '*TOKEN*'; $name | Should -Not -BeLike '*SECRET*' }
-            $all[1].ContainsKey('InheritEnvironment') | Should -BeFalse
+            # Open WebUI's own list holds every one of them, and more.
+            @($mcpo.InheritEnvironment | Where-Object { @($all[1].InheritEnvironment) -notcontains $_ }) | Should -BeNullOrEmpty
+            @($all[1].InheritEnvironment).Count | Should -BeGreaterThan @($mcpo.InheritEnvironment).Count
         }
 
         It 'serves the root spelled as on disk, as New-McpoConfig hands it to the server' {
@@ -5166,7 +5257,8 @@ Describe 'Test-ProcessDescendant' {
 Describe 'Start-LocalAIService' {
     BeforeAll {
         $names = @('HF_TOKEN', 'LOCALAI_TEST_TOKEN', 'LOCALAI_TEST_API_KEY', 'LOCALAI_KEPT_API_KEY', 'LOCALAI_TEST_NEW', 'LOCALAI_TEST_SET',
-            'LOCALAI_TEST_CLEARED', 'PYTHONHOME', 'PYTHONPATH', 'PYTHONSTARTUP', 'PYTHONUSERBASE', 'NODE_OPTIONS', 'NODE_PATH')
+            'LOCALAI_TEST_CLEARED', 'PYTHONHOME', 'PYTHONPATH', 'PYTHONSTARTUP', 'PYTHONUSERBASE', 'NODE_OPTIONS', 'NODE_PATH', 'AWS_SECRET_ACCESS_KEY',
+            'LOCALAI_PROBE_SECRET')
         $started = [datetime]::new(2026, 10, 27, 9, 30, 0, [DateTimeKind]::Local)
         $cmd = Join-Path ([Environment]::SystemDirectory) 'cmd.exe'
 
@@ -5277,6 +5369,31 @@ Describe 'Start-LocalAIService' {
         # A shell such as Git Bash hands its programs these names in capitals.
         @($seen.Environment.Keys) -contains 'HF_TOKEN' | Should -BeFalse
         @($seen.Environment.Keys) -contains 'SystemRoot' | Should -BeTrue
+    }
+
+    # Not keyed Name: BeforeEach's foreach over $names sets $name, which is the same variable.
+    It 'gives <Kind> the list Get-LocalAIService makes: Path, SystemRoot and its own variables, but no other secret such as AWS_SECRET_ACCESS_KEY' -ForEach @(
+        @{ Kind = 'OpenWebUI' }
+        @{ Kind = 'ComfyUI' }
+        @{ Kind = 'ImageGate' }
+    ) {
+        $settings = Get-LocalAISettings -DefaultsPath (Join-Path (Split-Path $PSScriptRoot -Parent) 'config\defaults.psd1')
+        $settings.OpenWebUI.DataDir = Join-Path $folder 'data'
+        $listed = @(Get-LocalAIService -Settings $settings -Paths (Get-LocalAIPaths -Root $folder) -OllamaUrl 'http://127.0.0.1:11434' `
+                -OpenWebUI @{ Version = '0.12.4'; Path = 'C:\x\open-webui.exe' } -ComfyUI @{ Python = 'C:\x\python.exe'; Commit = 'x' } `
+                -ImageWorkflow @{ Workflow = '{}'; Nodes = '[]' })
+        $service.InheritEnvironment = @($listed | Where-Object { $_.Name -eq $Kind })[0].InheritEnvironment
+        @($service.InheritEnvironment).Count | Should -BeGreaterThan 30
+        $env:AWS_SECRET_ACCESS_KEY = 'aws-secret'
+        $env:LOCALAI_PROBE_SECRET = 'probe-secret'
+        $null = Start-LocalAIService -Service $service
+        foreach ($secret in 'AWS_SECRET_ACCESS_KEY', 'LOCALAI_PROBE_SECRET', 'LOCALAI_TEST_CLEARED', 'HF_TOKEN', 'PYTHONPATH') {
+            @($seen.Environment.Keys) -contains $secret | Should -BeFalse -Because "$secret must not reach $Kind"
+        }
+        @($seen.Environment.Keys) -contains 'Path' | Should -BeTrue
+        @($seen.Environment.Keys) -contains 'SystemRoot' | Should -BeTrue
+        $seen.Environment['LOCALAI_TEST_NEW'] | Should -BeExactly 'new'
+        $env:AWS_SECRET_ACCESS_KEY | Should -BeExactly 'aws-secret'
     }
 
     It 'passes NODE_OPTIONS when the service sets it itself' {
@@ -5606,14 +5723,25 @@ Describe 'Start-LocalAI' {
             return @{ Root = $served; Key = (Get-FilesKey -Path $Paths.FilesKey -Create) }
         }
 
-        # Return the hash of the Open WebUI environment a start computes for $Settings and $Paths with images and file tools off, as
-        # Use-LocalAIService records it.
-        function Get-TestWebEnvironmentHash([hashtable]$Settings, [hashtable]$Paths, [hashtable]$OpenWebUI) {
+        # Return the hash of the Open WebUI environment and inherited names a start computes for $Settings and $Paths with images and file
+        # tools off, as Use-LocalAIService records it; -EnvironmentOnly leaves the names out, as the launcher before InheritEnvironment did.
+        function Get-TestWebEnvironmentHash([hashtable]$Settings, [hashtable]$Paths, [hashtable]$OpenWebUI, [switch]$EnvironmentOnly) {
             & (Get-Module LocalAI) {
-                param($Settings, $Paths, $OpenWebUI)
+                param($Settings, $Paths, $OpenWebUI, $EnvironmentOnly)
                 $web = @(Get-LocalAIService -Settings $Settings -Paths $Paths -OllamaUrl 'http://127.0.0.1:11434' -OpenWebUI $OpenWebUI | Where-Object { $_.Name -eq 'OpenWebUI' })[0]
-                Get-LocalAIEnvironmentHash -Environment $web.Environment
-            } $Settings $Paths $OpenWebUI
+                $names = if ($EnvironmentOnly) { $null } else { $web.InheritEnvironment }
+                Get-LocalAIEnvironmentHash -Environment $web.Environment -InheritEnvironment $names
+            } $Settings $Paths $OpenWebUI ([bool]$EnvironmentOnly)
+        }
+
+        # Return the hash of ComfyUI's environment and inherited names a start computes for $Settings and $Paths from the stamp $Stamp, as
+        # Use-LocalAIService records it.
+        function Get-TestComfyUIHash([hashtable]$Settings, [hashtable]$Paths, [hashtable]$Stamp) {
+            & (Get-Module LocalAI) {
+                param($Settings, $Paths, $Stamp)
+                $comfy = @(Get-LocalAIServicePlan -Settings $Settings -Paths $Paths -Stamp $Stamp -OllamaUrl 'http://127.0.0.1:11434' | Where-Object { $_.Name -eq 'ComfyUI' })[0]
+                Get-LocalAIEnvironmentHash -Environment $comfy.Environment -InheritEnvironment $comfy.InheritEnvironment
+            } $Settings $Paths $Stamp
         }
     }
 
@@ -5796,8 +5924,15 @@ Describe 'Start-LocalAI' {
     It 'warns once and returns 2 when the Open WebUI it reuses was started <Case>' -ForEach @(
         @{ Case = 'with another environment'; Hash = ('0' * 64) }
         @{ Case = 'by a launcher that recorded no environment'; Hash = $null }
+        @{ Case = 'with this environment by a launcher that recorded no inherited names'; Hash = 'environment only' }
+        @{ Case = 'before OpenWebUI.InheritEnvironment named HTTPS_PROXY'; Hash = 'before the list' }
     ) {
         $record = @{ Pid = 4242; StartTicks = 111; Path = $exe; Port = 18431; Listener = @{ Pid = 1624; StartTicks = 222; Path = 'C:\uv\python\python.exe' } }
+        if ($Hash -eq 'environment only') { $Hash = Get-TestWebEnvironmentHash -Settings $settings -Paths $paths -OpenWebUI $complete.OpenWebUI -EnvironmentOnly }
+        if ($Hash -eq 'before the list') {
+            $Hash = Get-TestWebEnvironmentHash -Settings $settings -Paths $paths -OpenWebUI $complete.OpenWebUI
+            $settings.OpenWebUI.InheritEnvironment = @('HTTPS_PROXY')
+        }
         if ($Hash) { $record.EnvironmentSha256 = $Hash }
         Write-LocalAIState -Path $paths.State -State @{ Services = @{ OpenWebUI = $record } }
         $net.Owner = $python
@@ -5806,7 +5941,7 @@ Describe 'Start-LocalAI' {
         $run = Invoke-StartVerb -Context $context
         $run.Code | Should -Be @(2)
         $run.Warnings | Should -BeExactly ("Open WebUI, which an earlier start left running, keeps the settings it started with, which differ from this start's, " +
-            "such as where images go and which file tools it offers. Run 'local-ai stop', then start again.")
+            "such as where images go, which file tools it offers and which variables of this window it inherits. Run 'local-ai stop', then start again.")
         Should -Invoke Start-LocalAIService -ModuleName LocalAI -Times 0 -Exactly
     }
 
@@ -6423,16 +6558,39 @@ Describe 'Start-LocalAI' {
         }
 
         It 'reuses a ComfyUI an earlier start left running' {
-            $record = @{ Pid = 4300; StartTicks = 111; Path = 'C:\WINDOWS\system32\cmd.exe'; Port = 18188; Listener = @{ Pid = 7804; StartTicks = 333; Path = $comfyListener.Path } }
+            $record = @{ Pid = 4300; StartTicks = 111; Path = 'C:\WINDOWS\system32\cmd.exe'; Port = 18188; Listener = @{ Pid = 7804; StartTicks = 333; Path = $comfyListener.Path }
+                EnvironmentSha256 = (Get-TestComfyUIHash -Settings $settings -Paths $paths -Stamp $complete) }
             Write-LocalAIState -Path $paths.State -State @{ Services = @{ ComfyUI = $record }; Images = (Read-LocalAIState -Path $paths.State).Images }
             $owners[18188] = $comfyListener
             Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith { if ($Record.Pid -eq 7804) { 'match' } else { 'other' } }
             Mock Get-ComfyUIVersion -ModuleName LocalAI -MockWith { '0.42.5' }
             $run = Invoke-StartVerb -Context $context
             $run.Code | Should -Be @(0)
+            $run.Warnings | Should -BeNullOrEmpty
             $run.Printed | Should -BeLike '*ComfyUI 0.42.5 is already running at http://127.0.0.1:18188; reusing it.*'
             $order | Should -Be @('OpenWebUI')
             Should -Invoke Test-ComfyUICheckpoint -ModuleName LocalAI -Times 1 -Exactly
+        }
+
+        It 'warns once and returns 2, still reusing it, when the ComfyUI it reuses was started <Case>' -ForEach @(
+            @{ Case = 'by a launcher that recorded no inherited names'; Hash = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' }
+            @{ Case = 'before ComfyUI.InheritEnvironment named CUDA_CACHE_PATH'; Hash = 'before the list' }
+        ) {
+            if ($Hash -eq 'before the list') {
+                $Hash = Get-TestComfyUIHash -Settings $settings -Paths $paths -Stamp $complete
+                $settings.ComfyUI.InheritEnvironment = @('CUDA_CACHE_PATH')
+            }
+            $record = @{ Pid = 4300; StartTicks = 111; Path = 'C:\WINDOWS\system32\cmd.exe'; Port = 18188; Listener = @{ Pid = 7804; StartTicks = 333; Path = $comfyListener.Path }
+                EnvironmentSha256 = $Hash }
+            Write-LocalAIState -Path $paths.State -State @{ Services = @{ ComfyUI = $record }; Images = (Read-LocalAIState -Path $paths.State).Images }
+            $owners[18188] = $comfyListener
+            Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith { if ($Record.Pid -eq 7804) { 'match' } else { 'other' } }
+            Mock Get-ComfyUIVersion -ModuleName LocalAI -MockWith { '0.42.5' }
+            $run = Invoke-StartVerb -Context $context
+            $run.Code | Should -Be @(2)
+            $run.Warnings | Should -BeExactly ("ComfyUI, which an earlier start left running, keeps the variables of this window it started with, which differ " +
+                "from those this start lets it inherit, such as the GPU it uses. Run 'local-ai stop', then start again.")
+            $order | Should -Be @('OpenWebUI')
         }
 
         Context 'and the image gate' {
@@ -7110,6 +7268,32 @@ Describe 'Get-LocalAIEnvironmentHash' {
 
     It 'hashes no table as the empty text' {
         & $hash $null | Should -BeExactly 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+    }
+
+    Context 'with inherited names' {
+        BeforeAll {
+            # The hash of <Environment> and the names <Names> in the module.
+            $hashWith = { param($Environment, $Names) InModuleScope LocalAI -Parameters @{ Environment = $Environment; Names = $Names } {
+                    param($Environment, $Names) Get-LocalAIEnvironmentHash -Environment $Environment -InheritEnvironment $Names } }
+            $sha = { param([string]$Text) -join @([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($Text)) | ForEach-Object { $_.ToString('x2') }) }
+        }
+
+        It 'adds one line of the names in upper case, sorted and once each, after the NAME=value lines' {
+            & $hashWith ([ordered]@{ B = '2'; A = '1' }) @('Path', 'cuda_path', 'PATH') | Should -BeExactly (& $sha "A=1`nB=2`nInheritEnvironment CUDA_PATH PATH")
+            & $hashWith ([ordered]@{ A = '1' }) @('Path') | Should -BeExactly (& $sha "A=1`nInheritEnvironment PATH")
+            & $hashWith $null @() | Should -BeExactly (& $sha 'InheritEnvironment ')
+        }
+
+        It 'gives another hash when a name is added, and the same hash when only the order or case of the names changes' {
+            $environment = [ordered]@{ A = '1' }
+            & $hashWith $environment @('Path', 'TEMP') | Should -Not -Be (& $hashWith $environment @('Path', 'TEMP', 'HTTPS_PROXY'))
+            & $hashWith $environment @('Path', 'TEMP') | Should -BeExactly (& $hashWith $environment @('temp', 'PATH'))
+        }
+
+        It 'hashes no list as the table alone, as a record from before InheritEnvironment has it' {
+            & $hashWith ([ordered]@{ A = '1' }) $null | Should -BeExactly (& $hash ([ordered]@{ A = '1' }))
+            & $hashWith ([ordered]@{ A = '1' }) @() | Should -Not -Be (& $hash ([ordered]@{ A = '1' }))
+        }
     }
 }
 

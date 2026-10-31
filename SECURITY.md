@@ -57,11 +57,49 @@ that contain them into issues, pull requests or commits.
 
 ## Environment of the other services
 
-Open WebUI, ComfyUI and the image gate inherit the environment of the window that runs `start`
-or `update`. The launcher removes only variables whose names end in `_TOKEN` or `_API_KEY`, and
-`PYTHONHOME`, `PYTHONPATH`, `PYTHONSTARTUP`, `PYTHONUSERBASE`, `NODE_OPTIONS` and `NODE_PATH`.
-This is a known limit: a secret in any other user or console variable reaches Open WebUI and
-the tools and functions that run inside it.
+Open WebUI, ComfyUI and the image gate also get an allow-list. Of the variables that hold a
+value in the window that runs `start` or `update`, each inherits only these, besides those the
+launcher sets for it:
+
+- All three: what Windows and Python need. These are `SystemRoot`, `SystemDrive`, `windir`,
+  `ComSpec`, `PATHEXT`, `Path`, `TEMP`, `TMP`, `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`,
+  `USERNAME`, `USERDOMAIN`, `COMPUTERNAME`, `APPDATA`, `LOCALAPPDATA`, `ProgramData`,
+  `ALLUSERSPROFILE`, `PUBLIC`, `ProgramFiles`, `ProgramFiles(x86)`, `ProgramW6432`,
+  `CommonProgramFiles`, `CommonProgramFiles(x86)`, `CommonProgramW6432`, `OS`,
+  `NUMBER_OF_PROCESSORS`, `PROCESSOR_ARCHITECTURE`, `PROCESSOR_IDENTIFIER`, `PROCESSOR_LEVEL`,
+  `PROCESSOR_REVISION` and `DriverData`.
+- Open WebUI also: `HF_HOME`, `HF_HUB_CACHE`, `HUGGINGFACE_HUB_CACHE`, `XDG_CACHE_HOME` and
+  `SENTENCE_TRANSFORMERS_HOME`, which say where its embedding model is kept, and
+  `HF_HUB_OFFLINE`.
+- ComfyUI also: `CUDA_VISIBLE_DEVICES` and `CUDA_DEVICE_ORDER`, which choose its GPU,
+  `PYTORCH_CUDA_ALLOC_CONF`, `PYTORCH_ALLOC_CONF` and `CUDA_PATH`.
+- The names in `OpenWebUI.InheritEnvironment` and `ComfyUI.InheritEnvironment`. ComfyUI's list
+  does not apply to the image gate.
+
+Proxy variables, such as `HTTPS_PROXY`, are not on the lists, since a proxy address can hold a
+user name and password, and neither are CA-bundle variables such as `SSL_CERT_FILE`. Add them
+to one of the two settings when a service needs them. A listed variable reaches the service with
+its value, so Open WebUI and the tools and functions inside it can read a password in the proxy
+address. Prefer a proxy that needs no password in its address.
+
+No service inherits a variable whose name ends in `_TOKEN` or `_API_KEY`, or `PYTHONHOME`,
+`PYTHONPATH`, `PYTHONSTARTUP`, `PYTHONUSERBASE`, `NODE_OPTIONS` or `NODE_PATH`. The settings
+check refuses these names in the two lists. Such a name reaches a service only with a value the
+launcher sets for it, such as one from `OpenWebUI.Env`. So a secret in another user or console
+variable, such as `AWS_SECRET_ACCESS_KEY`, is not in the environment of Open WebUI or of the
+tools and functions that run inside it, and a tool that reads its environment cannot reveal it.
+
+The allow-lists cover only the environment. Code that runs inside a service runs as your
+Windows user, so it can still read your user variables in the registry (`HKCU\Environment`) and
+the files of your account, such as hf's token file and `files.key`.
+
+`start` warns when it reuses an Open WebUI or a ComfyUI that an earlier start, such as one by an
+older launcher, left running with other inherited variables. Such a service keeps its
+environment until `local-ai stop`.
+
+The Ollama app is not a service the launcher starts with an allow-list. When Ollama does not
+answer, the launcher runs `ollama list`, which starts the app, and the app inherits the whole
+environment of that window.
 
 ## Secrets
 
@@ -72,7 +110,8 @@ the tools and functions that run inside it.
 - `%LOCALAPPDATA%\local-ai\backups` holds copies of `webui.db` and `.webui_secret_key`: those
   that `update` and `install` make, and the data a rollback moves aside. Treat that folder as
   secret. `uninstall -RemoveData` deletes it.
-- `.gitignore` blocks `webui.db` and `.webui_secret_key` in case a data folder is ever
+- `.gitignore` blocks `.env` files except `.env.example`, `webui.db` with its `-wal`, `-shm` and
+  `-journal` files, `.webui_secret_key` and mcpo's `files.key`, in case a data folder is ever
   redirected here.
 - If a secret is ever committed, rotate it first, then remove it from history: deleting the
   file leaves it in earlier commits.

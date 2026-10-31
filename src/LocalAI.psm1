@@ -125,11 +125,13 @@ function Expand-LocalAISetting {
 }
 
 # Return one message per rule the merged $Settings break, nothing when all hold: each value against the rule table below, every Ports key
-# distinct, Model.SupersededAliases never naming Model.Alias or Source, and Files.AllowedTools and DisabledTools disjoint with every write tool hidden.
+# distinct, Model.SupersededAliases never naming Model.Alias or Source, Files.AllowedTools and DisabledTools disjoint with every write tool hidden,
+# and OpenWebUI.InheritEnvironment and ComfyUI.InheritEnvironment naming no variable Test-LocalAIWithheldName matches.
 function Test-LocalAISetting {
     param([hashtable]$Settings)
     # Ports 1024 to 65535, *Sha256, ComfyUI.Commit and ExcludeNewer, Images.Revision, Model.Alias and SupersededAliases, Logs.Keep, Update.KeepBackups,
-    # *TimeoutSeconds, the folders (OpenWebUI.DataDir, ComfyUI.Dir, Shortcuts.Folder, Files.Root), Images.Resolution and Steps, winget Scopes and Files.
+    # *TimeoutSeconds, the folders (OpenWebUI.DataDir, ComfyUI.Dir, Shortcuts.Folder, Files.Root), Images.Resolution and Steps, winget Scopes, Files
+    # and the InheritEnvironment lists.
     $rules = @(
         @{ Like = 'Ports.*'; Text = 'must be a whole number from 1024 to 65535'
             Test = { param($v) $v -is [int] -and $v -ge 1024 -and $v -le 65535 } }
@@ -186,6 +188,10 @@ function Test-LocalAISetting {
             Test = { param($v) @($v | Where-Object { -not ($_ -is [string] -and $_ -cmatch '^[a-z0-9_]+\z') }).Count -eq 0 } }
         @{ Like = 'Files.DenyPatterns'; Text = 'must list file or folder name patterns, none of them empty'
             Test = { param($v) @($v | Where-Object { -not ($_ -is [string] -and $_.Trim()) }).Count -eq 0 } }
+        # OpenWebUI's and ComfyUI's, not a key of the open map OpenWebUI.Env. Start-LocalAIService compares whole names, so a
+        # pattern such as HF_* or a %VAR% left unexpanded would match nothing.
+        @{ Like = '*UI.InheritEnvironment'; Text = "must list variable names such as 'HTTPS_PROXY': letters, digits, '_', '.', '-' and parentheses"
+            Test = { param($v) @($v | Where-Object { -not ($_ -is [string] -and $_ -cmatch '^[A-Za-z_][A-Za-z0-9_.()-]*\z') }).Count -eq 0 } }
     )
     # Flatten nested tables into dotted paths; lists and single values are the leaves.
     $leaves = @{}
@@ -225,6 +231,14 @@ function Test-LocalAISetting {
         # The tools of server-filesystem 2.0.1 that change files.
         $open = @(foreach ($tool in 'write_file', 'edit_file', 'create_directory', 'move_file') { if ($disabled -notcontains $tool) { $tool } })
         if ($open.Count -gt 0) { "Setting 'Files.DisabledTools' must hide every write tool, but leaves out $($open -join ', ')." }
+    }
+    # Start-LocalAIService withholds these whatever a list names, so naming one would only mislead.
+    foreach ($path in @($leaves.Keys | Where-Object { $_ -clike '*UI.InheritEnvironment' } | Sort-Object)) {
+        $withheld = @(@($leaves[$path]) | Where-Object { $_ -is [string] -and $_ -and (Test-LocalAIWithheldName -Name $_) })
+        if ($withheld.Count -gt 0) {
+            ("Setting '$path' names $($withheld -join ', '), which no service gets: start withholds every variable whose name ends in _TOKEN or " +
+                '_API_KEY, and those that point Python or Node.js at other code, such as PYTHONPATH and NODE_OPTIONS.')
+        }
     }
 }
 
@@ -2895,9 +2909,49 @@ function Get-OpenWebUIEnvironment {
     return $environment
 }
 
+# Return whether no service may inherit the variable $Name from this window, whatever its InheritEnvironment names: a token or an API key by
+# the end of its name, or a Python or Node.js code path. Compares without case, as Windows does. Pure.
+function Test-LocalAIWithheldName {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][string]$Name
+    )
+    # These would point the service's Python, or the node server mcpo starts with mcpo's environment, at other code or another
+    # interpreter; NODE_OPTIONS can preload a script.
+    $codePaths = @('PYTHONHOME', 'PYTHONPATH', 'PYTHONSTARTUP', 'PYTHONUSERBASE', 'NODE_OPTIONS', 'NODE_PATH')
+    return $Name -like '*_TOKEN' -or $Name -like '*_API_KEY' -or $codePaths -contains $Name
+}
+
+# Return the names of the variables Open WebUI, ComfyUI or the image gate inherits from this window: what Windows and Python need to run, then
+# each of $Extra, every name once whatever its case. Start-LocalAIService still withholds those Test-LocalAIWithheldName matches. Pure.
+function Get-LocalAIInheritedName {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [AllowEmptyCollection()][AllowNull()][string[]]$Extra = @()
+    )
+    # Folders, the shell, the program search path and processor facts, all set by Windows itself and none secret. Python's ntpath reads
+    # USERPROFILE for ~, tempfile TEMP and TMP, subprocess ComSpec and SystemRoot, shutil PATHEXT, site APPDATA, and platform
+    # PROCESSOR_ARCHITECTURE and PROCESSOR_IDENTIFIER.
+    $names = @('SystemRoot', 'SystemDrive', 'windir', 'ComSpec', 'PATHEXT', 'Path', 'TEMP', 'TMP', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+        'USERNAME', 'USERDOMAIN', 'COMPUTERNAME', 'APPDATA', 'LOCALAPPDATA', 'ProgramData', 'ALLUSERSPROFILE', 'PUBLIC', 'ProgramFiles',
+        'ProgramFiles(x86)', 'ProgramW6432', 'CommonProgramFiles', 'CommonProgramFiles(x86)', 'CommonProgramW6432', 'OS', 'NUMBER_OF_PROCESSORS',
+        'PROCESSOR_ARCHITECTURE', 'PROCESSOR_IDENTIFIER', 'PROCESSOR_LEVEL', 'PROCESSOR_REVISION', 'DriverData')
+    # Keys compare without case.
+    $seen = @{}
+    foreach ($name in @($names) + @($Extra | Where-Object { $_ })) {
+        if (-not $seen.ContainsKey($name)) {
+            $seen[$name] = $true
+            $name
+        }
+    }
+}
+
 # Return the service table in start order: optional ComfyUI from $ComfyUI (stamp: Commit, Python) for Images.Enabled and an $ImageWorkflow, with
 # Images.UnloadChat the image gate, for Files.Root mcpo from $Files (McpoPath, McpoVersion, Key), then required Open WebUI from $OpenWebUI. Identity
-# takes the entry and returns the version to show or throws; Pin and Repair name the pin and the install. Warns for dropped Args or gate.
+# takes the entry and returns the version to show or throws; Pin and Repair name the pin and the install; InheritEnvironment names the variables
+# each may inherit from this window. Warns for dropped Args or gate.
 function Get-LocalAIService {
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -2969,6 +3023,10 @@ function Get-LocalAIService {
             ArgumentList     = $arguments.ToArray()
             WorkingDirectory = $dir
             Environment      = [ordered]@{}
+            # Also the GPU choice main.py and the CUDA driver read, with the order the driver numbers GPUs in for it, the allocator settings
+            # cuda_malloc.py and torch read, the CUDA toolkit torch's runtime compiler looks in, and ComfyUI.InheritEnvironment.
+            InheritEnvironment = @(Get-LocalAIInheritedName -Extra (@('CUDA_VISIBLE_DEVICES', 'CUDA_DEVICE_ORDER', 'PYTORCH_CUDA_ALLOC_CONF', 'PYTORCH_ALLOC_CONF',
+                        'CUDA_PATH') + @($comfy.InheritEnvironment)))
             OutLog           = Join-Path $Paths.Logs 'comfyui.log'
             ErrLog           = Join-Path $Paths.Logs 'comfyui.err.log'
             TimeoutSeconds   = $comfy.HealthTimeoutSeconds
@@ -3015,6 +3073,8 @@ function Get-LocalAIService {
                 # Launcher-owned and empty, so nothing in it can be imported.
                 WorkingDirectory = Join-Path $Paths.Root 'image-gate'
                 Environment      = [ordered]@{}
+                # Its clients read no proxy variable (trust_env=False), and -I has Python ignore the PYTHON* ones.
+                InheritEnvironment = @(Get-LocalAIInheritedName)
                 OutLog           = Join-Path $Paths.Logs 'imagegate.log'
                 ErrLog           = $gateErr
                 # It answers within about a second; Open WebUI starts only after it, since it reads COMFYUI_BASE_URL once.
@@ -3105,6 +3165,11 @@ function Get-LocalAIService {
         # serve keeps .webui_secret_key in its working directory, not in DATA_DIR.
         WorkingDirectory = $environment['DATA_DIR']
         Environment      = $environment
+        # Tools and functions run inside Open WebUI, so it gets no secret of this window either. Also where huggingface_hub and
+        # sentence-transformers keep the embedding model, which would otherwise download again elsewhere, whether they may go
+        # online, and OpenWebUI.InheritEnvironment.
+        InheritEnvironment = @(Get-LocalAIInheritedName -Extra (@('HF_HOME', 'HF_HUB_CACHE', 'HUGGINGFACE_HUB_CACHE', 'XDG_CACHE_HOME',
+                    'SENTENCE_TRANSFORMERS_HOME', 'HF_HUB_OFFLINE') + @($Settings.OpenWebUI.InheritEnvironment)))
         OutLog           = Join-Path $Paths.Logs 'open-webui.log'
         ErrLog           = Join-Path $Paths.Logs 'open-webui.err.log'
         TimeoutSeconds   = $Settings.OpenWebUI.HealthTimeoutSeconds
@@ -3116,8 +3181,8 @@ function Get-LocalAIService {
 }
 
 # Start $Service hidden through cmd.exe, which writes OutLog and ErrLog (rotated first, keeping $Keep), with its Environment set and the inherited
-# variables it does not set removed when they are tokens, API keys or Python and Node.js code paths, or, when it lists InheritEnvironment, not named
-# there; this process's variables are restored. Returns Pid, StartTicks (UTC), Path, Port, OutLog, ErrLog, Process; throws for '"' or '%'.
+# variables it does not set removed when Test-LocalAIWithheldName matches them (tokens, API keys, Python and Node.js code paths), or, when it lists
+# InheritEnvironment, not named there; this process's variables are restored. Returns Pid, StartTicks (UTC), Path, Port, OutLog, ErrLog, Process; throws for '"' or '%'.
 function Start-LocalAIService {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'Called by the start verb, which offers no -WhatIf.')]
@@ -3140,14 +3205,11 @@ function Start-LocalAIService {
     $null = [IO.Directory]::CreateDirectory($Service.WorkingDirectory)
     $wanted = $Service.Environment
     if ($null -eq $wanted) { $wanted = @{} }
-    # These would point the service's Python, or the node server mcpo starts with mcpo's environment, at other code or another
-    # interpreter; NODE_OPTIONS can preload a script.
-    $codePaths = @('PYTHONHOME', 'PYTHONPATH', 'PYTHONSTARTUP', 'PYTHONUSERBASE', 'NODE_OPTIONS', 'NODE_PATH')
     # Names compare without case, as Windows compares them. An empty variable holds nothing, and .NET would remove it instead of setting it back.
     $kept = $Service.InheritEnvironment
     $dropped = @([Environment]::GetEnvironmentVariables('Process').GetEnumerator() | Where-Object {
             $name = [string]$_.Key
-            [string]$_.Value -and -not $wanted.Contains($name) -and ($name -like '*_TOKEN' -or $name -like '*_API_KEY' -or $codePaths -contains $name -or
+            [string]$_.Value -and -not $wanted.Contains($name) -and ((Test-LocalAIWithheldName -Name $name) -or
                 ($null -ne $kept -and @($kept) -notcontains $name))
         } | ForEach-Object { [string]$_.Key })
     $saved = @{}
@@ -3300,15 +3362,21 @@ function Stop-LocalAIService {
     return 'stopped'
 }
 
-# Return the SHA-256 (lowercase hex) of the environment table $Environment as NAME=value lines sorted by name, so start can tell whether a service
-# it reuses was started with the variables it computes now. No table hashes the empty text. Pure.
+# Return the SHA-256 (lowercase hex) of the environment table $Environment as NAME=value lines sorted by name, then, when $InheritEnvironment is
+# given, one line of those names, so start can tell whether a service it reuses was started with the variables it computes now and with those it
+# lets the service inherit. No table and no list hash the empty text. Pure.
 function Get-LocalAIEnvironmentHash {
     [CmdletBinding()]
     [OutputType([string])]
     param(
-        [System.Collections.IDictionary]$Environment
+        [System.Collections.IDictionary]$Environment,
+        [AllowNull()][AllowEmptyCollection()][string[]]$InheritEnvironment
     )
-    $lines = if ($Environment) { @(foreach ($key in @($Environment.Keys | Sort-Object)) { "$key=$($Environment[$key])" }) } else { @() }
+    $lines = @(if ($Environment) { foreach ($key in @($Environment.Keys | Sort-Object)) { "$key=$($Environment[$key])" } })
+    # Upper case and sorted, as names compare without case and the order does not matter; the line has no '=', so no NAME=value line equals it.
+    if ($null -ne $InheritEnvironment) {
+        $lines = @($lines) + @('InheritEnvironment ' + (@($InheritEnvironment | ForEach-Object { ([string]$_).ToUpperInvariant() } | Sort-Object -Unique) -join ' '))
+    }
     $bytes = (New-Object Text.UTF8Encoding $false).GetBytes(($lines -join "`n"))
     $sha = [Security.Cryptography.SHA256]::Create()
     try {
@@ -3320,7 +3388,8 @@ function Get-LocalAIEnvironmentHash {
 
 # Launch $Service for the start verb without waiting: reuse it when the process $State.Services records holds its port and Identity answers for
 # $Service, else start it, recording it with Get-LocalAIEnvironmentHash in $State and $Started and saving $StatePath. Returns @{ Version; Stale } when
-# reused, Stale when it has an Environment whose hash it was not started with, else @{ Process }; throws when another program holds the port or a record is unreadable.
+# reused, Stale when it has an Environment or an InheritEnvironment whose hash it was not started with, else @{ Process }; throws when another program
+# holds the port or a record is unreadable.
 function Use-LocalAIService {
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -3360,8 +3429,8 @@ function Use-LocalAIService {
         Write-Host "$display $version is already running at $($Service.Url); reusing it."
         # A service reads its environment only when it starts; a record without a hash comes from a launcher that kept none.
         $stale = $false
-        if ($Service.Environment -and $Service.Environment.Count -gt 0) {
-            $stale = [string]$record['EnvironmentSha256'] -ne (Get-LocalAIEnvironmentHash -Environment $Service.Environment)
+        if (($Service.Environment -and $Service.Environment.Count -gt 0) -or $null -ne $Service.InheritEnvironment) {
+            $stale = [string]$record['EnvironmentSha256'] -ne (Get-LocalAIEnvironmentHash -Environment $Service.Environment -InheritEnvironment $Service.InheritEnvironment)
         }
         return @{ Version = [string]$version; Process = $null; Stale = $stale }
     }
@@ -3372,7 +3441,7 @@ function Use-LocalAIService {
     $launched = Start-LocalAIService -Service $Service -Keep $Keep
     $record = @{}
     foreach ($key in 'Pid', 'StartTicks', 'Path', 'Port', 'OutLog', 'ErrLog') { $record[$key] = $launched[$key] }
-    $record['EnvironmentSha256'] = Get-LocalAIEnvironmentHash -Environment $Service.Environment
+    $record['EnvironmentSha256'] = Get-LocalAIEnvironmentHash -Environment $Service.Environment -InheritEnvironment $Service.InheritEnvironment
     # Registered before the save, so the caller can still stop it when the save fails.
     $State.Services[$name] = $record
     if ($null -ne $Started) { $Started.Add($name) }
@@ -3715,7 +3784,8 @@ function Start-LocalAI {
                     "so calls to them fail. Run 'local-ai stop', then start again.") -WarningVariable +warned
             } elseif ($launched['OpenWebUI'].Stale) {
                 Write-Warning ("Open WebUI, which an earlier start left running, keeps the settings it started with, which differ from this start's, " +
-                    "such as where images go and which file tools it offers. Run 'local-ai stop', then start again.") -WarningVariable +warned
+                    "such as where images go, which file tools it offers and which variables of this window it inherits. Run 'local-ai stop', " +
+                    "then start again.") -WarningVariable +warned
             }
             # The browser need not wait for the optional services, which only warn from here on.
             $requiredUp = $true
@@ -3738,6 +3808,11 @@ function Start-LocalAI {
                 if ($service.Name -eq 'ComfyUI') {
                     $null = Test-ComfyUICheckpoint -Url $service.Url -File $settings.Images.File -WarningVariable +warned
                     $null = Test-ComfyUIDevice -Url $service.Url -WarningVariable +warned
+                    # ComfyUI.InheritEnvironment changes what ComfyUI inherits; the gate's script reads none of its variables, so an older gate may stay.
+                    if ($launched[$service.Name].Stale) {
+                        Write-Warning ("ComfyUI, which an earlier start left running, keeps the variables of this window it started with, which differ " +
+                            "from those this start lets it inherit, such as the GPU it uses. Run 'local-ai stop', then start again.") -WarningVariable +warned
+                    }
                 }
             }
         }

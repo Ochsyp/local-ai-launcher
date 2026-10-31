@@ -189,8 +189,10 @@ Common keys:
 | `Images.UnloadChat` | `$true` | Send images through the image gate, which unloads `local-chat` first. |
 | `Files.Root` | `''` | The one folder the file tools may read. Empty turns them off. |
 | `OpenWebUI.Env` | a table | Open WebUI's environment for every start. Any key is accepted, and an empty value removes the variable. |
+| `OpenWebUI.InheritEnvironment` | `@()` | More variable names that Open WebUI inherits from the window that runs `start`, such as `HTTPS_PROXY`. |
 | `OpenWebUI.DataDir` | `'%LOCALAPPDATA%\open-webui'` | Open WebUI's database, uploads and secret key. |
 | `ComfyUI.Dir` | `'%USERPROFILE%\ComfyUI'` | The ComfyUI checkout, at most 133 characters. |
+| `ComfyUI.InheritEnvironment` | `@()` | More variable names that ComfyUI, not the image gate, inherits from the window that runs `start`. |
 | `Update.KeepBackups` | 3 | How many of its own Open WebUI backups `update` keeps. |
 
 Open WebUI runs with `ENABLE_PERSISTENT_CONFIG` set to `False`. So `OpenWebUI.Env` wins over
@@ -202,6 +204,20 @@ in `OpenWebUI.Env` with a warning.
 Open WebUI reads its environment only when it starts, so run `stop` and then `start` after a
 change. After you change a pin, `status` shows under **Pins** whether `install` or `update`
 applies it.
+
+Open WebUI, ComfyUI, the image gate and mcpo do not inherit your whole environment. Open WebUI,
+ComfyUI and the image gate get only the variables that Windows and Python need, those the
+launcher sets for them, and a few more: for Open WebUI the Hugging Face cache names, such as
+`HF_HOME`, and `HF_HUB_OFFLINE`; for ComfyUI `CUDA_VISIBLE_DEVICES`, `CUDA_DEVICE_ORDER`,
+`PYTORCH_CUDA_ALLOC_CONF`, `PYTORCH_ALLOC_CONF` and `CUDA_PATH`. [SECURITY.md](SECURITY.md)
+lists them all. So a setting in your Windows user variables reaches Open WebUI only through
+`OpenWebUI.Env`, or through `OpenWebUI.InheritEnvironment`, which passes the window's value on.
+For a proxy, `OpenWebUI.InheritEnvironment = @('HTTPS_PROXY')` keeps a password in the proxy
+address out of `settings.psd1`, but Open WebUI and the tools and functions inside it can still
+read it. The settings check refuses a name that ends in `_TOKEN` or `_API_KEY`, and
+`PYTHONHOME`, `PYTHONPATH`, `PYTHONSTARTUP`, `PYTHONUSERBASE`, `NODE_OPTIONS` and `NODE_PATH`:
+none of these services inherits those. The Ollama app is the exception: when the launcher
+starts it through `ollama list`, it inherits the whole environment of that window.
 
 ## Signing in
 
@@ -305,7 +321,8 @@ Know these limits:
   open. mcpo 0.0.20 takes the key only on its command line, so other programs that run as the
   same user can read it there, as they can in Open WebUI's `TOOL_SERVER_CONNECTIONS`.
 - mcpo and the files server get only the environment variables Windows, Python and Node.js
-  need, so no secret from your console window reaches them.
+  need, so no secret from your console window reaches them. Their list is fixed and narrower
+  than Open WebUI's, and neither `InheritEnvironment` setting adds to it.
 
 ## The model list and tools in chats
 
@@ -426,6 +443,11 @@ Use the stack only on a single-user PC you trust.
   [File tools](#file-tools).
 - Open WebUI gets `NO_PROXY` with `127.0.0.1`, `localhost` and `::1` added, so no proxy sees
   the file tools' key or the files they read.
+- Open WebUI, ComfyUI, the image gate and mcpo inherit only the environment variables on their
+  allow-lists, so a secret in any other variable, such as `AWS_SECRET_ACCESS_KEY`, is not in
+  their environment. Code inside them runs as your Windows user, so it can still read your user
+  variables in the registry. The Ollama app inherits the whole environment of the window that
+  starts it. See [Settings](#settings).
 
 [SECURITY.md](SECURITY.md) has the security policy, where secrets live and the known limits.
 

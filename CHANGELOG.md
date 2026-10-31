@@ -59,6 +59,11 @@ The launcher was redesigned. These entries compare it with the earlier set of sc
 - The logs moved out of the Open WebUI and ComfyUI folders.
 - `start` no longer points Qwen Code at the model. Run
   `ollama launch qwen --model local-chat --config --yes` once instead.
+- Open WebUI, ComfyUI and the image gate no longer inherit the whole environment of the window
+  that runs `start`, only an allow-list. `OpenWebUI.InheritEnvironment` and
+  `ComfyUI.InheritEnvironment` name more variables, such as `HTTPS_PROXY`, for Open WebUI and
+  for ComfyUI. `start` warns when an Open WebUI or a ComfyUI that it reuses inherited other
+  variables.
 
 ### Removed
 
@@ -78,6 +83,17 @@ Agent function in Open WebUI under *Admin Panel > Functions*; the launcher does 
 the old alias, set it in `settings.psd1` to
 the name that the earlier scripts gave it, such as `@('old-chat')`.
 
+Open WebUI variables set in your Windows user environment, such as `WEBUI_NAME` or
+`RAG_EMBEDDING_MODEL`, no longer reach Open WebUI. Put them in `OpenWebUI.Env` in
+`settings.psd1`. The same goes for the variables that hold Open WebUI's own keys, such as
+`WEBUI_SECRET_KEY`. Without it, Open WebUI makes a new key, which signs everyone out, and it
+can no longer read what it encrypted with the old one, such as MFA secrets. If you set
+`WEBUI_SECRET_KEY` in Windows, add its name to `OpenWebUI.InheritEnvironment` instead, which
+keeps the key out of `settings.psd1`. Names that a proxy needs, such as `HTTPS_PROXY` or
+`SSL_CERT_FILE`, go in `OpenWebUI.InheritEnvironment` or `ComfyUI.InheritEnvironment`. A
+service that an earlier start left running keeps the environment it started with, so run
+`local-ai stop`, then `local-ai start`.
+
 ### Security
 
 - Open WebUI asks for a sign-in, and sign-up closes after the first account.
@@ -85,8 +101,19 @@ the name that the earlier scripts gave it, such as `@('old-chat')`.
   answers runs no scripts by default. Web search, code execution and the update check are off.
 - `local-ai.cmd` runs PowerShell with the execution policy `RemoteSigned` instead of `Bypass`.
 - mcpo and the files server get only the environment variables that Windows, Python and
-  Node.js need. Variables whose names end in `_TOKEN` or `_API_KEY` reach no service, unless
-  `OpenWebUI.Env` sets them for Open WebUI.
+  Node.js need. Open WebUI, ComfyUI and the image gate get those that Windows and Python need.
+  Open WebUI also gets the Hugging Face cache names and `HF_HUB_OFFLINE`, and ComfyUI the GPU
+  and allocator names and `CUDA_PATH`. So a secret in another variable, such as
+  `AWS_SECRET_ACCESS_KEY`, is in the environment of none of them. Code inside them still runs
+  as your Windows user and can read your user variables in the registry. The Ollama app, which
+  the launcher starts through `ollama list` when Ollama does not answer, inherits the whole
+  environment of that window.
+- Variables whose names end in `_TOKEN` or `_API_KEY`, and `PYTHONHOME`, `PYTHONPATH`,
+  `PYTHONSTARTUP`, `PYTHONUSERBASE`, `NODE_OPTIONS` and `NODE_PATH`, reach no service, unless
+  `OpenWebUI.Env` sets them for Open WebUI. The settings check refuses them in the
+  `InheritEnvironment` lists.
+- `.gitignore` also blocks mcpo's `files.key` and the `-wal`, `-shm` and `-journal` files of
+  `webui.db`.
 - The file tools are read-only and need an API key. `start` refuses a folder with names that
   look secret, such as `.env` or `*.key`, or with hard links to files outside it.
 - The image gate refuses a request with a foreign `Host` or `Origin` header, and a browser's

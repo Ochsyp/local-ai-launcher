@@ -1,9 +1,13 @@
 # Secrets. HF_TOKEN lives in the environment; Open WebUI's signing key and
-# database belong to %LOCALAPPDATA%\open-webui, never to this repo.
+# database, with its -wal, -shm and -journal files, belong to
+# %LOCALAPPDATA%\open-webui and mcpo's API key to %LOCALAPPDATA%\local-ai,
+# never to this repo.
 .env*
 !.env.example
 .webui_secret_key
 webui.db
+webui.db-*
+files.key
 
 # Model weights and partial downloads.
 *.gguf

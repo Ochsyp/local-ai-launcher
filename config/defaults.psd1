@@ -69,6 +69,17 @@
         # How long start waits for /health and /api/version. Open WebUI opens its port only after
         # startup, which on a fresh machine includes downloading its embedding model (about 1 GB).
         HealthTimeoutSeconds = 600
+        # More variable names that Open WebUI inherits from the window that runs start, such as
+        # HTTPS_PROXY. Open WebUI, and the tools and functions inside it, get only what Windows and
+        # Python need, where huggingface_hub and sentence-transformers keep the embedding model
+        # (HF_HOME, HF_HUB_CACHE, HUGGINGFACE_HUB_CACHE, XDG_CACHE_HOME, SENTENCE_TRANSFORMERS_HOME),
+        # HF_HUB_OFFLINE, Env with the keys the launcher computes, and the names listed here. A name
+        # ending in _TOKEN or _API_KEY, and PYTHONHOME, PYTHONPATH, PYTHONSTARTUP, PYTHONUSERBASE,
+        # NODE_OPTIONS and NODE_PATH, never reach a service from the window, so the settings check
+        # refuses them here. Env sets a value in settings.psd1; a name listed here passes the
+        # window's value on instead. Either way the tools and functions inside Open WebUI can read
+        # the value, such as a password in a proxy address.
+        InheritEnvironment   = @()
         # Environment for every start. With ENABLE_PERSISTENT_CONFIG False these values win over
         # the database and Admin Settings edits revert on restart, so add any further Open WebUI
         # setting here; any key is accepted, and an empty value removes the variable. The launcher
@@ -87,7 +98,8 @@
         # unloads; an empty value here lists every Ollama model. NO_PROXY gets 127.0.0.1, localhost
         # and ::1 added to any inherited or given value, so no proxy sees the file tools' key; with
         # NO_PROXY set Python ignores the Windows proxy setting, so a PC that reaches the internet
-        # only through one needs HTTPS_PROXY here for the Hugging Face check. DEFAULT_MODEL_METADATA,
+        # only through one needs HTTPS_PROXY here, or in InheritEnvironment, for the Hugging Face
+        # check. DEFAULT_MODEL_METADATA,
         # merged into a model's metadata where it has none, turns the file tools on in every new chat
         # (checked in the browser with 0.12.3) and is '{}' without them, which leaves Open WebUI's
         # built-in tools as it ships them; a JSON object given here is merged in, for example
@@ -212,6 +224,12 @@
         # --enable-cors-header, their abbreviations and '--' from this list, then passes
         # --listen 127.0.0.1 and --port after it, since ComfyUI takes the last value given.
         Args                 = @('--disable-all-custom-nodes', '--offline', '--disable-smart-memory', '--fp8_e4m3fn-unet', '--fp8_e4m3fn-text-enc')
+        # More variable names that ComfyUI, not the image gate, inherits from the window that runs
+        # start. ComfyUI gets only what Windows and Python need, the GPU choice and allocator
+        # settings (CUDA_VISIBLE_DEVICES, CUDA_DEVICE_ORDER, PYTORCH_CUDA_ALLOC_CONF,
+        # PYTORCH_ALLOC_CONF), CUDA_PATH and the names listed here; the names OpenWebUI.InheritEnvironment refuses are refused
+        # here too. The image gate gets only what Windows and Python need.
+        InheritEnvironment   = @()
     }
 
     # Read-only file tools: mcpo serving @modelcontextprotocol/server-filesystem to Open WebUI, which
