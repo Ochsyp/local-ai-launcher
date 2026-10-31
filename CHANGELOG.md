@@ -64,6 +64,11 @@ The launcher was redesigned. These entries compare it with the earlier set of sc
   `ComfyUI.InheritEnvironment` name more variables, such as `HTTPS_PROXY`, for Open WebUI and
   for ComfyUI. `start` warns when an Open WebUI or a ComfyUI that it reuses inherited other
   variables.
+- The git history was rewritten on 2026-10-31 and the GitHub repository was recreated. Example
+  paths, addresses, host names and hardware details in the tests, comments and README were
+  replaced with neutral values, and commit dates are recorded in UTC. Every commit ID changed:
+  re-clone, or reset an existing clone with `git fetch` and `git reset --hard origin/main`. Do not
+  pull or merge the old history.
 
 ### Removed
 
