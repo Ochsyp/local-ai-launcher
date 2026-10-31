@@ -1,12 +1,13 @@
 # Security policy
 
-This is a private, single-maintainer repository. The launcher is meant for a single-user
-Windows PC that you trust.
+This is a single-maintainer project. The launcher is meant for a single-user Windows PC that
+you trust.
 
 ## Reporting a problem
 
-Contact [@Ochsyp](https://github.com/Ochsyp) directly. Never paste tokens, keys or logs
-that contain them into issues, pull requests or commits.
+Report a vulnerability privately through GitHub: on the repository's **Security** tab, choose
+*Report a vulnerability*. Do not open a public issue for it. Never paste tokens, keys or logs
+that contain them into issues, pull requests, reports or commits.
 
 ## Network
 
@@ -122,8 +123,8 @@ control.
 
 ## Automated checks
 
-- gitleaks scans the full history on every push and pull request
-  (`.github/workflows/secret-scan.yml`).
+- gitleaks scans the commits of every push and pull request, and the full history once a week
+  and on demand (`.github/workflows/secret-scan.yml`).
 - `.github/workflows/ci.yml` runs PSScriptAnalyzer, the Pester tests and the image gate's
   unittest tests on `windows-latest`.
 - Dependabot proposes weekly updates for the pinned GitHub Actions, the files server's npm

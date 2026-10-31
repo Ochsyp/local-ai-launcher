@@ -2373,12 +2373,12 @@ Describe 'Install-LocalAI' {
 
     It 'records no ComfyUI.Ref for a checkout at another commit' {
         Mock Install-ComfyUI -ModuleName LocalAI -MockWith {
-            Write-Warning 'ComfyUI in C:\Users\User\ComfyUI is at commit e087d8f6cb7c6cdb11b59dc7c9bf17c79f8d877d.'
-            @{ Commit = 'e087d8f6cb7c6cdb11b59dc7c9bf17c79f8d877d'; Pinned = $false; Python = $comfyPython; PythonVersion = '3.13.14'; Torch = '2.14.1+cu130' }
+            Write-Warning 'ComfyUI in C:\Users\User\ComfyUI is at commit abcdef0123456789abcdef0123456789abcdef01.'
+            @{ Commit = 'abcdef0123456789abcdef0123456789abcdef01'; Pinned = $false; Python = $comfyPython; PythonVersion = '3.13.14'; Torch = '2.14.1+cu130' }
         }
         Install-LocalAI -Context $context 3>$null 6>$null | Should -Be 2
         $stamp = Read-LocalAIState -Path (Join-Path $root 'install-stamp.json')
-        $stamp.ComfyUI.Commit | Should -Be 'e087d8f6cb7c6cdb11b59dc7c9bf17c79f8d877d'
+        $stamp.ComfyUI.Commit | Should -Be 'abcdef0123456789abcdef0123456789abcdef01'
         $stamp.ComfyUI.Pinned | Should -BeFalse
         $stamp.ComfyUI.ContainsKey('Ref') | Should -BeTrue
         $stamp.ComfyUI.Ref | Should -BeNullOrEmpty
@@ -2432,7 +2432,7 @@ Describe 'Install-LocalAI' {
         @{ Step = 'ComfyUI'; Command = 'Install-ComfyUI'; KeepsComfyUI = $false }
         @{ Step = 'the checkpoint'; Command = 'Install-ImageModel'; KeepsComfyUI = $true }
     ) {
-        $old = @{ Commit = 'e087d8f6cb7c6cdb11b59dc7c9bf17c79f8d877d'; Python = 'C:\old\python.exe'; Dir = 'C:\old' }
+        $old = @{ Commit = 'abcdef0123456789abcdef0123456789abcdef01'; Python = 'C:\old\python.exe'; Dir = 'C:\old' }
         Write-LocalAIState -Path (Join-Path $root 'install-stamp.json') -State @{ ComfyUI = $old; Images = @{ File = 'DreamShaperXL_Lightning.safetensors'; Sha256 = $checkpointSha } }
         Mock $Command -ModuleName LocalAI -MockWith { throw 'it failed' }
         Install-LocalAI -Context $context 3>$null 6>$null | Should -Be 2
@@ -2611,7 +2611,7 @@ Describe 'Install-LocalAI' {
         @{ Step = 'winget'; Command = 'Install-WingetPackage'; Result = 'restart' }
         @{ Step = 'the chat model'; Command = 'Install-ChatModel'; Result = $null }
         @{ Step = 'Open WebUI'; Command = 'Install-OpenWebUI'; Result = @{ Version = '0.12.3'; Path = 'C:\Users\User\.local\bin\open-webui.exe'; Python = '3.11.17' } }
-        @{ Step = 'ComfyUI'; Command = 'Install-ComfyUI'; Result = @{ Commit = 'e087d8f6cb7c6cdb11b59dc7c9bf17c79f8d877d'; Pinned = $false; Python = 'C:\x\python.exe' } }
+        @{ Step = 'ComfyUI'; Command = 'Install-ComfyUI'; Result = @{ Commit = 'abcdef0123456789abcdef0123456789abcdef01'; Pinned = $false; Python = 'C:\x\python.exe' } }
     ) {
         if ($Command -eq 'Install-ChatModel') {
             Mock Install-ChatModel -ModuleName LocalAI -MockWith {
@@ -3370,7 +3370,7 @@ Describe 'Get-ComfyUIVersion and Test-ComfyUICheckpoint' {
 Describe 'Install-ComfyUI' {
     BeforeAll {
         $pin = '483dae4326356b81de05d27aca3f433dd323cc25'
-        $old = 'e087d8f6cb7c6cdb11b59dc7c9bf17c79f8d877d'
+        $old = 'abcdef0123456789abcdef0123456789abcdef01'
         # What the torch check prints for a CUDA build on an NVIDIA GPU.
         $cuda = @{ python = '3.13.18'; torch = '2.14.1+cu130'; torchvision = '0.29.1+cu130'; cuda = '13.0'; available = $true; device = 'NVIDIA Test GPU' }
 
@@ -4786,7 +4786,7 @@ Describe 'Get-LocalAIService' {
             $settings.Images.UnloadChat = $false
             $comfyDir = Join-Path $TestDrive 'service-comfy'
             $settings.ComfyUI.Dir = $comfyDir
-            $stamped = @{ Commit = 'e087d8f6cb7c6cdb11b59dc7c9bf17c79f8d877d'; Python = 'C:\Users\User\ComfyUI\.venv\Scripts\python.exe' }
+            $stamped = @{ Commit = 'abcdef0123456789abcdef0123456789abcdef01'; Python = 'C:\Users\User\ComfyUI\.venv\Scripts\python.exe' }
             $workflow = @{ Workflow = '{"9": {"class_type": "PreviewImage", "inputs": {}}}'; Nodes = '[]' }
             $all = @(Get-LocalAIService -Settings $settings -Paths $paths -OllamaUrl $url -OpenWebUI $installed -ComfyUI $stamped -ImageWorkflow $workflow)
             $comfy = $all[0]
@@ -4833,7 +4833,7 @@ Describe 'Get-LocalAIService' {
         It 'judges drift by the stamped commit against ComfyUI.Commit' {
             $comfy.Pin.Setting | Should -Be 'ComfyUI.Commit'
             $comfy.Pin.Version | Should -Be '483dae4326356b81de05d27aca3f433dd323cc25'
-            $comfy.Pin.Stamped | Should -Be 'e087d8f6cb7c6cdb11b59dc7c9bf17c79f8d877d'
+            $comfy.Pin.Stamped | Should -Be 'abcdef0123456789abcdef0123456789abcdef01'
             $comfy.Pin.Running | Should -BeFalse
             $all[1].Pin.Running | Should -BeTrue
         }
@@ -6469,14 +6469,14 @@ Describe 'Start-LocalAI' {
         }
 
         It 'warns once and returns 2 when the stamped ComfyUI commit differs from ComfyUI.Commit' {
-            $complete.ComfyUI.Commit = 'e087d8f6cb7c6cdb11b59dc7c9bf17c79f8d877d'
+            $complete.ComfyUI.Commit = 'abcdef0123456789abcdef0123456789abcdef01'
             $complete.ComfyUI.Pinned = $false
             Write-LocalAIState -Path $paths.InstallStamp -State $complete
             $run = Invoke-StartVerb -Context $context
             $run.Code | Should -Be @(2)
             $drift = @($run.Warnings -split "`n" | Where-Object { $_ -like '*pins 483dae4326356b81de05d27aca3f433dd323cc25*' })
             $drift.Count | Should -Be 1
-            $drift[0] | Should -BeLike "ComfyUI e087d8f6cb7c6cdb11b59dc7c9bf17c79f8d877d runs, but ComfyUI.Commit pins 483dae4326356b81de05d27aca3f433dd323cc25. Run 'local-ai update' to move to the pin.*"
+            $drift[0] | Should -BeLike "ComfyUI abcdef0123456789abcdef0123456789abcdef01 runs, but ComfyUI.Commit pins 483dae4326356b81de05d27aca3f433dd323cc25. Run 'local-ai update' to move to the pin.*"
         }
 
         It 'returns 2 when ComfyUI does not list the checkpoint' {
@@ -7391,7 +7391,7 @@ Describe 'Get-LocalAIStatus' {
             Tags      = @('local-chat:latest', 'hf.co/HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive:Q6_K')
             Gpu       = '555.85, 512, 8192'
             Page      = @{ Automatic = $false; Settings = @(@{ Name = 'C:\pagefile.sys'; InitialMB = 20480; MaximumMB = 20480 })
-                Files = @(@{ Name = 'C:\pagefile.sys'; CurrentMB = 20480 }); CommitLimitBytes = 38654705664 }
+                Files = @(@{ Name = 'C:\pagefile.sys'; CurrentMB = 20480 }); CommitLimitBytes = 34359738368 }
             Policies  = @(foreach ($scope in 'MachinePolicy', 'UserPolicy', 'Process', 'CurrentUser') { [pscustomobject]@{ Scope = $scope; ExecutionPolicy = 'Undefined' } }) +
                 @([pscustomobject]@{ Scope = 'LocalMachine'; ExecutionPolicy = 'RemoteSigned' })
             Marked    = @()
@@ -7468,7 +7468,7 @@ Describe 'Get-LocalAIStatus' {
         $run.Printed | Should -BeLike '*NVIDIA driver 555.85; 512 of 8192 MiB of VRAM in use.*'
         $run.Printed | Should -BeLike "*Files.Root $($settings.Files.Root) passes the checks start runs*"
         $run.Printed | Should -BeLike '*Everything install-stamp.json records matches its pin.*'
-        $run.Printed | Should -BeLike '*Page file: C:\pagefile.sys 20480 to 20480 MB; now C:\pagefile.sys 20480 MB. Commit limit 36.0 GB.*'
+        $run.Printed | Should -BeLike '*Page file: C:\pagefile.sys 20480 to 20480 MB; now C:\pagefile.sys 20480 MB. Commit limit 32.0 GB.*'
         $run.Printed | Should -Not -BeLike '*Advice:*'
         $run.Printed | Should -BeLike '*Status: everything the settings turn on runs and is healthy.'
         Should -Invoke Get-FilesServerVersion -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Key -eq $key -and $Url -eq 'http://127.0.0.1:18433' }
@@ -7685,7 +7685,7 @@ Describe 'Get-LocalAIStatus' {
     It 'returns 2 and names local-ai update when install recorded another <Case>' -ForEach @(
         @{ Case = 'Open WebUI version'; Part = 'OpenWebUI'; Field = 'Version'; Value = '0.12.3'; Message = '*Open WebUI 0.12.3 is installed, but OpenWebUI.Version pins 0.12.4. Run ''local-ai update''.*' }
         @{ Case = 'Open WebUI Python'; Part = 'OpenWebUI'; Field = 'Python'; Value = '3.11.17'; Message = '*Open WebUI runs on Python 3.11.17, but OpenWebUI.Python pins 3.12. Run ''local-ai update''.*' }
-        @{ Case = 'ComfyUI commit'; Part = 'ComfyUI'; Field = 'Commit'; Value = 'e087d8f6cb7c6cdb11b59dc7c9bf17c79f8d877d'; Message = '*ComfyUI in * is at commit e087d8f6cb7c6cdb11b59dc7c9bf17c79f8d877d, but ComfyUI.Commit pins 483dae4326356b81de05d27aca3f433dd323cc25 (v0.42.5). Run ''local-ai update''.*' }
+        @{ Case = 'ComfyUI commit'; Part = 'ComfyUI'; Field = 'Commit'; Value = 'abcdef0123456789abcdef0123456789abcdef01'; Message = '*ComfyUI in * is at commit abcdef0123456789abcdef0123456789abcdef01, but ComfyUI.Commit pins 483dae4326356b81de05d27aca3f433dd323cc25 (v0.42.5). Run ''local-ai update''.*' }
         @{ Case = 'mcpo version'; Part = 'Files'; Field = 'McpoVersion'; Value = '0.0.19'; Message = "*mcpo was installed with Files.McpoVersion '0.0.19', but settings.psd1 pins '0.0.20'. Run 'local-ai update'.*" }
         @{ Case = 'mcpo requirement list'; Part = 'Files'; Field = 'With'; Value = @('mcp==1.29.0'); Message = "*mcpo was installed with Files.McpoWith 'mcp==1.29.0', but settings.psd1 pins 'mcp==1.30.0 fastapi<0.145'.*" }
         @{ Case = 'files server version'; Part = 'Files'; Field = 'ServerVersion'; Value = '2.0.0'; Message = '*The files server 2.0.0 is installed, but Files.ServerVersion pins 2.0.1. Run ''local-ai update''.*' }
@@ -8442,7 +8442,7 @@ Describe 'Update helpers' {
 Describe 'Git helpers for update' {
     BeforeAll {
         $pin = '483dae4326356b81de05d27aca3f433dd323cc25'
-        $old = 'e087d8f6cb7c6cdb11b59dc7c9bf17c79f8d877d'
+        $old = 'abcdef0123456789abcdef0123456789abcdef01'
         $repo = 'https://github.com/Comfy-Org/ComfyUI.git'
         $oldOrigin = 'https://github.com/comfyanonymous/ComfyUI.git'
     }
@@ -9009,7 +9009,7 @@ Describe 'Get-OpenWebUIUpdatePlan' {
 Describe 'Get-ComfyUIUpdatePlan' {
     BeforeAll {
         $pin = '483dae4326356b81de05d27aca3f433dd323cc25'
-        $old = 'e087d8f6cb7c6cdb11b59dc7c9bf17c79f8d877d'
+        $old = 'abcdef0123456789abcdef0123456789abcdef01'
         $repo = 'https://github.com/Comfy-Org/ComfyUI.git'
     }
 
@@ -9756,7 +9756,7 @@ Describe 'Undo-OpenWebUIUpdate' {
 Describe 'Update-ComfyUICheckout' {
     BeforeAll {
         $pin = '483dae4326356b81de05d27aca3f433dd323cc25'
-        $old = 'e087d8f6cb7c6cdb11b59dc7c9bf17c79f8d877d'
+        $old = 'abcdef0123456789abcdef0123456789abcdef01'
         $repo = 'https://github.com/Comfy-Org/ComfyUI.git'
         $oldOrigin = 'https://github.com/comfyanonymous/ComfyUI.git'
     }

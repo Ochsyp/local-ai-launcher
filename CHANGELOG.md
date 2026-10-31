@@ -130,5 +130,9 @@ service that an earlier start left running keeps the environment it started with
   cross-site fetch.
 - Dependabot also proposes updates for the files server's npm lockfile and the Python test
   requirements.
+- Vulnerabilities are reported privately through GitHub's *Report a vulnerability* on the
+  repository's Security tab, as SECURITY.md now says.
+- gitleaks also scans the full history once a week. A push or pull request scans only its own
+  commits, which the workflow comment and SECURITY.md now say instead of claiming a full scan.
 
 [Unreleased]: https://github.com/Ochsyp/local-ai-launcher/commits/main
