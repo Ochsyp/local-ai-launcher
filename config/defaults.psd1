@@ -199,8 +199,11 @@
         # requirements are kept, also when they are newer.
         ExcludeNewer         = '2026-10-23T00:07:14Z'
         # Minor version of the .venv. install creates a missing one on a uv-managed CPython
-        # (--managed-python); without that flag uv takes the Microsoft Store Python 3.13, whose patch
-        # version follows Store updates. An existing .venv keeps its interpreter if the minor matches.
+        # (--managed-python), through uv's link for this minor, so 'uv python upgrade' moves it to a new
+        # patch version; without that flag uv may take the Microsoft Store Python, whose launches can
+        # fail or hang until Windows restarts. An existing .venv keeps its interpreter if the minor
+        # matches, except one on the Store Python: status and start flag it, and update makes it anew on
+        # a uv-managed CPython with the same pins.
         Python               = '3.13'
         # uv --torch-backend: CUDA 13.0 wheels, because PyPI's Windows torch is CPU-only.
         TorchBackend         = 'cu130'

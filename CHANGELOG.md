@@ -106,6 +106,9 @@ Agent function in Open WebUI under *Admin Panel > Functions*; the launcher does 
 the old alias, set it in `settings.psd1` to
 the name that the earlier scripts gave it, such as `@('old-chat')`.
 
+When the earlier scripts made ComfyUI's `.venv` on the Microsoft Store Python, `update` also
+makes it anew on a uv-managed Python; the Fixed entry below says how.
+
 Open WebUI variables set in your Windows user environment, such as `WEBUI_NAME` or
 `RAG_EMBEDDING_MODEL`, no longer reach Open WebUI. Put them in `OpenWebUI.Env` in
 `settings.psd1`. The same goes for the variables that hold Open WebUI's own keys, such as
@@ -121,6 +124,18 @@ service that an earlier start left running keeps the environment it started with
 
 - Each verb keeps its newest 20 transcripts also where Windows creates the new transcript file
   late, as on GitHub's hosted runners, where one more was kept.
+- ComfyUI's `.venv` no longer stays on the Microsoft Store Python when `install` found it there,
+  as in a venv that the earlier scripts made. Launches of the Store Python can fail or hang
+  until Windows restarts, and ComfyUI and the image gate, which runs on the same venv, fail with
+  them. `status` counts such a venv as a difference from the pins, and `start` and `install`
+  warn about it. After a failed ComfyUI or image gate start, the repair hint names `update`
+  instead of a reinstall that would launch the same Python. `update` makes the venv anew on a
+  uv-managed Python 3.13: it moves the old venv aside to `<ComfyUI.Dir>.local-ai-old-venv`,
+  installs the same pinned packages into the new one, which uv takes from its cache where it
+  holds them, and deletes the old venv once the new one passes the torch check. When the new
+  venv fails, it deletes it and moves the old one back. Models, input, output, user and
+  custom_nodes stay; packages added to the venv by hand are not carried over. `uninstall`
+  removes the new venv, and an old one that `update` left aside.
 
 ### Security
 

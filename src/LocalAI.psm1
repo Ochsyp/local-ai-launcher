@@ -2109,9 +2109,37 @@ function Test-ComfyUIDevice {
     return $false
 }
 
+# Return the base Python that the venv $Venv names in its pyvenv.cfg as @{ Home (its folder, '' when none is named); Version (as written, such as '3.13.14',
+# or '3.13' for a uv-managed Python; $null when none is named); Minor ('3.13', or $null); Store ($true when Home lies in a WindowsApps folder, as the Microsoft
+# Store Python does) }, or $null when the venv has no pyvenv.cfg. uv writes version_info, Python's own venv module writes version. Reads only.
+function Get-VenvBasePython {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][string]$Venv
+    )
+    $config = [IO.Path]::Combine($Venv, 'pyvenv.cfg')
+    if (-not [IO.File]::Exists($config)) { return $null }
+    $folder = ''
+    $version = $null
+    $minor = $null
+    foreach ($line in [IO.File]::ReadAllLines($config)) {
+        if ($line -match '^\s*home\s*=\s*(.*?)\s*\z') {
+            $folder = $Matches[1]
+        } elseif ($line -match '^\s*version(?:_info)?\s*=\s*((\d+)\.(\d+)\S*)') {
+            $version = $Matches[1]
+            $minor = "$($Matches[2]).$($Matches[3])"
+        }
+    }
+    # The Store Python's app execution alias lies in %LOCALAPPDATA%\Microsoft\WindowsApps, its files in %ProgramFiles%\WindowsApps. The venv's python.exe
+    # launches the base Python through that alias, which can fail or hang until Windows restarts.
+    return @{ Home = $folder; Version = $version; Minor = $minor; Store = $folder -match '(?:^|\\)WindowsApps(?:\\|\z)' }
+}
+
 # Return why start cannot run ComfyUI, or $null when it can: install-stamp.json $Stamp names a venv python.exe that exists in the
 # current ComfyUI.Dir and the Images.File and Images.Sha256 install checked, and the file still has the length and write time
-# state.json $State recorded (no hashing). Warns, without stopping ComfyUI, when requirements.txt changed since the venv was set up.
+# state.json $State recorded (no hashing). Warns, without stopping ComfyUI, when requirements.txt changed since the venv was set up,
+# and when the venv runs on the Microsoft Store Python.
 function Get-ComfyUIStartProblem {
     [CmdletBinding()]
     [OutputType([string])]
@@ -2157,6 +2185,11 @@ function Get-ComfyUIStartProblem {
         Write-Warning ("$requirements is not the one ComfyUI's venv was set up for, so ComfyUI may lack packages it needs. Run " +
             "'local-ai install', which updates the venv.")
     }
+    $base = Get-VenvBasePython -Venv (Join-Path $dir '.venv')
+    if ($base -and $base.Store) {
+        Write-Warning ("ComfyUI's venv runs on the Microsoft Store Python $($base.Version), whose launches can fail or hang until Windows restarts, and " +
+            "ComfyUI and the image gate with them. Run 'local-ai update', which makes the venv anew on a uv-managed Python.")
+    }
     return $null
 }
 
@@ -2199,7 +2232,8 @@ function Get-BusyProcess {
 }
 
 # Make ComfyUI.Dir a ComfyUI checkout with a .venv: clone ComfyUI.Ref beside a missing or empty Dir and move it in only when HEAD is
-# ComfyUI.Commit, keep another checkout as it is with a warning, then unless .venv\local-ai-install.json matches, pip-install requirements.txt
+# ComfyUI.Commit, keep another checkout as it is with a warning, create a missing .venv on a uv-managed Python and keep one found in place,
+# with a warning when it runs on the Microsoft Store Python, then unless .venv\local-ai-install.json matches, pip-install requirements.txt
 # and check for CUDA torch. Returns @{ Dir; Commit; Pinned; Cloned (.git\local-ai-clone.json marks a clone of its own); Python; PythonVersion; Torch; TorchVision; Cuda }.
 function Install-ComfyUI {
     [CmdletBinding()]
@@ -2282,16 +2316,16 @@ function Install-ComfyUI {
     }
     # uv writes version_info, Python's own venv module writes version.
     $config = Join-Path $venv 'pyvenv.cfg'
-    $minor = $null
-    if (Test-Path -LiteralPath $config -PathType Leaf) {
-        foreach ($line in [IO.File]::ReadAllLines($config)) {
-            if ($line -match '^\s*version(?:_info)?\s*=\s*(\d+)\.(\d+)') { $minor = "$($Matches[1]).$($Matches[2])" }
-        }
-    }
+    $base = Get-VenvBasePython -Venv $venv
+    $minor = if ($base) { $base.Minor } else { $null }
     if (-not $minor) { throw "$config names no Python version, so $venv is not a Python venv." }
     if ($minor -ne $wanted) {
         throw ("$venv runs Python $minor, but ComfyUI.Python is $($comfy.Python). install never deletes a venv: move $venv away, so " +
             "install creates a Python $wanted one, or set ComfyUI.Python to '$minor' in settings.psd1. Then run install again.")
+    }
+    if ($base.Store) {
+        Write-Warning ("$venv runs on the Microsoft Store Python $($base.Version), whose launches can fail or hang until Windows restarts, and ComfyUI " +
+            "and the image gate with them. install never deletes a venv; run 'local-ai update', which makes it anew on a uv-managed Python $wanted with the same pins.")
     }
 
     $constraints = Resolve-RepoPath -Path $comfy.Constraints -RepoRoot $RepoRoot
@@ -2383,6 +2417,73 @@ function Install-ComfyUI {
         Dir = $dir; Commit = $commit; Pinned = $pinned; Cloned = $cloned; Python = $python; PythonVersion = $version
         Torch = [string]$build.torch; TorchVision = [string]$build.torchvision; Cuda = [string]$build.cuda
     }
+}
+
+# Make ComfyUI's .venv anew for update when it runs on the Microsoft Store Python: move it aside to ComfyUI.Dir.local-ai-old-venv, have Install-ComfyUI create
+# a new one on a uv-managed Python and install the pinned requirements into it, then delete the old one, only warning when that fails. When the new venv fails,
+# delete it and move the old one back, then throw saying so. A venv on another Python goes to Install-ComfyUI as it is. Returns what Install-ComfyUI returns,
+# with Rebuilt $true when the venv was made anew.
+function Reset-ComfyUIVenv {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Called by the update verb, which asks before it changes anything.')]
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$Settings,
+        [Parameter(Mandatory)][string]$RepoRoot
+    )
+    $dir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Settings.ComfyUI.Dir)
+    if ($dir.Length -gt 3) { $dir = $dir.TrimEnd('\') }
+    $venv = Join-Path $dir '.venv'
+    # Read again, as the plan was made before the stack stopped.
+    $base = Get-VenvBasePython -Venv $venv
+    if (-not ($base -and $base.Store)) { return Install-ComfyUI -Settings $Settings -RepoRoot $RepoRoot }
+    $aside = $dir + '.local-ai-old-venv'
+    if (Test-Path -LiteralPath $aside) {
+        throw ("$aside holds the venv that an earlier update moved aside, so $venv was not replaced. Delete $aside, or move it back to $venv when that is " +
+            'missing, then run update again.')
+    }
+    # Windows refuses to rename a folder while a program has a file in it open, as a running Python has the files it loaded.
+    $busy = @(Get-BusyProcess -Folder $venv)
+    if ($busy.Count -gt 0) {
+        throw ("ComfyUI or the image gate runs from $venv (PID $(@($busy | ForEach-Object { $_.Id }) -join ', ')), so it cannot be moved aside. Run " +
+            "'local-ai stop', or close the ComfyUI another program started, then run update again.")
+    }
+    Write-Host "Moving ComfyUI's venv on the Microsoft Store Python $($base.Version) aside to $aside..."
+    try {
+        [IO.Directory]::Move($venv, $aside)
+    } catch {
+        $reason = $_.Exception
+        while ($reason.InnerException) { $reason = $reason.InnerException }
+        throw ("Cannot move $venv aside: Windows refuses to rename it, as when a program still has a file in it open ($($reason.Message)). Close that " +
+            'program, such as a Python that still runs from it, then run update again.')
+    }
+    try {
+        $result = Install-ComfyUI -Settings $Settings -RepoRoot $RepoRoot
+    } catch {
+        $reason = $_.Exception.Message
+        # Remove-LocalAIFolder renames the new venv before it deletes it, so the old one can move back also when that delete stops part-way.
+        $removal = ''
+        try { Remove-LocalAIFolder -Path $venv } catch { $removal = " $($_.Exception.Message)" }
+        try {
+            [IO.Directory]::Move($aside, $venv)
+            $back = "ComfyUI's venv is back on the Microsoft Store Python, as it was.$removal"
+        } catch {
+            $inner = $_.Exception
+            while ($inner.InnerException) { $inner = $inner.InnerException }
+            $back = ("The old venv could not be moved back ($($inner.Message)), so it stays in $aside.$removal Delete $venv if it is still there, move " +
+                "$aside to $venv, then run update again.")
+        }
+        throw "The new venv on a uv-managed Python failed: $reason $back"
+    }
+    try {
+        Remove-LocalAITree -Path $aside
+        Write-Host "Deleted the old venv $aside."
+    } catch {
+        Write-Warning "Could not delete the old venv ${aside}: $($_.Exception.Message) Delete it to free its space."
+    }
+    $result['Rebuilt'] = $true
+    return $result
 }
 
 # Put Images.File into ComfyUI.Dir\models\checkpoints and return @{ Path; Sha256 }. A present file must have Images.Size bytes and
@@ -3457,7 +3558,16 @@ function Get-LocalAIService {
         }
         # Last, because argparse keeps the last value given for a flag.
         foreach ($argument in '--listen', '127.0.0.1', '--port', [string]$comfyPort) { $arguments.Add($argument) }
-        $marker = Join-Path (Split-Path (Split-Path $ComfyUI.Python -Parent) -Parent) 'local-ai-install.json'
+        $venv = Split-Path (Split-Path $ComfyUI.Python -Parent) -Parent
+        $marker = Join-Path $venv 'local-ai-install.json'
+        # A reinstall in place would have uv launch the venv's base Python too, so a venv on the Microsoft Store Python is made anew instead.
+        $basePython = $null
+        try { $basePython = Get-VenvBasePython -Venv $venv } catch { Write-Verbose "The pyvenv.cfg of $venv cannot be read: $($_.Exception.Message)" }
+        $rebuild = $null
+        if ($basePython -and $basePython.Store) {
+            $rebuild = ("'local-ai update', which makes ComfyUI's venv anew on a uv-managed Python. The venv runs on the Microsoft Store Python, whose " +
+                'launches can fail or hang until Windows restarts')
+        }
         @{
             Name             = 'ComfyUI'
             DisplayName      = 'ComfyUI'
@@ -3480,8 +3590,10 @@ function Get-LocalAIService {
             Pin              = @{ Setting = 'ComfyUI.Commit'; Version = $comfy.Commit; Stamped = $ComfyUI.Commit; Running = $false; Hint = '' }
             # Reinstalls every package at the version the venv holds, with a pipe that cmd.exe and PowerShell both run; the
             # deleted marker makes the next install check torch again.
-            Repair           = ("uv pip freeze --python `"$($ComfyUI.Python)`" | uv pip install --python `"$($ComfyUI.Python)`" " +
-                "--torch-backend $($comfy.TorchBackend) --reinstall -r -, then delete `"$marker`" and run 'local-ai install'")
+            Repair           = $(if ($rebuild) { $rebuild } else {
+                    ("uv pip freeze --python `"$($ComfyUI.Python)`" | uv pip install --python `"$($ComfyUI.Python)`" " +
+                    "--torch-backend $($comfy.TorchBackend) --reinstall -r -, then delete `"$marker`" and run 'local-ai install'")
+                })
             Required         = $false
         }
 
@@ -3529,7 +3641,9 @@ function Get-LocalAIService {
                 Fallback         = $fallback
                 # It ships with the launcher, so there is no pin to drift from.
                 Pin              = $null
-                Repair           = "'local-ai install', which sets up the ComfyUI venv whose aiohttp the gate uses; the gate logs its errors to $gateErr"
+                Repair           = $(if ($rebuild) { "$rebuild; the gate runs on that venv and logs its errors to $gateErr" } else {
+                        "'local-ai install', which sets up the ComfyUI venv whose aiohttp the gate uses; the gate logs its errors to $gateErr"
+                    })
                 Required         = $false
             }
         }
@@ -6189,8 +6303,9 @@ function Get-OpenWebUIUpdatePlan {
 }
 
 # Return @{ Setting; Pinned; Installed; Text ('old -> new') } for each change update makes to the ComfyUI checkout $Dir besides its commit: origin $Origin
-# other than ComfyUI.Repo, then a venv whose marker differs from what Install-ComfyUI would set up, or whose torch is not the constraints' pin. With
-# -Moving, the venv gets the moved checkout's requirements instead. Reads files only; status and update share it.
+# other than ComfyUI.Repo, a venv on the Microsoft Store Python, which update makes anew (that change has Rebuild $true), then a venv whose marker differs
+# from what Install-ComfyUI would set up, or whose torch is not the constraints' pin. With -Moving, the venv gets the moved checkout's requirements instead.
+# Reads files only; status and update share it.
 function Get-ComfyUIPinDrift {
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -6205,6 +6320,12 @@ function Get-ComfyUIPinDrift {
     if ($Origin -cne $comfy.Repo) {
         $shown = if ($Origin) { $Origin } else { 'none' }
         @{ Setting = 'ComfyUI.Repo'; Pinned = $comfy.Repo; Installed = $Origin; Text = "origin $shown -> $($comfy.Repo)" }
+    }
+    # install creates a venv on a uv-managed Python, but keeps one found in place, such as one the earlier scripts made on the Microsoft Store Python.
+    $base = Get-VenvBasePython -Venv ([IO.Path]::Combine($Dir, '.venv'))
+    if ($base -and $base.Store) {
+        @{ Setting = 'ComfyUI.Python'; Pinned = "uv-managed $($comfy.Python)"; Installed = $base.Home; Rebuild = $true
+            Text = "venv on the Microsoft Store Python $($base.Version), whose launches can fail or hang until Windows restarts -> a new venv on a uv-managed Python $($comfy.Python)" }
     }
     if ($Moving) {
         @{ Setting = 'ComfyUI.Ref'; Pinned = $comfy.Ref; Installed = ''; Text = "venv: the requirements of $($comfy.Ref), installed by uv as install does" }
@@ -6234,9 +6355,10 @@ function Get-ComfyUIPinDrift {
     }
 }
 
-# Return ComfyUI's part of update's plan: @{ Name; Display; Changes; Problem; Note (why update leaves it out); Migrate (HEAD is not ComfyUI.Commit); Dir; Checkout
-# (Get-GitCheckoutState) }. A move needs no changed tracked file and ComfyUI.Ref at ComfyUI.Commit in ComfyUI.Repo, which 'git ls-remote' checks without
-# downloading; at the pin, the venv is judged as Install-ComfyUI judges it, and torch against the constraints. Reads only.
+# Return ComfyUI's part of update's plan: @{ Name; Display; Changes; Problem; Note (why update leaves it out); Migrate (HEAD is not ComfyUI.Commit); Rebuild (the
+# venv runs on the Microsoft Store Python, so update makes it anew); Dir; Checkout (Get-GitCheckoutState) }. A move needs no changed tracked file and ComfyUI.Ref
+# at ComfyUI.Commit in ComfyUI.Repo, which 'git ls-remote' checks without downloading; at the pin, the venv is judged as Install-ComfyUI judges it, and torch
+# against the constraints. Reads only.
 function Get-ComfyUIUpdatePlan {
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -6247,7 +6369,7 @@ function Get-ComfyUIUpdatePlan {
     )
     $comfy = $Settings.ComfyUI
     $plan = @{ Name = 'ComfyUI'; Display = 'ComfyUI'; Changes = New-Object System.Collections.Generic.List[string]; Problem = $null; Note = $null; Migrate = $false
-        Dir = $null; Checkout = $null }
+        Rebuild = $false; Dir = $null; Checkout = $null }
     $dir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($comfy.Dir)
     if ($dir.Length -gt 3) { $dir = $dir.TrimEnd('\') }
     $plan.Dir = $dir
@@ -6293,6 +6415,7 @@ function Get-ComfyUIUpdatePlan {
     }
     foreach ($change in @(Get-ComfyUIPinDrift -Settings $Settings -Dir $dir -Origin ([string]$checkout.Origin) -RepoRoot $RepoRoot -Moving:$plan.Migrate)) {
         $plan.Changes.Add($change.Text)
+        if ($change.Rebuild) { $plan.Rebuild = $true }
     }
     if ($plan.Migrate) { return $plan }
     if ($recorded.Commit -ne $checkout.Head -or $recorded.Ref -ne $comfy.Ref) {
@@ -6776,9 +6899,10 @@ function Undo-OpenWebUIUpdate {
     }
 }
 
-# Bring ComfyUI to its pins for update: move the checkout to ComfyUI.Ref when HEAD differs, else point origin at ComfyUI.Repo; run Install-ComfyUI's venv step
-# and record the result with the previous commit, branch and origin in install-stamp.json. A failed venv step after a move puts the checkout back, marks the
-# venv stale and throws saying what it may hold. Returns the line for update's summary.
+# Bring ComfyUI to its pins for update: move the checkout to ComfyUI.Ref when HEAD differs, else point origin at ComfyUI.Repo; run Install-ComfyUI's venv step,
+# or with $Plan.Rebuild Reset-ComfyUIVenv, which makes the venv anew, and record the result with the previous commit, branch and origin in install-stamp.json.
+# A failed venv step after a move puts the checkout back and throws; unless the rebuild put the old venv back, it marks the venv stale and says what it may
+# hold. Returns the line for update's summary.
 function Update-ComfyUICheckout {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'Called by the update verb, which asks before it changes anything.')]
@@ -6804,24 +6928,39 @@ function Update-ComfyUICheckout {
         Set-GitOrigin -Dir $dir -Url $comfy.Repo
     }
     try {
-        $result = Install-ComfyUI -Settings $Settings -RepoRoot $RepoRoot
+        $result = if ($Plan.Rebuild) { Reset-ComfyUIVenv -Settings $Settings -RepoRoot $RepoRoot } else { Install-ComfyUI -Settings $Settings -RepoRoot $RepoRoot }
     } catch {
         $reason = $_.Exception.Message
         if (-not $moved) { throw "ComfyUI's venv step failed: $reason" }
         $origin = if ($before.Origin) { "origin $($before.Origin)" } else { 'no origin' }
-        # The marker still names the old checkout's requirements, which would let install and start take the venv uv may have changed as up to date;
-        # without its requirements hash they take it as stale.
-        $markerPath = [IO.Path]::Combine($dir, '.venv\local-ai-install.json')
-        try {
-            if ([IO.File]::Exists($markerPath)) {
-                $marker = Read-LocalAIState -Path $markerPath
-                $marker.Remove('RequirementsSha256')
-                Write-LocalAIState -Path $markerPath -State $marker
+        # A failed rebuild puts the old venv back as it was, still on the Store Python, or says why it could not; that marker still fits the checkout put back
+        # below.
+        $kept = $false
+        if ($Plan.Rebuild) {
+            try {
+                $base = Get-VenvBasePython -Venv ([IO.Path]::Combine($dir, '.venv'))
+                $kept = [bool]($base -and $base.Store)
+            } catch {
+                Write-Verbose "The venv's pyvenv.cfg cannot be read, so its marker is marked stale: $($_.Exception.Message)"
             }
-            $stale = "'local-ai install' installs the requirements of the checkout into it again, and start warns until then"
-        } catch {
-            $stale = ("its marker $markerPath could not be marked stale ($($_.Exception.Message)); remove RequirementsSha256 from it, then run 'local-ai install', " +
-                'which installs the requirements of the checkout into it again')
+        }
+        $left = ''
+        if (-not $kept) {
+            # The marker still names the old checkout's requirements, which would let install and start take the venv uv may have changed as up to date;
+            # without its requirements hash they take it as stale.
+            $markerPath = [IO.Path]::Combine($dir, '.venv\local-ai-install.json')
+            try {
+                if ([IO.File]::Exists($markerPath)) {
+                    $marker = Read-LocalAIState -Path $markerPath
+                    $marker.Remove('RequirementsSha256')
+                    Write-LocalAIState -Path $markerPath -State $marker
+                }
+                $stale = "'local-ai install' installs the requirements of the checkout into it again, and start warns until then"
+            } catch {
+                $stale = ("its marker $markerPath could not be marked stale ($($_.Exception.Message)); remove RequirementsSha256 from it, then run 'local-ai install', " +
+                    'which installs the requirements of the checkout into it again')
+            }
+            $left = " Its venv may hold packages uv had installed for $($comfy.Ref) by then; $stale."
         }
         try {
             Restore-ComfyUICheckout -Dir $dir -Before $before
@@ -6829,7 +6968,7 @@ function Update-ComfyUICheckout {
         } catch {
             $back = "Putting $dir back at $($before.Head) with $origin failed too: $($_.Exception.Message)"
         }
-        throw "ComfyUI's venv step failed after the move to $($comfy.Ref): $reason $back Its venv may hold packages uv had installed for $($comfy.Ref) by then; $stale."
+        throw "ComfyUI's venv step failed after the move to $($comfy.Ref): $reason $back$left"
     }
     # Other fields of the entry, such as Cloned, stay.
     $stamp = Read-LocalAIState -Path $Paths.InstallStamp
@@ -6848,8 +6987,9 @@ function Update-ComfyUICheckout {
     }
     $stamp['ComfyUI'] = $entry
     Write-LocalAIState -Path $Paths.InstallStamp -State $stamp
-    if ($moved) { return "ComfyUI: $($before.Head) -> $($comfy.Ref) ($($result.Commit)), torch $($result.Torch)" }
-    return "ComfyUI: $($comfy.Ref) ($($result.Commit)) with origin $($comfy.Repo), torch $($result.Torch)"
+    $venvNote = if ($result.Rebuilt) { ", in a new venv on Python $($result.PythonVersion)" } else { '' }
+    if ($moved) { return "ComfyUI: $($before.Head) -> $($comfy.Ref) ($($result.Commit)), torch $($result.Torch)$venvNote" }
+    return "ComfyUI: $($comfy.Ref) ($($result.Commit)) with origin $($comfy.Repo), torch $($result.Torch)$venvNote"
 }
 
 # Return update's plan: @{ Components (each part's plan with Name, Display, Changes, Problem and Note, in the order update runs them: Open WebUI, ComfyUI with
@@ -6898,6 +7038,11 @@ function Write-LocalAIUpdatePlan {
     Write-Host 'update first stops what the launcher runs, then starts the stack to check it, and leaves it running only when it ran before.'
     if (@($Plan.Components | Where-Object { $_.Name -eq 'OpenWebUI' -and $_.Reinstall }).Count -gt 0) {
         Write-Host "Open WebUI's data is backed up to $($Paths.Backups) first, and Open WebUI is put back as it was when the new version fails the check."
+    }
+    foreach ($comfy in @($Plan.Components | Where-Object { $_.Name -eq 'ComfyUI' -and $_.Rebuild })) {
+        Write-Host ("ComfyUI's new venv gets the same pinned packages, from uv's cache where it holds them. The old venv is moved aside to " +
+            "$($comfy.Dir).local-ai-old-venv and deleted once the new one passes the torch check, or put back when it does not. Models, input, output, user " +
+            'and custom_nodes stay; packages added to the venv by hand are not carried over.')
     }
     if (@($Plan.Tools | Where-Object { $_.Name -eq 'Ollama' }).Count -gt 0) {
         Write-Warning "Ollama's installer stops the Ollama app in the tray, and with it any model it has loaded; update starts the app again afterwards."
@@ -7457,6 +7602,9 @@ function Get-LocalAIUninstallPlan {
         foreach ($leftover in @(($dir + '.local-ai-clone'), [IO.Path]::Combine($dir, 'models\.local-ai-download'))) {
             if ([IO.Directory]::Exists($leftover)) { $items.Add(@{ Kind = 'Folder'; Path = $leftover; Text = "$leftover, which an interrupted install left" }) }
         }
+        # Reset-ComfyUIVenv deletes the old venv once the new one works, or moves it back; one is left only when that failed or update was interrupted.
+        $oldVenv = $dir + '.local-ai-old-venv'
+        if ([IO.Directory]::Exists($oldVenv)) { $items.Add(@{ Kind = 'Folder'; Path = $oldVenv; Text = "ComfyUI's old venv $oldVenv, which update moved aside" }) }
     }
 
     $own = @(
