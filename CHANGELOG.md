@@ -168,9 +168,10 @@ service that an earlier start left running keeps the environment it started with
   repository's Security tab, as SECURITY.md now says.
 - gitleaks also scans the full history once a week. A push or pull request scans only its own
   commits, which the workflow comment and SECURITY.md now say instead of claiming a full scan.
-- The files server's lockfile holds glob 14.0.2 and minimatch 11.0.3, through npm overrides, for
+- The files server's lockfile holds glob 14.0.3 and minimatch 11.0.3, through npm overrides, for
   GHSA-3g3m-2fjr-6pw4 (an aborted glob walk kept reading folders) and GHSA-g3hv-75wg-m249 (a
-  minimatch pattern could grow into enough parts to use a lot of CPU and memory).
+  minimatch pattern could grow into enough parts to use a lot of CPU and memory). glob 14.0.2,
+  which Dependabot names as the fix, still bundles minimatch code from before the second fix.
   `@modelcontextprotocol/server-filesystem` 2.0.1 asks for glob 13 and minimatch 10, which have
   no fix. It never loads glob, and it calls minimatch without the optimization level that the
   flaw needs, so neither was reachable through the file tools. Where the file tools are set up,

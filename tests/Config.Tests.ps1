@@ -288,9 +288,10 @@ Describe 'config\files-server' {
     }
 
     It 'lifts glob and minimatch past the ranges the server asks for, to the fixes for GHSA-3g3m-2fjr-6pw4 and GHSA-g3hv-75wg-m249' {
-        $manifest.overrides['glob'] | Should -BeExactly '14.0.2'
+        $manifest.overrides['glob'] | Should -BeExactly '14.0.3'
         $manifest.overrides['minimatch'] | Should -BeExactly '11.0.3'
-        # These overrides can go once the server's own ranges reach glob 14.0.2 and minimatch 11.0.1.
+        # These overrides can go once the server's own ranges reach glob 14.0.3 and minimatch 11.0.1.
+        # glob 14.0.2 is not enough: its bundle still holds minimatch code from before that fix.
         $lock.packages["node_modules/$name"].dependencies['glob'] | Should -BeExactly '^13.0.6'
         $lock.packages["node_modules/$name"].dependencies['minimatch'] | Should -BeExactly '^10.0.1'
         # One copy of each, so no older one stays nested under another package.
