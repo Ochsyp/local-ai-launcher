@@ -141,7 +141,8 @@ By verb:
 - **GPU and Ollama environment**: what `nvidia-smi` reports, and `OLLAMA_KV_CACHE_TYPE`.
 - **File tools folder**: whether `start` would serve `Files.Root`, and why not.
 - **Pins**: what `install-stamp.json` records against the pins. A difference names
-  `local-ai update`; a missing part names `local-ai install`.
+  `local-ai update`; a missing part names `local-ai install`. A ComfyUI venv on the Microsoft
+  Store Python counts as a difference, since `update` makes it anew.
 - **Doctor checks**: the PowerShell version, Group Policy execution policies, launcher files
   that carry the download mark (`Zone.Identifier`), and the page file.
 - **Logs**: the log files, the last error of the newest launcher run, and partial downloads
@@ -256,12 +257,17 @@ Other settings the launcher sets for Open WebUI:
 ## Images
 
 With `Images.Enabled`, `install` clones ComfyUI v0.42.5 into `ComfyUI.Dir` with its own uv
-environment and the CUDA 13.0 build of PyTorch. It downloads the SDXL checkpoint
-`DreamShaperXL_Lightning.safetensors` at a pinned revision and checks its SHA-256. Open WebUI's
-image button then renders 1024x1024 images in 6 steps through ComfyUI.
+environment, on a uv-managed Python 3.13, and the CUDA 13.0 build of PyTorch. It downloads the
+SDXL checkpoint `DreamShaperXL_Lightning.safetensors` at a pinned revision and checks its
+SHA-256. Open WebUI's image button then renders 1024x1024 images in 6 steps through ComfyUI.
 
 - ComfyUI runs with its core nodes only and with `--offline`. The launcher drops flags such as
   `--listen`, `--enable-manager` and `--enable-cors-header` from `ComfyUI.Args`.
+- The image gate runs on ComfyUI's `.venv` too.
+- `install` keeps a `.venv` that it finds in place, such as one the earlier scripts made. When
+  that venv runs on the Microsoft Store Python, whose launches can fail or hang until Windows
+  restarts, ComfyUI and the image gate fail with it. `status` and `start` warn about such a venv,
+  and `local-ai update` makes it anew; see [Updates and backups](#updates-and-backups).
 - Images are on only for a `start` that launches ComfyUI. Otherwise the image button is off.
 - Image editing is off, because no editing workflow is set up.
 - The workflow ends in a preview node, which ComfyUI keeps only in its temp folder until its
@@ -380,9 +386,9 @@ shows the plan and asks. Then it:
 2. backs up Open WebUI's data to `%LOCALAPPDATA%\local-ai\backups` before it changes Open
    WebUI: `webui.db` with its `-wal` and `-shm` files, `.webui_secret_key`, `uploads`,
    `vector_db` and the old package versions;
-3. updates Open WebUI, ComfyUI (moved to its tag), the file tools, the model and the
-   checkpoint, as needed, and with `-Tools` also the winget packages: uv, Git with images,
-   Node.js and Ollama;
+3. updates Open WebUI, ComfyUI (moved to its tag, and its `.venv` made anew when it runs on the
+   Microsoft Store Python), the file tools, the model and the checkpoint, as needed, and with
+   `-Tools` also the winget packages: uv, Git with images, Node.js and Ollama;
 4. starts the stack and checks each service;
 5. rolls Open WebUI back when the new version fails the check: it reinstalls the old version
    with its saved package versions and restores the data from the backup;
@@ -396,6 +402,14 @@ offer.
 `update` leaves Ollama as it found it. When Ollama did not answer at its start, `update` quits
 the Ollama app it started again at its end, also when it ends early, unless the stack runs then.
 An Ollama that answered at its start keeps running.
+
+To make ComfyUI's `.venv` anew, `update` moves it aside to `<ComfyUI.Dir>.local-ai-old-venv`,
+creates a new one on a uv-managed Python and installs the same pinned packages into it. uv takes
+them from its cache where it holds them, so PyTorch is not downloaded again. `update` deletes
+the old venv once the new one passes the torch check, and moves it back when it does not.
+Models, input, output, user and custom_nodes stay; packages that you added to the venv by hand
+are not carried over. The new venv counts as one that the launcher created, so `uninstall`
+removes it.
 
 A rollback moves the data the new version used to `backups\open-webui-failed-<time>`, which
 nothing deletes. `update` keeps the newest `Update.KeepBackups` (3) of its own backups, and
@@ -413,7 +427,8 @@ stops the stack and removes:
 
 - the Start menu shortcuts;
 - the uv tools `open-webui` and `mcpo`, when `install-stamp.json` records them;
-- ComfyUI's `.venv`, when `install` created it;
+- ComfyUI's `.venv`, when `install` or `update` created it, and an old venv that `update` left
+  aside as `<ComfyUI.Dir>.local-ai-old-venv`;
 - the files server, `files.key` and mcpo's configuration;
 - the Ollama model `local-chat`. The weights of `Model.Source` stay in Ollama.
 

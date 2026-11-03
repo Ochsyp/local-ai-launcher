@@ -85,6 +85,15 @@ BeforeAll {
         InModuleScope LocalAI -Parameters @{ Name = $Name; Arguments = $Arguments } { param($Name, $Arguments) & $Name @Arguments }
     }
 
+    # The home that pyvenv.cfg names for a venv uv made on the Microsoft Store Python 3.13: the folder of its app execution alias.
+    $storeHome = 'C:\Users\User\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0'
+
+    # Write the pyvenv.cfg uv writes into the venv folder $Venv for a base Python in the folder $BaseHome at $Version, creating the folder.
+    function Write-TestPyVenvConfig([string]$Venv, [string]$BaseHome, [string]$Version) {
+        $null = New-Item -ItemType Directory -Force -Path $Venv
+        [IO.File]::WriteAllText((Join-Path $Venv 'pyvenv.cfg'), "home = $BaseHome`nimplementation = CPython`nuv = 0.13.1`nversion_info = $Version`ninclude-system-site-packages = false`n")
+    }
+
     # Return the state of a fake git for the update tests: the checkout's Head, Branch ($null when detached), the commit BranchHead its branch names, Origin,
     # Modified files, whether the clone is Shallow, as install's depth-1 clone is, the commits it holds besides (Objects), the remote's tag Tag at Commit (Peeled for an annotated
     # tag), what a fetch brought (Fetched), Fail (call prefix -> @{ Code; Lines }), every call without its global options in Calls, and the prompt variables each
@@ -3788,6 +3797,55 @@ Describe 'Get-ComfyUIVersion and Test-ComfyUICheckpoint' {
     }
 }
 
+Describe 'Get-VenvBasePython' {
+    BeforeEach {
+        $venv = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $null = New-Item -ItemType Directory -Force -Path $venv
+        $read = { Invoke-ModuleFunction 'Get-VenvBasePython' @{ Venv = $venv } }
+    }
+
+    It 'reads home and version_info from a venv uv made on its own Python, through its link for the minor' {
+        Write-TestPyVenvConfig -Venv $venv -BaseHome 'C:\Users\User\AppData\Roaming\uv\python\cpython-3.13-windows-x86_64-none' -Version '3.13'
+        $base = & $read
+        $base.Home | Should -BeExactly 'C:\Users\User\AppData\Roaming\uv\python\cpython-3.13-windows-x86_64-none'
+        $base.Version | Should -BeExactly '3.13'
+        $base.Minor | Should -BeExactly '3.13'
+        $base.Store | Should -BeFalse
+    }
+
+    It 'flags a venv on the Microsoft Store Python by its <Case>' -ForEach @(
+        @{ Case = 'app execution alias'; Folder = 'C:\Users\User\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0' }
+        @{ Case = 'package folder'; Folder = 'C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.2032.0_x64__qbz5n2kfra8p0' }
+        @{ Case = 'alias folder in lower case'; Folder = 'c:\users\user\appdata\local\microsoft\windowsapps' }
+    ) {
+        [IO.File]::WriteAllText((Join-Path $venv 'pyvenv.cfg'), "home = $Folder`r`nimplementation = CPython`r`nuv = 0.13.1`r`nversion_info = 3.13.14`r`ninclude-system-site-packages = false`r`n")
+        $base = & $read
+        $base.Store | Should -BeTrue
+        $base.Home | Should -BeExactly $Folder
+        $base.Version | Should -BeExactly '3.13.14'
+        $base.Minor | Should -BeExactly '3.13'
+    }
+
+    It "reads the version Python's own venv module writes, and does not flag a folder whose name only starts with WindowsApps" {
+        [IO.File]::WriteAllText((Join-Path $venv 'pyvenv.cfg'), ("home = C:\Tools\WindowsAppsPython\Python313`ninclude-system-site-packages = false`nversion = 3.13.9`n" +
+            "executable = C:\Tools\WindowsAppsPython\Python313\python.exe`n"))
+        $base = & $read
+        $base.Home | Should -BeExactly 'C:\Tools\WindowsAppsPython\Python313'
+        $base.Version | Should -BeExactly '3.13.9'
+        $base.Store | Should -BeFalse
+    }
+
+    It 'returns nothing without a pyvenv.cfg, and no home or version for one that names none' {
+        & $read | Should -BeNullOrEmpty
+        [IO.File]::WriteAllText((Join-Path $venv 'pyvenv.cfg'), "include-system-site-packages = false`n")
+        $base = & $read
+        $base.Home | Should -BeExactly ''
+        $base.Version | Should -BeNullOrEmpty
+        $base.Minor | Should -BeNullOrEmpty
+        $base.Store | Should -BeFalse
+    }
+}
+
 Describe 'Install-ComfyUI' {
     BeforeAll {
         $pin = '483dae4326356b81de05d27aca3f433dd323cc25'
@@ -3795,19 +3853,19 @@ Describe 'Install-ComfyUI' {
         # What the torch check prints for a CUDA build on an NVIDIA GPU.
         $cuda = @{ python = '3.13.18'; torch = '2.14.1+cu130'; torchvision = '0.29.1+cu130'; cuda = '13.0'; available = $true; device = 'NVIDIA Test GPU' }
 
-        # Lay out a .venv in $Dir as uv makes it, on Python $Version.
-        function Write-TestVenv([string]$Dir, [string]$Version) {
+        # Lay out a .venv in $Dir as uv makes it, on Python $Version in the folder $BaseHome.
+        function Write-TestVenv([string]$Dir, [string]$Version, [string]$BaseHome = 'C:\Python') {
             $scripts = Join-Path $Dir '.venv\Scripts'
             $null = New-Item -ItemType Directory -Force -Path $scripts
             [IO.File]::WriteAllText((Join-Path $scripts 'python.exe'), 'program')
-            [IO.File]::WriteAllText((Join-Path $Dir '.venv\pyvenv.cfg'), "home = C:\Python`nimplementation = CPython`nuv = 0.13.6`nversion_info = $Version`ninclude-system-site-packages = false`n")
+            [IO.File]::WriteAllText((Join-Path $Dir '.venv\pyvenv.cfg'), "home = $BaseHome`nimplementation = CPython`nuv = 0.13.6`nversion_info = $Version`ninclude-system-site-packages = false`n")
         }
 
-        # Lay out a ComfyUI checkout in $Dir (.git and requirements.txt), with a .venv on Python $Version when it is given.
-        function Write-TestCheckout([string]$Dir, [string]$Version) {
+        # Lay out a ComfyUI checkout in $Dir (.git and requirements.txt), with a .venv on Python $Version in the folder $BaseHome when $Version is given.
+        function Write-TestCheckout([string]$Dir, [string]$Version, [string]$BaseHome = 'C:\Python') {
             $null = New-Item -ItemType Directory -Force -Path (Join-Path $Dir '.git')
             [IO.File]::WriteAllText((Join-Path $Dir 'requirements.txt'), "comfyui-frontend-package==1.55.18`ntorch`ntorchvision`n")
-            if ($Version) { Write-TestVenv -Dir $Dir -Version $Version }
+            if ($Version) { Write-TestVenv -Dir $Dir -Version $Version -BaseHome $BaseHome }
         }
     }
 
@@ -4173,6 +4231,129 @@ Describe 'Install-ComfyUI' {
             throw "'$python -I -c ...' failed with exit code 1."
         }
         { Install-ComfyUI -Settings $settings -RepoRoot $TestDrive 6>$null } | Should -Throw -ExpectedMessage "*torch check in $venv failed*No module named 'torch'*"
+    }
+
+    It 'keeps a venv on the Microsoft Store Python, warning once with update named, and creates no other' {
+        Write-TestCheckout -Dir $dir -Version '3.13.14' -BaseHome $storeHome
+        $result = Install-ComfyUI -Settings $settings -RepoRoot $TestDrive -WarningVariable warnings 3>$null 6>$null
+        $warnings.Count | Should -Be 1
+        "$($warnings[0])" | Should -BeExactly ("$venv runs on the Microsoft Store Python 3.13.14, whose launches can fail or hang until Windows restarts, and ComfyUI " +
+            "and the image gate with them. install never deletes a venv; run 'local-ai update', which makes it anew on a uv-managed Python 3.13 with the same pins.")
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $FilePath -eq 'uv' -and $ArgumentList[0] -eq 'venv' }
+        $result.Python | Should -Be $python
+        (Read-LocalAIState -Path $marker).CreatedVenv | Should -BeFalse
+    }
+
+    Context 'Reset-ComfyUIVenv' {
+        BeforeEach {
+            # The earlier scripts' venv on the Store Python, with the marker of a venv install found in place and a package added by hand.
+            Write-TestCheckout -Dir $dir -Version '3.13.14' -BaseHome $storeHome
+            Write-LocalAIState -Path $marker -State @{ CreatedVenv = $false; Torch = '2.14.1+cu130' }
+            $leaf = Split-Path $root -Leaf
+            $byHand = Write-TestFile "$leaf\ComfyUI\.venv\Lib\site-packages\by-hand.py" 'mine'
+            $checkpoint = Write-TestFile "$leaf\ComfyUI\models\checkpoints\model.safetensors" 'weights'
+            $image = Write-TestFile "$leaf\ComfyUI\output\image.png" 'pixels'
+            $aside = "$dir.local-ai-old-venv"
+            $reset = { Invoke-ModuleFunction 'Reset-ComfyUIVenv' @{ Settings = $settings; RepoRoot = $TestDrive } }
+            $baseOf = { Invoke-ModuleFunction 'Get-VenvBasePython' @{ Venv = $venv } }
+        }
+
+        It 'moves the venv aside, creates one on a uv-managed Python with the pinned requirements, then deletes the old one and nothing else' {
+            $result = & $reset 6>$null
+            Should -Invoke Test-FreeSpace -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Path -eq $dir -and $RequiredBytes -eq 4552284304 }
+            Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter {
+                $FilePath -eq 'uv' -and ($ArgumentList -join ' ') -eq "venv --python 3.13 --managed-python $venv" -and [bool]$Console
+            }
+            Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter {
+                $FilePath -eq 'uv' -and ($ArgumentList -join ' ') -eq
+                "pip install --python $python --torch-backend cu130 --exclude-newer 2026-10-23T00:07:14Z -c $constraints -r $dir\requirements.txt"
+            }
+            Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $FilePath -eq $python }
+            $result.Rebuilt | Should -BeTrue
+            $result.Python | Should -Be $python
+            $result.PythonVersion | Should -Be '3.13.18'
+            $result.Torch | Should -Be '2.14.1+cu130'
+            (& $baseOf).Store | Should -BeFalse
+            $written = Read-LocalAIState -Path $marker
+            $written.CreatedVenv | Should -BeTrue
+            $written.Python | Should -Be '3.13.18'
+            Test-Path -LiteralPath $byHand | Should -BeFalse
+            Test-Path -LiteralPath $aside | Should -BeFalse
+            Test-Path -LiteralPath $checkpoint | Should -BeTrue
+            Test-Path -LiteralPath $image | Should -BeTrue
+        }
+
+        It 'deletes the new venv and puts the old one back as it was when <Case>' -ForEach @(
+            @{ Case = 'torch finds no CUDA device'; Kind = 'torch'; Expected = '*finds no CUDA device*' }
+            @{ Case = 'uv fails halfway through creating the venv'; Kind = 'venv'; Expected = "'uv venv' failed with exit code 2." }
+            @{ Case = 'the drive lacks the space'; Kind = 'space'; Expected = 'Drive C: has 1.0 GB free' }
+        ) {
+            switch ($Kind) {
+                'torch' { $world.Build.available = $false }
+                'venv' {
+                    Mock Invoke-Native -ModuleName LocalAI -ParameterFilter { $FilePath -eq 'uv' -and $ArgumentList[0] -eq 'venv' } -MockWith {
+                        Write-TestVenv -Dir $dir -Version '3.13'
+                        throw "'uv venv' failed with exit code 2."
+                    }
+                }
+                'space' { Mock Test-FreeSpace -ModuleName LocalAI -MockWith { throw 'Drive C: has 1.0 GB free' } }
+            }
+            { & $reset 6>$null } | Should -Throw -ExpectedMessage "The new venv on a uv-managed Python failed: $Expected ComfyUI's venv is back on the Microsoft Store Python, as it was."
+            $back = & $baseOf
+            $back.Store | Should -BeTrue
+            $back.Version | Should -Be '3.13.14'
+            Test-Path -LiteralPath $byHand | Should -BeTrue
+            $kept = Read-LocalAIState -Path $marker
+            $kept.CreatedVenv | Should -BeFalse
+            $kept.ContainsKey('RequirementsSha256') | Should -BeFalse
+            Test-Path -LiteralPath $aside | Should -BeFalse
+            @(Get-ChildItem -LiteralPath $dir -Force -Filter '*.local-ai-removing-*').Count | Should -Be 0
+            Test-Path -LiteralPath $checkpoint | Should -BeTrue
+        }
+
+        It 'says where the old venv is and how to put it back when the new one cannot be deleted' {
+            $world.Build.available = $false
+            Mock Remove-LocalAIFolder -ModuleName LocalAI -MockWith { throw "Cannot delete ${Path}: Windows refuses to rename it." }
+            { & $reset 6>$null } | Should -Throw -ExpectedMessage ("The new venv on a uv-managed Python failed: *finds no CUDA device* The old venv could not be moved back (*), " +
+                "so it stays in $aside. Cannot delete ${venv}: Windows refuses to rename it. Delete $venv if it is still there, move $aside to $venv, then run update again.")
+            Test-Path -LiteralPath (Join-Path $aside 'Lib\site-packages\by-hand.py') | Should -BeTrue
+        }
+
+        It 'refuses, moving and creating nothing, when an earlier update left a venv aside' {
+            $null = New-Item -ItemType Directory -Force -Path (Join-Path $aside 'Scripts')
+            { & $reset 6>$null } | Should -Throw -ExpectedMessage ("$aside holds the venv that an earlier update moved aside, so $venv was not replaced. Delete $aside, or " +
+                "move it back to $venv when that is missing, then run update again.")
+            Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $FilePath -eq 'uv' }
+            (& $baseOf).Store | Should -BeTrue
+        }
+
+        It 'refuses, naming the process, while one runs from the venv' {
+            Mock Get-Process -ModuleName LocalAI -MockWith { [pscustomobject]@{ Id = 7804; Path = $python } }
+            { & $reset 6>$null } | Should -Throw -ExpectedMessage "ComfyUI or the image gate runs from $venv (PID 7804), so it cannot be moved aside. Run 'local-ai stop'*"
+            Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $FilePath -eq 'uv' }
+            Test-Path -LiteralPath $aside | Should -BeFalse
+        }
+
+        It 'keeps the new venv and warns when the old one cannot be deleted' {
+            Mock Remove-LocalAITree -ModuleName LocalAI -ParameterFilter { $Path -eq $aside } -MockWith { throw "Cannot delete '$aside\Lib\torch.dll': in use." }
+            $output = @(& $reset 3>&1 6>$null)
+            $warnings = @($output | Where-Object { $_ -is [System.Management.Automation.WarningRecord] })
+            $warnings.Count | Should -Be 1
+            $warnings[0].Message | Should -BeExactly "Could not delete the old venv ${aside}: Cannot delete '$aside\Lib\torch.dll': in use. Delete it to free its space."
+            @($output | Where-Object { $_ -is [hashtable] })[-1].Rebuilt | Should -BeTrue
+            (& $baseOf).Store | Should -BeFalse
+            Test-Path -LiteralPath $aside | Should -BeTrue
+        }
+
+        It 'hands a venv that no longer runs on the Store Python to Install-ComfyUI as it is' {
+            Write-TestVenv -Dir $dir -Version '3.13.14'
+            $result = & $reset 6>$null
+            $result.ContainsKey('Rebuilt') | Should -BeFalse
+            Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $FilePath -eq 'uv' -and $ArgumentList[0] -eq 'venv' }
+            Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'uv' -and $ArgumentList[0] -eq 'pip' }
+            Test-Path -LiteralPath $byHand | Should -BeTrue
+            Test-Path -LiteralPath $aside | Should -BeFalse
+        }
     }
 }
 
@@ -5265,6 +5446,15 @@ Describe 'Get-LocalAIService' {
                 "then delete `"C:\Users\User\ComfyUI\.venv\local-ai-install.json`" and run 'local-ai install'")
         }
 
+        It 'repairs a venv on the Microsoft Store Python with update, which makes it anew, as uv would launch that Python to reinstall' {
+            $venv = Join-Path $TestDrive 'service-store\.venv'
+            Write-TestPyVenvConfig -Venv $venv -BaseHome $storeHome -Version '3.13.14'
+            $stamped.Python = Join-Path $venv 'Scripts\python.exe'
+            $listed = @(Get-LocalAIService -Settings $settings -Paths $paths -OllamaUrl $url -OpenWebUI $installed -ComfyUI $stamped -ImageWorkflow $workflow)
+            $listed[0].Repair | Should -BeExactly ("'local-ai update', which makes ComfyUI's venv anew on a uv-managed Python. The venv runs on the Microsoft Store " +
+                'Python, whose launches can fail or hang until Windows restarts')
+        }
+
         It 'identifies ComfyUI by GET /system_stats' {
             Mock Invoke-RestMethod -ModuleName LocalAI -ParameterFilter { $Uri -eq 'http://127.0.0.1:18188/system_stats' } -MockWith {
                 ConvertFrom-Json -InputObject '{"system": {"comfyui_version": "0.42.5"}, "devices": []}'
@@ -5366,6 +5556,15 @@ Describe 'Get-LocalAIService' {
                 $gate.Pin | Should -BeNullOrEmpty
                 $gate.Repair | Should -BeLike "*'local-ai install'*$(Join-Path $paths.Logs 'imagegate.err.log')*"
                 $gate.Fallback | Should -BeExactly 'Images go to ComfyUI directly, so local-chat is not unloaded before images'
+            }
+
+            It 'names update in the repair hint when the venv it runs on uses the Microsoft Store Python' {
+                $venv = Join-Path $TestDrive 'gate-store\.venv'
+                Write-TestPyVenvConfig -Venv $venv -BaseHome $storeHome -Version '3.13.14'
+                $stamped.Python = Join-Path $venv 'Scripts\python.exe'
+                $listed = @(Get-LocalAIService -Settings $settings -Paths $paths -OllamaUrl $url -OpenWebUI $installed -ComfyUI $stamped -ImageWorkflow $workflow)
+                $listed[1].Repair | Should -BeExactly ("'local-ai update', which makes ComfyUI's venv anew on a uv-managed Python. The venv runs on the Microsoft Store " +
+                    "Python, whose launches can fail or hang until Windows restarts; the gate runs on that venv and logs its errors to $(Join-Path $paths.Logs 'imagegate.err.log')")
             }
 
             It 'passes another alias, port and timeout through' {
@@ -6168,6 +6367,17 @@ Describe 'Get-ComfyUIStartProblem' {
         Get-ComfyUIStartProblem -Settings $settings -Stamp $stamp -State $state -WarningVariable warnings 3>$null | Should -BeNullOrEmpty
         $warnings.Count | Should -Be 1
         "$($warnings[0])" | Should -BeLike "*requirements.txt is not the one ComfyUI's venv was set up for*"
+    }
+
+    It 'warns, naming update and finding no problem, when the venv runs on the Microsoft Store Python, but not when it runs on another' {
+        Write-TestPyVenvConfig -Venv (Join-Path $dir '.venv') -BaseHome $storeHome -Version '3.13.14'
+        Get-ComfyUIStartProblem -Settings $settings -Stamp $stamp -State $state -WarningVariable warnings 3>$null | Should -BeNullOrEmpty
+        $warnings.Count | Should -Be 1
+        "$($warnings[0])" | Should -BeExactly ("ComfyUI's venv runs on the Microsoft Store Python 3.13.14, whose launches can fail or hang until Windows restarts, and " +
+            "ComfyUI and the image gate with them. Run 'local-ai update', which makes the venv anew on a uv-managed Python.")
+        Write-TestPyVenvConfig -Venv (Join-Path $dir '.venv') -BaseHome 'C:\Users\User\AppData\Roaming\uv\python\cpython-3.13-windows-x86_64-none' -Version '3.13'
+        Get-ComfyUIStartProblem -Settings $settings -Stamp $stamp -State $state -WarningVariable warnings 3>$null | Should -BeNullOrEmpty
+        $warnings.Count | Should -Be 0
     }
 }
 
@@ -8995,6 +9205,21 @@ Describe 'Get-LocalAIStatus' {
         @($plan.Changes) | Should -Contain $change
     }
 
+    It 'returns 2 and names local-ai update for a venv on the Microsoft Store Python, which update makes anew' {
+        Write-TestPyVenvConfig -Venv (Join-Path $settings.ComfyUI.Dir '.venv') -BaseHome $storeHome -Version '3.13.14'
+        $run = Invoke-StatusVerb -Context $context
+        $run.Code | Should -Be @(2)
+        $run.Warnings | Should -BeLike ("*ComfyUI in *ComfyUI: venv on the Microsoft Store Python 3.13.14, whose launches can fail or hang until Windows restarts -> " +
+            "a new venv on a uv-managed Python 3.13. Run 'local-ai update'.*")
+        $context.Json = $true
+        $document = ConvertFrom-LocalAIJson -Text ([string](Invoke-StatusVerb -Context $context).Records[0].MessageData)
+        $drift = @($document.pins.drift | Where-Object { $_.setting -eq 'ComfyUI.Python' })
+        $drift.Count | Should -Be 1
+        $drift[0].component | Should -Be 'ComfyUI'
+        $drift[0].pinned | Should -Be 'uv-managed 3.13'
+        $drift[0].installed | Should -Be $storeHome
+    }
+
     It 'notes, without changing the exit code, when the origin of a checkout at the pin cannot be read' {
         $git.Fail['config'] = @{ Code = 128; Lines = @('fatal: not a git repository') }
         $run = Invoke-StatusVerb -Context $context
@@ -10132,7 +10357,29 @@ Describe 'Get-ComfyUIUpdatePlan' {
         $git.Origin = $repo
         $stamp.ComfyUI = @{ Dir = $dir; Commit = $pin; Ref = 'v0.42.5'; Python = $python }
         & $writeMarker
-        @((& $plan).Changes).Count | Should -Be 0
+        $result = & $plan
+        @($result.Changes).Count | Should -Be 0
+        $result.Rebuild | Should -BeFalse
+    }
+
+    It 'plans a new venv for a venv on the Microsoft Store Python, at the pin and with the move to the tag alike' {
+        $settings.ComfyUI.Python = '3.13'
+        Write-TestPyVenvConfig -Venv (Join-Path $dir '.venv') -BaseHome $storeHome -Version '3.13.14'
+        $change = 'venv on the Microsoft Store Python 3.13.14, whose launches can fail or hang until Windows restarts -> a new venv on a uv-managed Python 3.13'
+        $git.Head = $pin
+        $git.Origin = $repo
+        $stamp.ComfyUI = @{ Dir = $dir; Commit = $pin; Ref = 'v0.42.5'; Python = $python }
+        & $writeMarker
+        $result = & $plan
+        $result.Rebuild | Should -BeTrue
+        $result.Migrate | Should -BeFalse
+        @($result.Changes) | Should -Be @($change)
+        $git.Head = $old
+        $moving = & $plan
+        $moving.Migrate | Should -BeTrue
+        $moving.Rebuild | Should -BeTrue
+        @($moving.Changes) | Should -Contain $change
+        @($moving.Changes) | Should -Contain 'venv: the requirements of v0.42.5, installed by uv as install does'
     }
 
     It 'plans the venv when its marker records other requirements, and torch when it is not the constrained version' {
@@ -10901,6 +11148,35 @@ Describe 'Update-ComfyUICheckout' {
         @($git.Calls | Where-Object { $_ -like 'checkout*' }).Count | Should -Be 0
     }
 
+    It 'makes the venv anew with Reset-ComfyUIVenv instead of Install-ComfyUI when the plan says so, naming the new venv in its line' {
+        $git.Head = $pin
+        $git.Branch = $null
+        $plan.Migrate = $false
+        $plan.Rebuild = $true
+        Mock Reset-ComfyUIVenv -ModuleName LocalAI -MockWith {
+            @{ Dir = $dir; Commit = $git.Head; Pinned = $true; Python = "$dir\.venv\Scripts\python.exe"; PythonVersion = '3.13.18'; Torch = '2.14.1+cu130'; Rebuilt = $true }
+        }
+        & $run 6>$null | Should -Be "ComfyUI: v0.42.5 ($pin) with origin $repo, torch 2.14.1+cu130, in a new venv on Python 3.13.18"
+        Should -Invoke Reset-ComfyUIVenv -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $RepoRoot -eq $TestDrive }
+        Should -Invoke Install-ComfyUI -ModuleName LocalAI -Times 0 -Exactly
+        (Read-LocalAIState -Path $paths.InstallStamp).ComfyUI.PythonVersion | Should -Be '3.13.18'
+    }
+
+    It "puts the checkout back and leaves the old venv's marker alone when the new venv fails after the move and the old one is back" {
+        $plan.Rebuild = $true
+        $markerPath = Join-Path $dir '.venv\local-ai-install.json'
+        Write-LocalAIState -Path $markerPath -State @{ CreatedVenv = $false; RequirementsSha256 = 'e' * 64 }
+        Write-TestPyVenvConfig -Venv (Join-Path $dir '.venv') -BaseHome $storeHome -Version '3.13.14'
+        Mock Reset-ComfyUIVenv -ModuleName LocalAI -MockWith {
+            throw "The new venv on a uv-managed Python failed: uv failed. ComfyUI's venv is back on the Microsoft Store Python, as it was."
+        }
+        { & $run 6>$null } | Should -Throw -ExpectedMessage ("ComfyUI's venv step failed after the move to v0.42.5: The new venv on a uv-managed Python failed: uv " +
+            "failed. ComfyUI's venv is back on the Microsoft Store Python, as it was. ComfyUI in $dir is back at $old with origin $oldOrigin.")
+        $git.Head | Should -Be $old
+        (Read-LocalAIState -Path $markerPath).RequirementsSha256 | Should -Be ('e' * 64)
+        Should -Invoke Install-ComfyUI -ModuleName LocalAI -Times 0 -Exactly
+    }
+
     It 'refuses to move a checkout whose tracked files changed after the plan' {
         $git.Modified = @('main.py')
         { & $run 6>$null } | Should -Throw -ExpectedMessage "$dir has changes to tracked files, so it was not moved: main.py."
@@ -11157,6 +11433,17 @@ Describe 'Update-LocalAI' {
             ($Folder -join '|') -eq "C:\uv\tools\open-webui|$($settings.ComfyUI.Dir)" -and ($File -join '|') -eq 'C:\uv\bin\open-webui.exe'
         }
         Should -Invoke Update-OpenWebUITool -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $ToolDir -eq 'C:\uv\tools' -and $Plan.Name -eq 'OpenWebUI' }
+    }
+
+    It "says in the plan how ComfyUI's venv is made anew only when the plan makes it anew" {
+        $text = ("ComfyUI's new venv gets the same pinned packages, from uv's cache where it holds them. The old venv is moved aside to " +
+            "$($settings.ComfyUI.Dir).local-ai-old-venv and deleted once the new one passes the torch check, or put back when it does not. Models, input, output, " +
+            'user and custom_nodes stay; packages added to the venv by hand are not carried over.')
+        (Invoke-UpdateVerb -Context $context).Printed | Should -Not -BeLike "*ComfyUI's new venv*"
+        $world.Plan.Components[1].Rebuild = $true
+        $run = Invoke-UpdateVerb -Context $context
+        $run.Code | Should -Be @(0)
+        $run.Printed | Should -BeLike "*Update plan:*ComfyUI: commit e087*$text*"
     }
 
     It 'leaves the whole stack running when it ran before, as Open WebUI was started against what the check started besides' {
@@ -12097,6 +12384,19 @@ Describe 'Uninstall-LocalAI' {
         $run.Printed | Should -BeLike "*$clone, which an interrupted install left*$download, which an interrupted install left*"
         Test-Path -LiteralPath $clone | Should -BeFalse
         Test-Path -LiteralPath $download | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $settings.ComfyUI.Dir 'models\checkpoints\model.safetensors') | Should -BeTrue
+    }
+
+    It 'removes the old venv that update moved aside beside ComfyUI.Dir, keeping the checkout and the venv install found in place' {
+        Write-TestInstall -Settings $settings -Paths $paths -ToolDir $toolDir -Cloned $false -CreatedVenv $false -NodeByLauncher $false
+        $oldVenv = $settings.ComfyUI.Dir + '.local-ai-old-venv'
+        Write-TestPyVenvConfig -Venv $oldVenv -BaseHome $storeHome -Version '3.13.14'
+        $world.Answers.Enqueue($true)
+        $run = Invoke-UninstallVerb -Context $context
+        $run.Code | Should -Be @(0)
+        $run.Printed | Should -BeLike "*ComfyUI's old venv $oldVenv, which update moved aside*"
+        Test-Path -LiteralPath $oldVenv | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $settings.ComfyUI.Dir '.venv') | Should -BeTrue
         Test-Path -LiteralPath (Join-Path $settings.ComfyUI.Dir 'models\checkpoints\model.safetensors') | Should -BeTrue
     }
 
