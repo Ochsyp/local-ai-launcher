@@ -276,8 +276,8 @@ Describe 'config\files-server' {
         $settings.Files.ServerVersion | Should -BeExactly '2.0.1'
     }
 
-    It 'holds @modelcontextprotocol/server and core at exact versions through overrides, and the lockfile at those' {
-        @($manifest.overrides.Keys | Sort-Object) | Should -Be @('@modelcontextprotocol/core', '@modelcontextprotocol/server')
+    It 'holds every override at an exact version, and the lockfile at those' {
+        @($manifest.overrides.Keys | Sort-Object) | Should -Be @('@modelcontextprotocol/core', '@modelcontextprotocol/server', 'glob', 'minimatch')
         foreach ($package in $manifest.overrides.Keys) {
             $manifest.overrides[$package] | Should -MatchExactly '^\d+\.\d+\.\d+$' -Because "$package is pinned exactly"
             $lock.packages["node_modules/$package"].version | Should -BeExactly $manifest.overrides[$package]
@@ -285,6 +285,17 @@ Describe 'config\files-server' {
         # 2.4.0 of both was 4 days old when the lockfile was made; 2.3.1 satisfies the server's ^2.3.1.
         $manifest.overrides['@modelcontextprotocol/server'] | Should -BeExactly '2.3.1'
         $lock.packages["node_modules/$name"].dependencies['@modelcontextprotocol/server'] | Should -BeExactly '^2.3.1'
+    }
+
+    It 'lifts glob and minimatch past the ranges the server asks for, to the fixes for GHSA-3g3m-2fjr-6pw4 and GHSA-g3hv-75wg-m249' {
+        $manifest.overrides['glob'] | Should -BeExactly '14.0.2'
+        $manifest.overrides['minimatch'] | Should -BeExactly '11.0.3'
+        # These overrides can go once the server's own ranges reach glob 14.0.2 and minimatch 11.0.1.
+        $lock.packages["node_modules/$name"].dependencies['glob'] | Should -BeExactly '^13.0.6'
+        $lock.packages["node_modules/$name"].dependencies['minimatch'] | Should -BeExactly '^10.0.1'
+        # One copy of each, so no older one stays nested under another package.
+        $copies = @($lock.packages.Keys | Where-Object { $_ -match '(^|/)node_modules/(glob|minimatch)$' } | Sort-Object)
+        $copies | Should -Be @('node_modules/glob', 'node_modules/minimatch')
     }
 }
 

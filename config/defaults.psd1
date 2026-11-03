@@ -272,8 +272,13 @@
         # affect its read tools in 1.0.0 and 2.0.0; it was 2 days old when pinned. Must equal the
         # version that ServerPackage\package.json pins; install runs npm ci on that folder's lockfile.
         # Its overrides hold @modelcontextprotocol/server and core at 2.3.1 (2026-10-05), which
-        # server-filesystem's ^2.3.1 accepts, since 2.4.0 was 4 days old; every other locked package
-        # was at least 14 days old.
+        # server-filesystem's ^2.3.1 accepts, since 2.4.0 was 4 days old. They also lift glob to
+        # 14.0.2 and minimatch to 11.0.3, past the ^13.0.6 and ^10.0.1 that server-filesystem 2.0.1
+        # and 2.1.0 ask for, for GHSA-3g3m-2fjr-6pw4 and GHSA-g3hv-75wg-m249. minimatch 11.0.1 is the
+        # first fix; 11.0.3 adds a cache of compiled patterns. Those two, and the path-scurry 3.0.0
+        # and @isaacs/nonrecursive-glob-match 1.0.3 they need, were 6 or 7 days old when pinned;
+        # every other locked package was at least 14 days old. The server never loads glob, and its
+        # search_files answered 295 test cases the same with minimatch 11.0.3 as with 10.2.6.
         ServerVersion        = '2.0.1'
         ServerPackage        = 'config\files-server'
         # The tools Open WebUI offers the model, as the server names them. Open WebUI sees them under
@@ -299,8 +304,8 @@
         # (58674545) and the mcpo.exe trampoline (47104).
         InstallBytes         = 119062513
         # Free space install wants, plus 10 percent, on the %LOCALAPPDATA% drive before npm ci: the
-        # server's node_modules and package files (21075512 bytes).
-        ServerInstallBytes   = 21075512
+        # server's node_modules and package files (21615653 bytes).
+        ServerInstallBytes   = 21615653
     }
 
     HfCli     = @{

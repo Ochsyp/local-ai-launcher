@@ -3337,7 +3337,7 @@ Describe 'Install-FilesServerPackage' {
         $leaf = Split-Path $base -Leaf
         $paths = Get-LocalAIPaths -Root (Join-Path $base 'local-ai')
         $settings = @{
-            Files  = @{ ServerVersion = '2.0.1'; ServerPackage = 'config\files-server'; ServerInstallBytes = 21075512 }
+            Files  = @{ ServerVersion = '2.0.1'; ServerPackage = 'config\files-server'; ServerInstallBytes = 21615653 }
             Winget = @{ Packages = @{ Node = @{ Id = 'OpenJS.NodeJS.LTS'; Command = 'node'; Scope = 'machine' } } }
         }
         $node = Write-TestFile "$leaf\nodejs\node.exe" 'program'
@@ -3366,7 +3366,7 @@ Describe 'Install-FilesServerPackage' {
         Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter {
             $FilePath -eq $node -and ($ArgumentList -join ' ') -eq "$npm ci --omit=dev --ignore-scripts --no-audit --no-fund --no-update-notifier --prefix $target" -and [bool]$Console
         }
-        Should -Invoke Test-FreeSpace -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Path -eq $target -and $RequiredBytes -eq 21075512 }
+        Should -Invoke Test-FreeSpace -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Path -eq $target -and $RequiredBytes -eq 21615653 }
         $runs.Copied.Count | Should -Be 2
         $runs.Copied | Should -Contain 'package.json'
         $runs.Copied | Should -Contain 'package-lock.json'
