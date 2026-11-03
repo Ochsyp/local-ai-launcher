@@ -129,11 +129,29 @@ The check that refuses every verb but `status` inside a packaged app, such as th
 desktop app, keeps the launcher's files out of that app's private store. It is not a security
 control.
 
+## Releases
+
+- `.github/workflows/release.yml` builds each release on GitHub's hosted runners from a commit
+  on `main`, and only as a draft. The maintainer reviews and publishes it; publishing creates the
+  tag. Each job gets only the permissions it needs, and the job that writes the draft runs no
+  repository code.
+- Releases are immutable once published: GitHub refuses to change their assets or move their
+  tag, and records a release attestation, which `gh release verify` checks.
+- The zip carries a build provenance attestation, signed through Sigstore's public-good instance
+  and recorded in its public transparency log. It ties the zip to `release.yml`, the commit and
+  `refs/heads/main`. `gh attestation verify` checks it; the README shows the commands.
+- `SHA256SUMS` lists the SHA-256 of the zip, and the manifest `local-ai-release.json` in the zip
+  lists the SHA-256 of every file in it. Both come with the release itself, so they show a
+  damaged download but are no signature. The attestations show where the zip came from.
+
 ## Automated checks
 
 - gitleaks scans the commits of every push and pull request, and the full history once a week
   and on demand (`.github/workflows/secret-scan.yml`).
 - `.github/workflows/ci.yml` runs PSScriptAnalyzer, the Pester tests and the image gate's
-  unittest tests on `windows-latest`.
+  unittest tests on `windows-latest`, and checks `VERSION` against `CHANGELOG.md`.
+- `.github/workflows/release.yml` builds the zip twice for a pull request that changes the
+  release tooling or `VERSION`, and checks each published release: `SHA256SUMS`, the manifest,
+  and the release and build provenance attestations.
 - Dependabot proposes weekly updates for the pinned GitHub Actions, the files server's npm
   lockfile (`config/files-server`) and the Python test requirements (`tests`).

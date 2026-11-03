@@ -186,6 +186,44 @@ Describe 'Get-LocalAIPaths' {
     }
 }
 
+Describe 'Get-LocalAIVersion' {
+    BeforeEach {
+        $checkout = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $null = New-Item -ItemType Directory -Path $checkout
+    }
+
+    It 'returns <Expected> for a VERSION file that holds <Case>' -ForEach @(
+        @{ Case = 'a version and LF, as a release writes it'; Text = "1.2.0`n"; Expected = '1.2.0' }
+        @{ Case = 'a version and CRLF'; Text = "0.10.3`r`n"; Expected = '0.10.3' }
+        @{ Case = 'a version without a line end'; Text = '2.0.0'; Expected = '2.0.0' }
+        @{ Case = 'spaces around the version'; Text = "  10.20.30  `n"; Expected = '10.20.30' }
+        @{ Case = 'a BOM before the version'; Text = ([string][char]0xFEFF) + "3.4.5`n"; Expected = '3.4.5' }
+    ) {
+        [IO.File]::WriteAllText((Join-Path $checkout 'VERSION'), $Text)
+        Get-LocalAIVersion -RepoRoot $checkout | Should -BeExactly $Expected
+    }
+
+    It 'returns $null for a VERSION file that holds <Case>' -ForEach @(
+        @{ Case = 'nothing'; Text = '' }
+        @{ Case = 'two numbers'; Text = "1.2`n" }
+        @{ Case = 'four numbers'; Text = "1.2.3.4`n" }
+        @{ Case = 'a v before the version'; Text = "v1.2.3`n" }
+        @{ Case = 'a prerelease'; Text = "1.2.3-rc.1`n" }
+        @{ Case = 'two versions'; Text = "1.2.3`n1.2.4`n" }
+        @{ Case = 'digits of another script'; Text = ([string][char]0x0661) + ".2.3`n" }
+    ) {
+        [IO.File]::WriteAllText((Join-Path $checkout 'VERSION'), $Text)
+        # $null, not '', which status -Json would write as "version": "".
+        ($null -eq (Get-LocalAIVersion -RepoRoot $checkout)) | Should -BeTrue
+    }
+
+    It 'returns $null without a VERSION file, as in a git checkout before the first release, and for a folder named VERSION' {
+        ($null -eq (Get-LocalAIVersion -RepoRoot $checkout)) | Should -BeTrue
+        $null = New-Item -ItemType Directory -Path (Join-Path $checkout 'VERSION')
+        ($null -eq (Get-LocalAIVersion -RepoRoot $checkout)) | Should -BeTrue
+    }
+}
+
 Describe 'Get-LocalAISettings' {
     BeforeAll {
         $env:LOCALAI_TEST_DIR = 'C:\LocalAITest'
@@ -8575,6 +8613,8 @@ Describe 'Get-LocalAIStatus' {
             Marked    = @()
             Parts     = @()
             Served    = $true
+            # What Get-LocalAIVersion finds in VERSION: none, as in a git checkout before the first release.
+            Version   = $null
         }
         foreach ($id in 4100, 4101, 4200, 4300, 4400) { $world.Live.Add($id) }
 
@@ -8616,6 +8656,8 @@ Describe 'Get-LocalAIStatus' {
         }
         # Not this PC's %USERPROFILE%\.qwen\settings.json.
         Mock Get-QwenCodeModel -ModuleName LocalAI
+        # Not the VERSION file of this checkout.
+        Mock Get-LocalAIVersion -ModuleName LocalAI -MockWith { $world.Version }
         Mock Test-FilesRoot -ModuleName LocalAI -MockWith {
             if ($world.Served) { return $true }
             Write-Warning "Files.Root '$($Settings.Files.Root)' is not served, so the file tools are off: it holds 1 file(s) or folder(s) whose names match Files.DenyPatterns: id_rsa."
@@ -9105,6 +9147,34 @@ Describe 'Get-LocalAIStatus' {
         $context.Json = $true
         $document = ConvertFrom-LocalAIJson -Text ([string](Invoke-StatusVerb -Context $context).Records[0].MessageData)
         $document.launcher.otherRunActive | Should -BeTrue
+    }
+
+    It 'names the launcher version that VERSION holds, in the text and as launcher.version in -Json' {
+        $world.Version = '1.2.0'
+        # Not $repoRoot, which RepoRoot would hide inside the filter; variable names ignore case.
+        $checkout = $repoRoot
+        $run = Invoke-StatusVerb -Context $context
+        $run.Code | Should -Be @(0)
+        $run.Printed | Should -BeLike "*== Launcher ==*Launcher 1.2.0.*The launcher in $repoRoot keeps its state in $root.*"
+        $run.Printed | Should -Not -BeLike '*No VERSION file*'
+        Should -Invoke Get-LocalAIVersion -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $RepoRoot -eq $checkout }
+        $context.Json = $true
+        $document = ConvertFrom-LocalAIJson -Text ([string](Invoke-StatusVerb -Context $context).Records[0].MessageData)
+        $document.launcher.version | Should -BeExactly '1.2.0'
+        @($document.launcher.lines | Where-Object { $_.text -eq 'Launcher 1.2.0.' }).level | Should -Be 'fact'
+    }
+
+    It 'says that no VERSION file names the version, as in a git checkout before the first release, without changing the exit code' {
+        $run = Invoke-StatusVerb -Context $context
+        $run.Code | Should -Be @(0)
+        $run.Warnings | Should -BeNullOrEmpty
+        $run.Printed | Should -BeLike "*== Launcher ==*No VERSION file in $repoRoot names the launcher's version, as in a git checkout before the first release.*"
+        $context.Json = $true
+        $document = ConvertFrom-LocalAIJson -Text ([string](Invoke-StatusVerb -Context $context).Records[0].MessageData)
+        $document.exitCode | Should -Be 0
+        $document.launcher.ContainsKey('version') | Should -BeTrue
+        # null, not an empty string.
+        ($null -eq $document.launcher.version) | Should -BeTrue
     }
 
     It 'returns 2, saying that only status runs here, inside an app package''s container, in the text and in -Json' {

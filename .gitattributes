@@ -16,3 +16,14 @@ package-lock.json text eol=lf
 *.lnk binary
 *.gguf binary
 *.safetensors binary
+
+# git archive leaves these out of the release zip, which keeps only what the launcher runs and
+# its documents. tests\Release.Tests.ps1 checks that every other tracked file is such a file.
+/.github/ export-ignore
+/.githooks/ export-ignore
+/tests/ export-ignore
+/.editorconfig export-ignore
+/.gitattributes export-ignore
+/.gitignore export-ignore
+/PSScriptAnalyzerSettings.psd1 export-ignore
+/CONTRIBUTING.md export-ignore

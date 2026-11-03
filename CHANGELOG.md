@@ -44,6 +44,15 @@ The launcher was redesigned. These entries compare it with the earlier set of sc
 - `CONTRIBUTING.md`, a pull request template and two git hooks in `.githooks`: every change
   reaches `main` through a reviewed pull request, and the hooks refuse commits and pushes to
   `main`.
+- Releases. A pull request that adds or raises `VERSION` and moves the `[Unreleased]` entries
+  under `## [X.Y.Z] - YYYY-MM-DD` makes `.github/workflows/release.yml` build
+  `local-ai-launcher-X.Y.Z.zip`, `SHA256SUMS` and a build provenance attestation, and create the
+  draft release `vX.Y.Z`, which the maintainer publishes. CI checks `VERSION` against the
+  CHANGELOG, and a pull request that changes the release tooling or `VERSION` gets a dry run of
+  the build. CONTRIBUTING.md describes the steps and the release contract, and the README how to
+  check a download.
+- `status` names the launcher's version from `VERSION`, and `-Json` reports it as
+  `launcher.version`, which is null in a git checkout before the first release.
 
 ### Changed
 

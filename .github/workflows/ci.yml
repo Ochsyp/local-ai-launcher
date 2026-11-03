@@ -1,5 +1,5 @@
-# Runs PSScriptAnalyzer and Pester in Windows PowerShell 5.1, and the image gate tests in
-# Python 3.13, on every push and pull request.
+# Runs PSScriptAnalyzer and Pester in Windows PowerShell 5.1, the image gate tests in Python 3.13,
+# and the check of VERSION against CHANGELOG.md, on every push and pull request.
 # Actions are pinned to commit SHAs; Dependabot proposes updates.
 name: ci
 
@@ -77,3 +77,23 @@ jobs:
       - name: Run the image gate tests
         shell: pwsh
         run: python -I -B -m unittest discover -s tests -p "test_*.py"
+
+  # The release rules of CONTRIBUTING.md, with .github/scripts/LocalAIRelease.psm1 as release.yml
+  # uses it. A pull request that changes VERSION also needs a new tag and a higher version.
+  version:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # A pull request's merge commit and its first parent, the base branch, whose VERSION the
+          # check compares.
+          fetch-depth: 2
+      - name: Check VERSION against CHANGELOG.md
+        shell: powershell
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          Import-Module .\.github\scripts\LocalAIRelease.psm1 -Force
+          Invoke-ReleaseVersionCheck -RepositoryPath . -PullRequest:($env:EVENT_NAME -ceq 'pull_request')
