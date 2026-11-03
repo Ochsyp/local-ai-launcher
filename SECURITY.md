@@ -99,8 +99,16 @@ older launcher, left running with other inherited variables. Such a service keep
 environment until `local-ai stop`.
 
 The Ollama app is not a service the launcher starts with an allow-list. When Ollama does not
-answer, the launcher runs `ollama list`, which starts the app, and the app inherits the whole
-environment of that window.
+answer, the launcher starts the app, itself or through `ollama list` when the app is not beside
+`ollama.exe`. The app and the Ollama server it runs then inherit the whole environment of that
+window. `local-ai stop` quits an app that the launcher started and recorded, which ends that,
+unless another program has a model loaded in it or is still connected to it, its window is
+open, or it runs in another Windows session; the app then keeps that environment until it is
+quit. An app started through `ollama list`, or one the launcher cannot tell apart from another
+app, is not recorded, so `stop` leaves it running. `start`, also when `update` runs it, forgets
+an app recorded for a server that `Ollama.Url` no longer names, and `stop` then leaves that app
+running too. An Ollama app that already ran keeps the environment it started with, and `stop`
+leaves it running.
 
 ## Secrets
 

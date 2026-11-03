@@ -55,6 +55,24 @@ The launcher was redesigned. These entries compare it with the earlier set of sc
   preview node, which ComfyUI keeps only in its temp folder until its next start.
 - `stop` stops only the services that `start` recorded, instead of whatever listened on the
   ports.
+- `stop` also quits the Ollama app when the launcher started it, and leaves an Ollama that
+  already ran alone. It keeps the app running, and says why, while another program has a model
+  loaded in it or is still connected to it, while the Ollama window is open, or while the app
+  runs in another Windows session. It asks the app to quit as its tray icon does, and ends it
+  with `taskkill /T /F` only when it has no window to ask or does not quit within 20 s.
+  `update` and `uninstall` keep Ollama while they need it: `uninstall` quits the app at its end,
+  and `update` quits only an app that it started itself, unless the stack runs at its end.
+- When Ollama does not answer, the launcher starts the Ollama app itself, with the arguments
+  the `ollama` program uses (`--hide --fast-startup`), instead of through `ollama list`, and
+  records it in `state.json`. That includes the app Ollama's installer starts when `install`
+  installs Ollama, and the one it starts again when `update -Tools` upgrades an app the
+  launcher started. An app it cannot tell apart from another, or one started through
+  `ollama list`, is not recorded, and `stop` leaves it running. It only waits, and starts
+  nothing, while Ollama's installer runs, when `Ollama.Url` names another computer, or while
+  another program holds its port.
+- `status` says whether the launcher started the Ollama app, so that `stop` quits it, and notes
+  a record of an app that no longer runs, or of one for another server than `Ollama.Url` names.
+  `-Json` reports `ollama.startedByLauncher`, `ollama.appPid` and `ollama.appStartedUtc`.
 - Ollama pulls the chat model from Hugging Face itself.
 - The logs moved out of the Open WebUI and ComfyUI folders.
 - `start` no longer points Qwen Code at the model. Run
@@ -116,8 +134,9 @@ service that an earlier start left running keeps the environment it started with
   and allocator names and `CUDA_PATH`. So a secret in another variable, such as
   `AWS_SECRET_ACCESS_KEY`, is in the environment of none of them. Code inside them still runs
   as your Windows user and can read your user variables in the registry. The Ollama app, which
-  the launcher starts through `ollama list` when Ollama does not answer, inherits the whole
-  environment of that window.
+  the launcher starts when Ollama does not answer, inherits the whole environment of that
+  window until it quits; `stop` quits an app the launcher recorded unless it keeps it running
+  for another program, its open window or another Windows session.
 - Variables whose names end in `_TOKEN` or `_API_KEY`, and `PYTHONHOME`, `PYTHONPATH`,
   `PYTHONSTARTUP`, `PYTHONUSERBASE`, `NODE_OPTIONS` and `NODE_PATH`, reach no service, unless
   `OpenWebUI.Env` sets them for Open WebUI. The settings check refuses them in the
