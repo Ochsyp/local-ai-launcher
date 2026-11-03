@@ -751,6 +751,34 @@ function Get-PortOwner {
     return $owner
 }
 
+# Return each process that holds an open TCP connection to port $Port on a loopback address, once, as Id and Name ($null when its name cannot be
+# read), leaving out the PIDs in $Exclude. Reads only; returns nothing when no connection matches and throws any other Get-NetTCPConnection error.
+function Get-LoopbackClient {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][ValidateRange(1, 65535)][int]$Port,
+        [int[]]$Exclude = @()
+    )
+    $connections = @(Get-NetTCPConnection -State Established -RemotePort $Port -ErrorAction SilentlyContinue -ErrorVariable failures)
+    foreach ($failure in @($failures)) {
+        # The no-match error, collected as in Get-TcpListener.
+        if ($failure.FullyQualifiedErrorId -notlike 'CmdletizationQuery_NotFound*') { throw $failure }
+    }
+    $ids = @(foreach ($connection in $connections) {
+            $address = $null
+            # A dual-stack socket shows an IPv4 peer as ::ffff:a.b.c.d.
+            $text = ([string]$connection.RemoteAddress) -replace '^::ffff:', ''
+            if ([Net.IPAddress]::TryParse($text, [ref]$address) -and [Net.IPAddress]::IsLoopback($address)) { [int]$connection.OwningProcess }
+        })
+    foreach ($id in @($ids | Sort-Object -Unique)) {
+        if ($Exclude -contains $id) { continue }
+        $process = Get-Process -Id $id -ErrorAction SilentlyContinue
+        $name = if ($process) { [string]$process.Name } else { $null }
+        [pscustomobject]@{ Id = $id; Name = $name }
+    }
+}
+
 # Return 'match' when a process with $Record.Pid runs, started within one second of $Record.StartTicks (UTC
 # ticks) from $Record.Path (any case); 'unreadable' when that PID started then but this window cannot read its
 # path or start time, as with an elevated process; else 'other': no such process, a reused PID or no record.
@@ -827,6 +855,24 @@ function Test-ProcessDescendant {
         $child = $parent
     }
     return $false
+}
+
+# Return $true when process $ProcessId runs in this window's Windows session, whose desktop EnumWindows lists; $false when it runs in another session,
+# as a program started over SSH or by a scheduled task that runs while nobody is signed in does, or when its session cannot be read.
+function Test-ProcessInThisSession {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][int]$ProcessId
+    )
+    $process = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction SilentlyContinue
+    if (-not $process -or $null -eq $process.SessionId) { return $false }
+    $own = [Diagnostics.Process]::GetCurrentProcess()
+    try {
+        return [int]$process.SessionId -eq $own.SessionId
+    } finally {
+        $own.Dispose()
+    }
 }
 
 # Return $true when only loopback addresses listen on TCP $Port. Otherwise warn, naming $Name, the
@@ -921,51 +967,433 @@ function Install-WingetPackage {
     return $outcome
 }
 
-# Return the version Ollama reports at $Url/api/version. When it does not answer, run 'ollama list'
-# once, which on Windows starts the Ollama app, and poll every 500 ms. Throws when the ollama
-# program is missing or nothing answers within $TimeoutSeconds; never runs 'ollama serve'.
-function Wait-OllamaServer {
+# Return each running 'ollama app.exe', the Ollama tray app, from Win32_Process as Id, Path, StartTicks (UTC creation time) and ParentId; Path is $null
+# when this window may not read it. Throws when Win32_Process cannot be read, so that a caller never takes a failed query for no app at all.
+function Get-OllamaAppProcess {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param()
+    foreach ($process in @(Get-CimInstance -ClassName Win32_Process -Filter "Name='ollama app.exe'" -ErrorAction Stop)) {
+        $ticks = if ($process.CreationDate) { $process.CreationDate.ToUniversalTime().Ticks } else { $null }
+        $path = if ($process.ExecutablePath) { [string]$process.ExecutablePath } else { $null }
+        [pscustomobject]@{ Id = [int]$process.ProcessId; Path = $path; StartTicks = $ticks; ParentId = [int]$process.ParentProcessId }
+    }
+}
+
+# Return the full path of 'ollama app.exe' beside the ollama program on PATH, the first place the ollama CLI looks for the app (cmd/start_windows.go
+# in Ollama v0.40.13), or $null when either file is missing.
+function Resolve-OllamaAppPath {
     [CmdletBinding()]
     [OutputType([string])]
+    param()
+    $program = @(Get-Command -Name 'ollama' -CommandType Application -ErrorAction SilentlyContinue)
+    if ($program.Count -eq 0 -or -not $program[0].Path) { return $null }
+    $app = Join-Path (Split-Path $program[0].Path -Parent) 'ollama app.exe'
+    if (Test-Path -LiteralPath $app -PathType Leaf) { return $app }
+    return $null
+}
+
+# Start the Ollama app at $Path hidden, with the arguments the ollama CLI gives it, in its own folder, and return its PID without waiting. Without
+# -NoNewWindow, Start-Process uses ShellExecute, so the app holds no handle of this window's output. An app started while another runs exits at once.
+# Throws when Start-Process fails.
+function Start-OllamaApp {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Called by the install, start, update and uninstall verbs, which offer no -WhatIf.')]
+    [CmdletBinding()]
+    [OutputType([int])]
+    param(
+        [Parameter(Mandatory)][string]$Path
+    )
+    $process = Start-Process -FilePath $Path -ArgumentList '--hide', '--fast-startup' -WorkingDirectory (Split-Path $Path -Parent) -PassThru -ErrorAction Stop
+    return [int]$process.Id
+}
+
+# Return $true while OllamaSetup.exe, the Ollama installer, runs. The ollama CLI then refuses to start the app, and the installer starts it once it is done.
+function Test-OllamaSetupRunning {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param()
+    $found = [Diagnostics.Process]::GetProcessesByName('OllamaSetup')
+    try {
+        return $found.Count -gt 0
+    } finally {
+        foreach ($process in $found) { $process.Dispose() }
+    }
+}
+
+# Return the state.json record of the Ollama app a start began, @{ Pid; StartTicks; Path; Port; StartedTicks; How; Listener } as Get-RecordedProcessState
+# reads it, or $null with the reason as a verbose message. The app counts only when $Before (Get-OllamaAppProcess before the start) is empty, exactly one app
+# began at or after $Since (UTC ticks), it is $ProcessId unless that is 0, it runs from $ExpectedPath, $Url names this PC and a direct child holds its port.
+function Get-OllamaOwnStart {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [AllowEmptyCollection()][object[]]$Before = @(),
+        [Parameter(Mandatory)][long]$Since,
+        [Parameter(Mandatory)][string]$Url,
+        [AllowEmptyString()][string]$ExpectedPath = '',
+        [int]$ProcessId = 0,
+        [ValidateSet('start', 'install', 'update', 'uninstall')][string]$How = 'start'
+    )
+    $uri = [uri]$Url
+    $app = $null
+    $owner = $null
+    $why = $null
+    $Before = @($Before)
+    if ($Before.Count -gt 0) {
+        # A second app exits at once, and one already starting answers in its own time.
+        $why = "an Ollama app already ran (PID $($Before[0].Id))"
+    } else {
+        $new = @()
+        try {
+            $new = @(Get-OllamaAppProcess | Where-Object { $null -ne $_.StartTicks -and [long]$_.StartTicks -ge $Since })
+        } catch {
+            $why = "the Ollama apps cannot be listed: $($_.Exception.Message)"
+        }
+        if ($why) {
+            Write-Verbose "local-ai records no Ollama app: $why"
+            return $null
+        }
+        if ($new.Count -ne 1) {
+            $why = "$($new.Count) Ollama apps began since the start"
+        } elseif ($ProcessId -gt 0 -and [int]$new[0].Id -ne $ProcessId) {
+            $why = "the app it started (PID $ProcessId) has exited, as one does while another app runs"
+        } elseif (-not $ExpectedPath -or -not [string]::Equals([string]$new[0].Path, $ExpectedPath, [StringComparison]::OrdinalIgnoreCase)) {
+            $why = "the app runs from '$($new[0].Path)', not from '$ExpectedPath'"
+        } else {
+            try {
+                if (-not (Test-LocalHostName -HostName $uri.Host)) {
+                    $why = "$Url is not on this PC"
+                } else {
+                    # ollama.exe serve, which the app runs as its direct child, holds the API port.
+                    $owner = Get-PortOwner -Port $uri.Port
+                    if ($owner -and (Test-ProcessDescendant -ProcessId $owner.Id -AncestorId ([int]$new[0].Id) -MaxDepth 1)) {
+                        $app = $new[0]
+                    } else {
+                        $why = "port $($uri.Port) is not held by a child of the app (PID $($new[0].Id))"
+                    }
+                }
+            } catch {
+                $why = "the holder of port $($uri.Port) cannot be read: $($_.Exception.Message)"
+            }
+        }
+    }
+    if (-not $app) {
+        Write-Verbose "local-ai records no Ollama app: $why"
+        return $null
+    }
+    return @{
+        Pid          = [int]$app.Id
+        StartTicks   = [long]$app.StartTicks
+        Path         = [string]$app.Path
+        Port         = [int]$uri.Port
+        StartedTicks = $Since
+        How          = $How
+        Listener     = @{ Pid = [int]$owner.Id; StartTicks = $owner.StartTicks; Path = $owner.Path }
+    }
+}
+
+# Return the type that binds the user32 calls behind Get-TopLevelWindow and Send-OllamaAppClose, compiling it on first use. The type outlives the module,
+# so a second import finds it and compiles nothing; GetTopLevelWindows keeps its callback referenced until EnumWindows returns. Throws when the binding
+# cannot be compiled, as where Add-Type is blocked.
+function Get-LocalAIWindowApi {
+    [CmdletBinding()]
+    [OutputType([type])]
+    param()
+    $api = 'LocalAI.WindowApi' -as [type]
+    if ($api) { return $api }
+    Add-Type -Namespace LocalAI -Name WindowApi -UsingNamespace 'System.Collections.Generic', 'System.Text' -MemberDefinition @'
+public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+public class TopLevelWindow {
+    public IntPtr Handle;
+    public string ClassName;
+    public int ProcessId;
+    public bool Visible;
+    public bool Owned;
+}
+
+[DllImport("user32.dll")]
+[return: MarshalAs(UnmanagedType.Bool)]
+private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+[DllImport("user32.dll", CharSet = CharSet.Unicode)]
+private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+[DllImport("user32.dll")]
+private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+[DllImport("user32.dll")]
+[return: MarshalAs(UnmanagedType.Bool)]
+private static extern bool IsWindowVisible(IntPtr hWnd);
+
+[DllImport("user32.dll")]
+private static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+[DllImport("user32.dll", SetLastError = true)]
+[return: MarshalAs(UnmanagedType.Bool)]
+public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+// Every top-level window of this desktop, hidden ones included, with its class, the PID that created it, whether it is visible and whether it has an owner.
+public static TopLevelWindow[] GetTopLevelWindows() {
+    List<TopLevelWindow> found = new List<TopLevelWindow>();
+    EnumWindowsProc callback = delegate(IntPtr hWnd, IntPtr lParam) {
+        StringBuilder name = new StringBuilder(256);
+        GetClassName(hWnd, name, name.Capacity);
+        uint processId;
+        GetWindowThreadProcessId(hWnd, out processId);
+        TopLevelWindow window = new TopLevelWindow();
+        window.Handle = hWnd;
+        window.ClassName = name.ToString();
+        window.ProcessId = (int)processId;
+        window.Visible = IsWindowVisible(hWnd);
+        // GW_OWNER (4): a dialog or popup has an owner, a main window none.
+        window.Owned = GetWindow(hWnd, 4) != IntPtr.Zero;
+        found.Add(window);
+        return true;
+    };
+    EnumWindows(callback, IntPtr.Zero);
+    GC.KeepAlive(callback);
+    return found.ToArray();
+}
+'@
+    return 'LocalAI.WindowApi' -as [type]
+}
+
+# Return each top-level window of this desktop, hidden ones included, as Handle, ClassName, ProcessId (of the process that created it), Visible and Owned
+# (it has an owner window). Reads only; throws as Get-LocalAIWindowApi does.
+function Get-TopLevelWindow {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param()
+    $api = Get-LocalAIWindowApi
+    foreach ($window in $api::GetTopLevelWindows()) {
+        [pscustomobject]@{ Handle = $window.Handle; ClassName = $window.ClassName; ProcessId = $window.ProcessId; Visible = $window.Visible; Owned = $window.Owned }
+    }
+}
+
+# Return the handle of the hidden window of class 'OllamaClass' that the Ollama app with PID $ProcessId owns, the window its tray icon's Quit closes, or
+# [IntPtr]::Zero when it has none. A window of that class owned by any other process never counts. Throws as Get-LocalAIWindowApi does.
+function Find-OllamaAppWindow {
+    [CmdletBinding()]
+    [OutputType([IntPtr])]
+    param(
+        [Parameter(Mandatory)][int]$ProcessId
+    )
+    foreach ($window in @(Get-TopLevelWindow)) {
+        if ([string]$window.ClassName -ceq 'OllamaClass' -and [int]$window.ProcessId -eq $ProcessId) { return [IntPtr]$window.Handle }
+    }
+    return [IntPtr]::Zero
+}
+
+# Post WM_CLOSE to the window $Handle without waiting, as the Ollama tray icon's Quit does (app/wintray/eventloop.go in Ollama v0.40.13). Returns $true
+# when Windows queued it, $false when it refused, as for a window that is gone or belongs to an elevated process; throws as Get-LocalAIWindowApi does.
+function Send-OllamaAppClose {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][IntPtr]$Handle
+    )
+    $api = Get-LocalAIWindowApi
+    # 0x0010 is WM_CLOSE.
+    return [bool]$api::PostMessage($Handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
+}
+
+# Return $true when the Ollama app with PID $ProcessId shows a window of its own, such as its chat window, judged as Process.MainWindowHandle judges one:
+# visible and without an owner. Its tray window is hidden. A quit posted while such a window is open may leave the app running without its tray icon.
+# Throws as Get-LocalAIWindowApi does.
+function Test-OllamaAppWindowOpen {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][int]$ProcessId
+    )
+    return @(Get-TopLevelWindow | Where-Object { [int]$_.ProcessId -eq $ProcessId -and $_.Visible -and -not $_.Owned }).Count -gt 0
+}
+
+# Return the version Ollama reports at $Url/api/version, or with -PassThru @{ Version; App; Started }: App is Get-OllamaOwnStart's record (marked $How) of
+# the Ollama app this call started, else $null, and Started says whether it tried to start one. When nothing answers it starts the app once, itself when
+# Resolve-OllamaAppPath finds it, else with 'ollama list', and polls every 500 ms; while OllamaSetup.exe runs, $Url names another computer or another
+# program holds its port, it only polls. Throws when the ollama program is missing or nothing answers within $TimeoutSeconds; never runs 'ollama serve'.
+function Wait-OllamaServer {
+    [CmdletBinding()]
+    [OutputType([string], [pscustomobject])]
     param(
         [Parameter(Mandatory)][string]$Url,
-        [ValidateRange(1, 3600)][int]$TimeoutSeconds = 60
+        [ValidateRange(1, 3600)][int]$TimeoutSeconds = 60,
+        [switch]$PassThru,
+        [ValidateSet('start', 'install', 'update', 'uninstall')][string]$How = 'start'
     )
     $timer = [Diagnostics.Stopwatch]::StartNew()
+    $uri = [uri]$Url
+    $local = $null
     $triggered = $false
+    $upgrading = $false
+    # Why the app is not started yet: 'upgrade', 'remote' or 'held' (by $holder), each said once.
+    $blocked = $null
+    $holder = $null
     $reason = $null
     $startError = $null
+    $appPath = $null
+    $startedId = 0
+    $before = $null
+    $since = [long]0
     while ($true) {
+        $version = $null
         try {
             $answer = Invoke-RestMethod -Uri "$Url/api/version" -UseBasicParsing -TimeoutSec 5
-            if ($answer.version) { return [string]$answer.version }
-            $reason = 'it answered without a version'
+            if ($answer.version) { $version = [string]$answer.version } else { $reason = 'it answered without a version' }
         } catch {
             $reason = $_.Exception.Message
         }
+        if ($version) {
+            if (-not $PassThru) { return $version }
+            $app = $null
+            if ($triggered) {
+                # Only an app this call started itself, with the apps before it listed, can be local-ai's; after an upgrade the installer starts one too.
+                if ($startedId -gt 0 -and $null -ne $before -and -not $upgrading) {
+                    $app = Get-OllamaOwnStart -Before $before -Since $since -Url $Url -ExpectedPath $appPath -ProcessId $startedId -How $How
+                }
+                if ($app) {
+                    Write-Host "Started the Ollama app (PID $($app.Pid)); local-ai stop quits it again."
+                } elseif (-not $startError -and ($null -eq $before -or $before.Count -eq 0)) {
+                    # An app that ran before answers for itself, and stop leaves it as one local-ai did not start.
+                    Write-Host 'local-ai cannot tell that the Ollama app answering now is the one it started, so local-ai stop leaves it running.'
+                }
+            }
+            return [pscustomobject]@{ Version = $version; App = $app; Started = $triggered }
+        }
         if (-not $triggered) {
-            $triggered = $true
-            if (-not (Get-Command -Name 'ollama' -CommandType Application -ErrorAction SilentlyContinue)) {
-                throw "Ollama does not answer at $Url ($reason), and the ollama program is not on PATH. Install Ollama, then try again."
+            if ($null -eq $local) { $local = Test-LocalHostName -HostName $uri.Host }
+            $was = $blocked
+            $holder = $null
+            if (Test-OllamaSetupRunning) {
+                # The ollama CLI refuses to start the app during an upgrade (cmd/start_windows.go), and the installer starts it once it is done.
+                $upgrading = $true
+                $blocked = 'upgrade'
+            } elseif (-not $local) {
+                # The app serves this PC only.
+                $blocked = 'remote'
+            } else {
+                # As the CLI starts the app only when the connection is refused: its server could not take a port another program holds.
+                try { $holder = Get-PortOwner -Port $uri.Port } catch { $holder = $null }
+                $blocked = if ($holder) { 'held' } else { $null }
             }
-            # When no server answers, the CLI runs 'ollama app.exe --hide --fast-startup' and waits
-            # up to 5 s for it (cmd/start_windows.go).
-            Write-Host "Ollama does not answer at $Url; starting the Ollama app..."
-            $left = [int][math]::Max(1, [math]::Ceiling($TimeoutSeconds - $timer.Elapsed.TotalSeconds))
-            try {
-                $null = Invoke-Native -FilePath 'ollama' -ArgumentList 'list' -Console -TimeoutSeconds $left
-            } catch {
-                $startError = $_.Exception.Message
+            $holderText = if (-not $holder) { '' } elseif ($holder.Name) { "$($holder.Name) (PID $($holder.Id))" } else { "a program (PID $($holder.Id))" }
+            if ($blocked -and $blocked -ne $was) {
+                $why = switch ($blocked) {
+                    'upgrade' { 'while its installer, OllamaSetup.exe, runs; waiting for the upgrade...' }
+                    'remote' { "and $($uri.Host) is another computer, so local-ai does not start the Ollama app here; waiting for it..." }
+                    'held' { "but $holderText holds port $($uri.Port), so local-ai does not start the Ollama app; waiting for it to answer..." }
+                }
+                Write-Host "Ollama does not answer at $Url $why"
             }
-            continue
+            if (-not $blocked) {
+                $triggered = $true
+                if (-not (Get-Command -Name 'ollama' -CommandType Application -ErrorAction SilentlyContinue)) {
+                    throw "Ollama does not answer at $Url ($reason), and the ollama program is not on PATH. Install Ollama, then try again."
+                }
+                $appPath = Resolve-OllamaAppPath
+                if ($PassThru -and $appPath) {
+                    try {
+                        $before = @(Get-OllamaAppProcess)
+                    } catch {
+                        Write-Verbose "The Ollama apps cannot be listed, so local-ai records no app it starts now: $($_.Exception.Message)"
+                    }
+                }
+                # A second early, as Win32_Process and this clock are read apart.
+                $since = [DateTime]::UtcNow.AddSeconds(-1).Ticks
+                Write-Host "Ollama does not answer at $Url; starting the Ollama app..."
+                try {
+                    if ($appPath) {
+                        # The arguments the CLI starts it with, so a pending update of the app waits as it does then.
+                        $startedId = Start-OllamaApp -Path $appPath
+                    } else {
+                        # When no server answers, the CLI runs 'ollama app.exe --hide --fast-startup' from where it finds it and waits up to 5 s.
+                        $left = [int][math]::Max(1, [math]::Ceiling($TimeoutSeconds - $timer.Elapsed.TotalSeconds))
+                        $null = Invoke-Native -FilePath 'ollama' -ArgumentList 'list' -Console -TimeoutSeconds $left
+                    }
+                } catch {
+                    $startError = $_.Exception.Message
+                }
+                continue
+            }
         }
         if ($timer.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
-            $also = if ($startError) { " Starting it with 'ollama list' failed: $startError" } else { '' }
+            if ($blocked -eq 'remote') {
+                throw ("Ollama did not answer at $Url/api/version within $TimeoutSeconds s ($reason). $($uri.Host) is another computer, so local-ai does not " +
+                    'start the Ollama app for it; start Ollama there, or point Ollama.Url at this PC, then try again.')
+            }
+            if ($blocked -eq 'held') {
+                $name = if ($holder.Name) { $holder.Name } else { 'a program' }
+                $where = if ($holder.Path) { ", $($holder.Path)" } else { '' }
+                throw ("Ollama did not answer at $Url/api/version within $TimeoutSeconds s ($reason), and $name (PID $($holder.Id)$where) holds port " +
+                    "$($uri.Port), so local-ai did not start the Ollama app. Close that program, or point Ollama.Url at the Ollama server, then try again.")
+            }
+            if (-not $triggered) {
+                throw ("Ollama did not answer at $Url/api/version within $TimeoutSeconds s while its upgrade (OllamaSetup.exe) was running ($reason). " +
+                    'Wait for the upgrade to finish, then try again.')
+            }
+            $with = if ($appPath) { "'$appPath'" } else { "'ollama list'" }
+            $also = ''
+            if ($startError) {
+                $also = " Starting it with $with failed: $startError"
+            } elseif ($startedId -gt 0) {
+                $also = " The Ollama app local-ai started (PID $startedId) may still come up; local-ai stop leaves it running."
+            }
             throw ("Ollama did not answer at $Url/api/version within $TimeoutSeconds s ($reason).$also " +
                 'Start the Ollama app from the Start menu, wait for its tray icon, then try again.')
         }
         Start-Sleep -Milliseconds 500
     }
+}
+
+# Return $true while the state.json record $App still names the Ollama app local-ai started for the server at $Url: Get-RecordedProcessState finds it
+# running as recorded, or running where this window may not inspect it, as stop and status treat it, and it serves $Url's port on this PC. An app on
+# another port, or a $Url on another computer, is another server's, whose loaded models stop would not see. No record, or a $Url that is no absolute URL,
+# gives $false.
+function Test-OllamaAppRecord {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [hashtable]$App,
+        [AllowEmptyString()][string]$Url = ''
+    )
+    if (-not $App -or -not $Url) { return $false }
+    $port = 0
+    $hostName = ''
+    try {
+        $uri = [uri]$Url
+        $port = $uri.Port
+        $hostName = $uri.Host
+    } catch {
+        return $false
+    }
+    if ([int]$App.Port -ne $port) { return $false }
+    # The app serves this PC only, so a record never names a server of the same port on another computer.
+    if (-not $hostName -or -not (Test-LocalHostName -HostName $hostName)) { return $false }
+    return @('match', 'unreadable') -contains (Get-RecordedProcessState -Record $App)
+}
+
+# Save state.json at $Path with Ollama = @{ Url; Alias; App }: App is $App when given, else the App state.json records while Test-OllamaAppRecord still
+# finds it serving $Url, else $null, so stop never quits an app that has gone, a reused PID or the app of another server. Returns the App kept; throws as
+# the state file does.
+function Save-OllamaRecord {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Url,
+        [AllowEmptyString()][string]$Alias = '',
+        [hashtable]$App
+    )
+    $state = Read-LocalAIState -Path $Path
+    $kept = $App
+    $previous = $state['Ollama']
+    if (-not $kept -and $previous -is [hashtable] -and $previous.App -is [hashtable] -and (Test-OllamaAppRecord -App $previous.App -Url $Url)) { $kept = $previous.App }
+    $state['Ollama'] = @{ Url = $Url; Alias = $Alias; App = $kept }
+    Write-LocalAIState -Path $Path -State $state
+    return $kept
 }
 
 # Return one object (Digest, Path) per FROM line of 'ollama show --modelfile $Name', in order: the weights first, then any vision projector.
@@ -1292,7 +1720,8 @@ function Assert-OllamaCliUrl {
 
 # The install verb, with the PC kept awake: install Ollama, uv (and Git for images) with winget, the chat model, Open WebUI, with
 # Files.Root the file tools and a Test-FilesRoot check, and with Images.Enabled ComfyUI, its checkpoint and a workflow check, saving state.json
-# and install-stamp.json after each part. Returns 0, or 2 when a step warned or the file or image part failed (chat stays usable); chat failures throw.
+# and install-stamp.json after each part. An Ollama app that its waits or the Ollama installer started is recorded in state.json at once, for stop.
+# Returns 0, or 2 when a step warned or the file or image part failed (chat stays usable); chat failures throw.
 function Install-LocalAI {
     [CmdletBinding()]
     [OutputType([int])]
@@ -1311,18 +1740,35 @@ function Install-LocalAI {
         # An installed Ollama tells whether the model still has to be downloaded.
         $blobs = @()
         if (Get-Command -Name 'ollama' -CommandType Application -ErrorAction SilentlyContinue) {
-            $null = Wait-OllamaServer -Url $url
+            $wait = Wait-OllamaServer -Url $url -PassThru -How 'install'
+            # Saved at once, so stop quits the app this wait started also when a later step throws.
+            if ($wait.App) { $null = Save-OllamaRecord -Path $paths.State -Url $url -Alias $settings.Model.Alias -App $wait.App }
             $blobs = @(Get-OllamaModelBlob -Name $settings.Model.Source)
         }
         Test-ChatModelSpace -Settings $settings -Blobs $blobs -WarningVariable +warned
 
+        # Ollama's installer starts the app when it is done. That app counts as this install's only when no app ran before (Get-OllamaOwnStart).
+        $appsBefore = $null
+        try {
+            $appsBefore = @(Get-OllamaAppProcess)
+        } catch {
+            Write-Verbose "The Ollama apps cannot be listed, so install records no app the Ollama installer starts: $($_.Exception.Message)"
+        }
+        $since = [DateTime]::UtcNow.AddSeconds(-1).Ticks
         $packages = @($settings.Winget.Packages.Ollama, $settings.Winget.Packages.Uv)
         # ComfyUI is a git checkout.
         if ($settings.Images.Enabled) { $packages += $settings.Winget.Packages.Git }
         foreach ($package in $packages) {
             $null = Install-WingetPackage -Package $package -LogDir $paths.Logs -WarningVariable +warned
         }
-        $version = Wait-OllamaServer -Url $url
+        $wait = Wait-OllamaServer -Url $url -PassThru -How 'install'
+        $version = $wait.Version
+        $app = $wait.App
+        if (-not $app -and $null -ne $appsBefore -and $appsBefore.Count -eq 0) {
+            $app = Get-OllamaOwnStart -Before @() -Since $since -Url $url -ExpectedPath ([string](Resolve-OllamaAppPath)) -How 'install'
+            if ($app) { Write-Host "The Ollama installer started the Ollama app (PID $($app.Pid)); local-ai stop quits it again." }
+        }
+        if ($app) { $null = Save-OllamaRecord -Path $paths.State -Url $url -Alias $settings.Model.Alias -App $app }
         Write-Host "Ollama $version answers at $url."
         $null = Test-OllamaLoopback -Url $url -WarningVariable +warned
 
@@ -3358,7 +3804,12 @@ function Stop-LocalAIService {
         }
         Start-Sleep -Milliseconds 500
     }
-    Write-Host "Stopped $Name (PID $($target.Pid))."
+    # Get-LiveRecord lists the record before its Listener, so another target is the server that the recorded process left running.
+    if ([object]::ReferenceEquals($target, $Record)) {
+        Write-Host "Stopped $Name (PID $($target.Pid))."
+    } else {
+        Write-Host "Stopped the server (PID $($target.Pid)) that $Name (PID $($Record.Pid)) left running."
+    }
     return 'stopped'
 }
 
@@ -3616,9 +4067,10 @@ function Stop-RecordedFilesService {
     return $result -eq 'stopped'
 }
 
-# The start verb: install first when install-stamp.json lacks Ollama, Model or OpenWebUI; check Ollama has Model.Alias; stop a recorded mcpo this
-# start leaves out; launch ComfyUI, the image gate and mcpo, waiting for the last two at once, then Open WebUI using those that answered; open the
-# browser, then check ComfyUI. Adds each service it launched to Context.Launched (a List[string]). Returns 0; 2 on warnings; 1 when Open WebUI fails.
+# The start verb: install first when install-stamp.json lacks Ollama, Model or OpenWebUI, else wait for Ollama; record in state.json at once an Ollama app
+# either started (Save-OllamaRecord); check Ollama has Model.Alias; stop a recorded mcpo this start leaves out; launch ComfyUI, the image gate and mcpo,
+# waiting for the last two at once, then Open WebUI using those that answered; open the browser, then check ComfyUI. Adds each service it launched to
+# Context.Launched (a List[string]). Returns 0; 2 on warnings; 1 when Open WebUI fails.
 function Start-LocalAI {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'A launcher verb, which offers no -WhatIf.')]
@@ -3637,16 +4089,20 @@ function Start-LocalAI {
     $stamp = Read-LocalAIState -Path $paths.InstallStamp
     $missing = @(foreach ($key in 'Ollama', 'Model', 'OpenWebUI') { if ($stamp[$key] -isnot [hashtable]) { $key } })
     $installed = $missing.Count -gt 0
+    $alias = $settings.Model.Alias
     if ($installed) {
         Write-Host "install-stamp.json does not record $($missing -join ', '), so install runs first."
+        # It records any Ollama app it started at once.
         $null = Install-LocalAI -Context $Context -WarningVariable +warned
         $stamp = Read-LocalAIState -Path $paths.InstallStamp
     } else {
         # install has just done both.
-        $null = Wait-OllamaServer -Url $url
+        $wait = Wait-OllamaServer -Url $url -PassThru -How 'start'
+        # Saved before any later step can throw, so stop quits the app this wait started. A server that was down held no model; otherwise the recorded
+        # Url and Alias stay until the checks below pass, as stop unloads the alias they name.
+        if ($wait.App) { $null = Save-OllamaRecord -Path $paths.State -Url $url -Alias $alias -App $wait.App }
         $null = Test-OllamaLoopback -Url $url -WarningVariable +warned
     }
-    $alias = $settings.Model.Alias
     if (@(Get-OllamaModelBlob -Name $alias).Count -eq 0) {
         throw "Ollama at $url has no model '$alias'. Run 'local-ai install' to create it."
     }
@@ -3704,8 +4160,11 @@ function Start-LocalAI {
     $services = @(Get-LocalAIService -Settings $settings -Paths $paths -OllamaUrl $url -OpenWebUI $openWebUI -ComfyUI $comfyUI -ImageWorkflow $workflow `
             -Files $files -WarningVariable +warned)
 
-    # stop unloads this model from this server without reading settings.
-    $state['Ollama'] = @{ Url = $url; Alias = $alias }
+    # stop unloads this model from this server without reading settings, and quits the Ollama app recorded with them: the one this start's wait or install
+    # recorded above, or an earlier one while Test-OllamaAppRecord finds it serving this server.
+    $app = if ($state['Ollama'] -is [hashtable] -and $state['Ollama'].App -is [hashtable]) { $state['Ollama'].App } else { $null }
+    if ($app -and -not (Test-OllamaAppRecord -App $app -Url $url)) { $app = $null }
+    $state['Ollama'] = @{ Url = $url; Alias = $alias; App = $app }
     Write-LocalAIState -Path $paths.State -State $state
     $webUrl = @($services | Where-Object { $_.Name -eq 'OpenWebUI' })[0].Url
     $gate = @($services | Where-Object { $_.Name -eq 'ImageGate' })
@@ -3846,16 +4305,140 @@ function Start-LocalAI {
     return 0
 }
 
-# The stop verb, which reads only state.json: stop every recorded service with Stop-LocalAIService, dropping the
-# records it stopped or found stale, then unload the recorded model from the recorded server when /api/ps lists it,
-# leaving Ollama running. Returns 0, or 1 when anything could not be stopped; throws when state.json is not JSON.
+# Quit the Ollama app that the state.json record $Record says local-ai started, for the server at $Url, printing why; returns @{ Result; Reason }, Reason
+# being the last line printed. Result: 'stale' when $Url is not on this PC or the app no longer runs as recorded; 'kept' when /api/ps lists a model other
+# than $Alias or cannot say, another program holds a connection to the port, or the app runs in another Windows session or shows a window; 'stopped' once
+# it ended, through the tray's own quit (WM_CLOSE) within $TimeoutSeconds or by itself; 'forced' after taskkill /T /F (Stop-LocalAIService) of its tree,
+# or of its recorded server when only that still ran; 'failed' when it cannot be inspected or still runs afterwards. Kills nothing else.
+function Stop-OllamaApp {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Called by the stop and uninstall verbs, which offer no -WhatIf.')]
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$Record,
+        [Parameter(Mandatory)][string]$Url,
+        [AllowEmptyString()][string]$Alias = '',
+        [ValidateRange(1, 300)][int]$TimeoutSeconds = 20
+    )
+    $id = [int]$Record.Pid
+    $uri = [uri]$Url
+    $port = if ([int]$Record.Port -gt 0) { [int]$Record.Port } else { $uri.Port }
+    $report = {
+        param([string]$Result, [string]$Reason)
+        if ($Result -eq 'failed') { Write-Host $Reason -ForegroundColor Red } else { Write-Host $Reason }
+        return @{ Result = $Result; Reason = $Reason }
+    }
+    if (-not (Test-LocalHostName -HostName $uri.Host)) {
+        return & $report 'stale' "Ollama at $Url runs on another computer, so stop quits no Ollama app for it."
+    }
+    $found = Get-RecordedProcessState -Record $Record
+    if ($found -eq 'other') {
+        return & $report 'stale' "The Ollama app local-ai started (PID $id) no longer runs, or was restarted by an update or by you, so stop leaves Ollama as it is."
+    }
+    if ($found -eq 'unreadable') {
+        return & $report 'failed' ("The Ollama app local-ai started (PID $id) still runs, but this window may not inspect it, as when it was started from an " +
+            "elevated window, so it was not quit. Run 'local-ai stop' from an elevated window.")
+    }
+    # Quitting unloads every model Ollama holds, also one another program loaded.
+    $others = @()
+    try {
+        $ps = Invoke-RestMethod -Uri "$Url/api/ps" -UseBasicParsing -TimeoutSec 5
+        $others = @(foreach ($model in @($ps.models)) {
+                if (-not $model) { continue }
+                $names = @([string]$model.name, [string]$model.model)
+                if (-not ($names -contains $Alias -or $names -contains "${Alias}:latest")) { [string]$model.name }
+            })
+    } catch {
+        $why = $_.Exception.Message
+        # Without a server on the port no model is loaded, so the quit cuts nothing off.
+        if (Get-PortOwner -Port $port) {
+            return & $report 'kept' ("Ollama does not list its loaded models at $Url/api/ps ($why), so stop cannot tell whether another program uses it, and " +
+                "the Ollama app local-ai started (PID $id) keeps running; quit it from its tray icon, or run 'local-ai stop' again.")
+        }
+    }
+    if ($others.Count -gt 0) {
+        return & $report 'kept' ("Ollama still has $($others -join ', ') loaded, which another program may be using, so the Ollama app local-ai started " +
+            "(PID $id) keeps running. Ollama unloads an idle model after its keep-alive (5 minutes by default); run 'local-ai stop' again then, or quit the " +
+            'app from its tray icon.')
+    }
+    # The launcher's services have stopped by now, so a connection from outside the app is another program's, such as a coding tool on the /v1 endpoint.
+    try {
+        $clients = @(Get-LoopbackClient -Port $port -Exclude @($PID, $id) | Where-Object { -not (Test-ProcessDescendant -ProcessId $_.Id -AncestorId $id) })
+    } catch {
+        return & $report 'kept' ("Cannot tell which programs are connected to Ollama on port $port ($($_.Exception.Message)), so the Ollama app local-ai " +
+            "started (PID $id) keeps running; quit it from its tray icon, or run 'local-ai stop' again.")
+    }
+    if ($clients.Count -gt 0) {
+        $who = @($clients | ForEach-Object { if ($_.Name) { "$($_.Name) (PID $($_.Id))" } else { "PID $($_.Id)" } }) -join ', '
+        return & $report 'kept' ("Ollama at $Url still has connections from $who, which may still use it, so the Ollama app local-ai started (PID $id) " +
+            "keeps running; run 'local-ai stop' again once they are done, or quit the app from its tray icon.")
+    }
+    # EnumWindows lists only this session's windows, so from another session the app would seem to have none, open or hidden.
+    if (-not (Test-ProcessInThisSession -ProcessId $id)) {
+        return & $report 'kept' ("The Ollama app local-ai started (PID $id) runs in another Windows session, whose windows stop cannot see, so it keeps " +
+            "running; run 'local-ai stop' on that desktop, or quit the app from its tray icon.")
+    }
+    try {
+        $open = Test-OllamaAppWindowOpen -ProcessId $id
+    } catch {
+        # As where Add-Type is not allowed; without the windows, neither the check nor the quit can run.
+        return & $report 'failed' ("Cannot tell whether the Ollama app local-ai started (PID $id) has a window open, so it was not quit: " +
+            "$($_.Exception.Message) Quit it from its tray icon.")
+    }
+    if ($open) {
+        return & $report 'kept' ("The Ollama app local-ai started (PID $id) has a window open, so it keeps running; close that window, then run " +
+            "'local-ai stop' again, or quit the app from its tray icon.")
+    }
+    # The server, ollama.exe serve, is the app's direct child; the app gives it a new PID when it restarts it.
+    $serve = Get-PortOwner -Port $port
+    if ($serve -and -not (Test-ProcessDescendant -ProcessId $serve.Id -AncestorId $id -MaxDepth 1)) { $serve = $null }
+    $held = {
+        $owner = Get-PortOwner -Port $port
+        [bool]($owner -and (($serve -and $owner.Id -eq $serve.Id -and $owner.StartTicks -eq $serve.StartTicks) -or
+                (Test-ProcessDescendant -ProcessId $owner.Id -AncestorId $id -MaxDepth 1)))
+    }
+    $handle = Find-OllamaAppWindow -ProcessId $id
+    if ($handle -eq [IntPtr]::Zero) {
+        $why = 'has no window to ask it to quit'
+    } elseif (-not (Send-OllamaAppClose -Handle $handle)) {
+        $why = 'refused the request to quit'
+    } else {
+        # The app gives its server 5 s to stop before it kills it (app/server/server.go in Ollama v0.40.13).
+        for ($poll = 1; $poll -le $TimeoutSeconds * 2; $poll++) {
+            Start-Sleep -Milliseconds 500
+            if (-not (Test-RecordedProcess -Record $Record) -and -not (& $held)) {
+                return & $report 'stopped' "Quit the Ollama app local-ai started (PID $id)."
+            }
+        }
+        $why = "did not quit within $TimeoutSeconds s"
+    }
+    # /T takes the server and its runners along, as Ollama's own installer does; the app alone would leave its server holding the port. Stop-LocalAIService
+    # checks the record again, so it kills the app's tree, or the recorded server once the app has ended, or nothing.
+    $appRan = Test-RecordedProcess -Record $Record
+    $result = Stop-LocalAIService -Name 'Ollama app' -Record $Record -TimeoutSeconds ([math]::Min(10, $TimeoutSeconds))
+    if ($result -eq 'stopped') {
+        $what = if ($appRan) { 'it, its server and the models it held' } else { 'the server it left running, with the models it held' }
+        return & $report 'forced' "The Ollama app local-ai started (PID $id) $why, so taskkill /T /F ended $what."
+    }
+    if ($result -eq 'stale' -and -not (& $held)) {
+        return & $report 'stopped' "The Ollama app local-ai started (PID $id) ended before taskkill ran."
+    }
+    return & $report 'failed' "The Ollama app local-ai started (PID $id), or its server on port $port, still runs; see above."
+}
+
+# The stop verb, which reads only state.json: stop every recorded service with Stop-LocalAIService, dropping the records it stopped or found stale, unload the
+# recorded model from the recorded server when /api/ps lists it, then, unless -KeepOllama, quit the Ollama app state.json records as local-ai's with
+# Stop-OllamaApp; an Ollama that ran before stays. Returns 0, or 1 when anything could not be stopped; throws when state.json is not JSON.
 function Stop-LocalAI {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'A launcher verb, which offers no -WhatIf.')]
     [CmdletBinding()]
     [OutputType([int])]
     param(
-        [Parameter(Mandatory)][hashtable]$Context
+        [Parameter(Mandatory)][hashtable]$Context,
+        # For update and uninstall, which still need Ollama afterwards.
+        [switch]$KeepOllama
     )
     $statePath = $Context.Paths.State
     $state = Read-LocalAIState -Path $statePath
@@ -3878,11 +4461,13 @@ function Stop-LocalAI {
     }
 
     $ollama = $state['Ollama']
+    $answers = $false
     if ($ollama -is [hashtable] -and $ollama.Url -and $ollama.Alias) {
         $alias = [string]$ollama.Alias
         $loaded = $false
         try {
             $loaded = Test-OllamaModelLoaded -Url $ollama.Url -Alias $alias
+            $answers = $true
             if (-not $loaded) { Write-Host "$alias is not loaded in Ollama." }
         } catch {
             Write-Host "Ollama does not answer at $($ollama.Url), so $alias is not loaded there."
@@ -3898,7 +4483,7 @@ function Stop-LocalAI {
                     Start-Sleep -Milliseconds 500
                 }
                 $done.Add($alias)
-                Write-Host "Unloaded $alias; Ollama keeps running."
+                Write-Host "Unloaded $alias."
             } catch {
                 Write-Host "Could not unload ${alias}: $($_.Exception.Message)" -ForegroundColor Red
                 $failed.Add($alias)
@@ -3906,12 +4491,38 @@ function Stop-LocalAI {
         }
     }
 
+    # Last, once its clients have stopped and the alias is unloaded.
+    $ollamaRuns = $answers
+    if (-not $KeepOllama -and $ollama -is [hashtable] -and $ollama.Url) {
+        if ($ollama.App -is [hashtable]) {
+            $quit = Stop-OllamaApp -Record $ollama.App -Url ([string]$ollama.Url) -Alias ([string]$ollama.Alias)
+            if ($quit.Result -eq 'failed') {
+                $failed.Add('Ollama')
+            } elseif ($quit.Result -eq 'kept') {
+                $ollamaRuns = $true
+            } else {
+                if ($quit.Result -ne 'stale') {
+                    $done.Add('Ollama')
+                    $ollamaRuns = $false
+                }
+                $ollama['App'] = $null
+                $state['Ollama'] = $ollama
+                Write-LocalAIState -Path $statePath -State $state
+            }
+        } elseif ($answers) {
+            # Also an app local-ai started but could not tell apart, which Wait-OllamaServer says when it starts it.
+            Write-Host 'Ollama keeps running, since state.json records no Ollama app that local-ai started.'
+        }
+    }
+
     if ($failed.Count -gt 0) {
         Write-Host "Stop finished, but $($failed -join ', ') could not be stopped; see above." -ForegroundColor Red
         return 1
     }
-    $what = if ($done.Count -gt 0) { "stopped $($done -join ', ')" } else { 'nothing was running' }
-    Write-Host "Stop finished: $what." -ForegroundColor Green
+    $what = @()
+    if ($done.Count -gt 0) { $what += "stopped $($done -join ', ')" } elseif (-not $ollamaRuns) { $what += 'nothing was running' }
+    if ($ollamaRuns) { $what += 'Ollama keeps running' }
+    Write-Host "Stop finished: $($what -join '; ')." -ForegroundColor Green
     return 0
 }
 
@@ -4162,9 +4773,10 @@ function Get-StatusSection {
     return @{ Key = $Key; Title = $Title; Data = [ordered]@{}; Lines = New-Object System.Collections.Generic.List[object] }
 }
 
-# Return the status section for Ollama at $Url: its version against $Stamp, a listener beyond loopback, the loaded models with their share of VRAM,
-# whether $Alias exists and which $Superseded aliases remain, with what still uses each (Get-SupersededAliasNote). 'down' when Ollama does not answer.
-# REST, listener and file reads only, so the Ollama app is never started.
+# Return the status section for Ollama at $Url: its version against $Stamp, whether the Ollama app is the one state.json records as local-ai's ($App) for
+# this server, so that stop quits it, a listener beyond loopback, the loaded models with their share of VRAM, whether $Alias exists and which $Superseded
+# aliases remain, with what still uses each (Get-SupersededAliasNote). 'down' when Ollama does not answer. REST, process, listener and file reads only, so
+# the Ollama app is never started, and a stale $App record stays for stop to drop.
 function Get-StatusOllamaSection {
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -4172,7 +4784,8 @@ function Get-StatusOllamaSection {
         [Parameter(Mandatory)][string]$Url,
         [string]$Alias,
         [string[]]$Superseded = @(),
-        [hashtable]$Stamp = @{}
+        [hashtable]$Stamp = @{},
+        [hashtable]$App
     )
     $section = Get-StatusSection -Key 'ollama' -Title 'Ollama'
     $data = $section.Data
@@ -4181,6 +4794,26 @@ function Get-StatusOllamaSection {
     $data.url = $Url
     $data.version = $null
     $data.stampedVersion = $stamped
+    $uri = [uri]$Url
+    # As stop judges it: an app that runs as recorded, or that this window may not inspect, is local-ai's. It is this server's only when the record names
+    # the port of $Url on this PC, as Test-OllamaAppRecord requires.
+    $appState = $null
+    $serves = $false
+    if ($App) {
+        try { $appState = Get-RecordedProcessState -Record $App } catch { $appState = 'other' }
+        $serves = [int]$App.Port -eq $uri.Port -and (Test-LocalHostName -HostName $uri.Host)
+    }
+    $data.startedByLauncher = $serves -and @('match', 'unreadable') -contains $appState
+    $data.appPid = $null
+    $data.appStartedUtc = $null
+    if ($data.startedByLauncher) {
+        $data.appPid = [int]$App.Pid
+        try {
+            $data.appStartedUtc = ([datetime]::new([long]$App.StartTicks, [DateTimeKind]::Utc)).ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+        } catch {
+            Write-Verbose "state.json records no start time of the Ollama app that a date can hold: $($_.Exception.Message)"
+        }
+    }
     $reason = 'it answered without a version'
     try {
         $answer = Invoke-RestMethod -Uri "$Url/api/version" -UseBasicParsing -TimeoutSec 5
@@ -4194,8 +4827,23 @@ function Get-StatusOllamaSection {
     }
     $recorded = if ($stamped -and $stamped -ne $data.version) { "; install recorded $stamped" } else { '' }
     & $add 'fact' "Ollama $($data.version) answers at $Url$recorded."
+    if ($data.startedByLauncher -and $appState -eq 'match') {
+        & $add 'fact' "Started by local-ai (app PID $($data.appPid)); local-ai stop quits it."
+    } elseif ($data.startedByLauncher) {
+        & $add 'info' ("Started by local-ai (app PID $($data.appPid)), but this window may not inspect the app, as when it was started from an elevated " +
+            "window; run 'local-ai stop' from an elevated window to quit it.")
+    } else {
+        if ($appState -eq 'other') {
+            & $add 'info' ("state.json records an Ollama app local-ai started (PID $($App.Pid)), but it no longer runs, or was restarted by an update or by " +
+                'you; local-ai stop drops that record.')
+        } elseif ($appState) {
+            # stop goes by the server state.json records, which Ollama.Url no longer names once it changed after the last start.
+            $quit = if ($appState -eq 'unreadable') { "run 'local-ai stop' from an elevated window to quit it" } else { 'local-ai stop quits it' }
+            & $add 'info' "state.json records an Ollama app local-ai started (PID $($App.Pid)) for port $($App.Port) on this PC, not for $Url; $quit."
+        }
+        & $add 'fact' 'Not started by local-ai; local-ai stop leaves it running.'
+    }
 
-    $uri = [uri]$Url
     $data.listeners = @()
     if (Test-LocalHostName -HostName $uri.Host) {
         try {
@@ -4845,7 +5493,7 @@ function Get-LocalAIStatusReport {
     try { $state = Read-LocalAIState -Path $paths.State } catch { & $add 'degraded' "$($_.Exception.Message) status reads it as empty." }
     $stamp = @{}
     try { $stamp = Read-LocalAIState -Path $paths.InstallStamp } catch { & $add 'degraded' "$($_.Exception.Message) status reads it as empty." }
-    # start records the server and the alias it used, for stop.
+    # start records the server and the alias it used, and the Ollama app it started, for stop.
     $recorded = if ($state['Ollama'] -is [hashtable]) { $state['Ollama'] } else { @{} }
     if ($settings) {
         $url = Resolve-OllamaUrl -Setting $settings.Ollama.Url
@@ -4858,7 +5506,8 @@ function Get-LocalAIStatusReport {
     }
     $sections = New-Object System.Collections.Generic.List[hashtable]
     $sections.Add($launcher)
-    $sections.Add((Get-StatusOllamaSection -Url $url -Alias $alias -Superseded $superseded -Stamp $stamp))
+    $app = if ($recorded.App -is [hashtable]) { $recorded.App } else { $null }
+    $sections.Add((Get-StatusOllamaSection -Url $url -Alias $alias -Superseded $superseded -Stamp $stamp -App $app))
     $services = Get-StatusServiceSection -Settings $settings -Paths $paths -State $state -Stamp $stamp -OllamaUrl $url
     $sections.Add($services)
     $sections.Add((Get-StatusSystemSection))
@@ -4959,7 +5608,7 @@ function Get-LocalAIShortcutSpec {
     $join = { param([string[]]$Items) if ($Items.Count -gt 1) { ($Items[0..($Items.Count - 2)] -join ', ') + ' and ' + $Items[-1] } else { $Items -join '' } }
     $alias = $Settings.Model.Alias
     @{ Name = 'Start Local AI.lnk'; Arguments = 'start'; Description = "Start $(& $join $names), with $alias in Ollama" }
-    @{ Name = 'Stop Local AI.lnk'; Arguments = 'stop'; Description = "Stop $(& $join $names), and unload $alias from Ollama" }
+    @{ Name = 'Stop Local AI.lnk'; Arguments = 'stop'; Description = "Stop $(& $join $names), unload $alias from Ollama, and quit the Ollama app when local-ai started it" }
     @{ Name = 'Status Local AI.lnk'; Arguments = 'status'; Description = "Show whether $(& $join (@('Ollama') + $names)) run, and what needs attention" }
 }
 
@@ -5896,20 +6545,33 @@ function Get-OllamaListedModel {
 
 # Offer each Model.SupersededAliases name that 'ollama list' shows, never Model.Alias or Model.Source, for removal with its own Confirm-LocalAIAction (default No),
 # saying first what still uses it, and run 'ollama rm' only on a yes. Returns the names it removed; a failed removal warns, and a window that cannot ask
-# removes nothing.
+# removes nothing. Warns and runs no ollama when the server at $Url, the one the ollama program uses (Assert-OllamaCliUrl), does not answer.
 function Remove-SupersededAlias {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'It asks before each removal itself.')]
     [CmdletBinding()]
     [OutputType([string])]
     param(
-        [Parameter(Mandatory)][hashtable]$Settings
+        [Parameter(Mandatory)][hashtable]$Settings,
+        [Parameter(Mandatory)][string]$Url
     )
     $model = $Settings.Model
     # Also with the tag latest, which Ollama adds to a name without one.
     $kept = @(foreach ($name in @($model.Alias, $model.Source)) { if ($name) { [string]$name; "${name}:latest" } })
     $offered = @(@($model.SupersededAliases) | Where-Object { $_ -and $kept -notcontains $_ -and $kept -notcontains "${_}:latest" })
     if ($offered.Count -eq 0) { return }
+    # Without a server the ollama program starts the Ollama app, which would hold the captured output open (Get-OllamaModelBlob) and stay running.
+    $reason = $null
+    try {
+        $answer = Invoke-RestMethod -Uri "$Url/api/version" -UseBasicParsing -TimeoutSec 5
+        if (-not $answer.version) { $reason = 'it answered without a version' }
+    } catch {
+        $reason = $_.Exception.Message
+    }
+    if ($reason) {
+        Write-Warning "Could not list Ollama's models to offer removing the superseded aliases: Ollama does not answer at $Url/api/version ($reason)."
+        return
+    }
     try {
         $listed = @(Get-OllamaListedModel -Name $offered)
     } catch {
@@ -6074,9 +6736,10 @@ function Update-OpenWebUITool {
     }
 }
 
-# Put Open WebUI back as it was before update's change $Change (from Update-OpenWebUITool) once the new version failed the check: stop the stack, reinstall the
-# previous version on the previous Python under the saved package list, record it in install-stamp.json, then restore the data folder from the backup, moving the
-# failed data aside. Returns one text saying what was done and where the data went; a failed step is named in it, never thrown, and no data is deleted.
+# Put Open WebUI back as it was before update's change $Change (from Update-OpenWebUITool) once the new version failed the check: stop the stack but not Ollama,
+# reinstall the previous version on the previous Python under the saved package list, record it in install-stamp.json, then restore the data folder from the
+# backup, moving the failed data aside. Returns one text saying what was done and where the data went; a failed step is named in it, never thrown, and no data
+# is deleted.
 function Undo-OpenWebUIUpdate {
     [CmdletBinding()]
     [OutputType([string])]
@@ -6090,7 +6753,8 @@ function Undo-OpenWebUIUpdate {
     $list = if ($Change.Constraints) { " -c `"$($Change.Constraints)`"" } else { '' }
     $reinstall = "uv tool install --python $($previous.Python) open-webui==$($previous.Version)$list --reinstall"
     $restore = "move $dataDir aside and copy what $($Change.Backup) holds into it, but local-ai-backup.json and open-webui-packages.txt"
-    if ((Stop-LocalAI -Context $Context) -ne 0) {
+    # The stack starts again afterwards, against the same Ollama.
+    if ((Stop-LocalAI -Context $Context -KeepOllama) -ne 0) {
         return "It could not be stopped for the rollback, so the new version stays; once it is stopped, reinstall the previous one with: $reinstall. Then $restore."
     }
     try {
@@ -6240,12 +6904,16 @@ function Write-LocalAIUpdatePlan {
     }
 }
 
-# The update verb, with the PC kept awake: when anything differs from its pin (Get-LocalAIUpdatePlan), show the plan and ask, stop the stack, update each part
-# and, with -Tools, the winget packages; then start the stack to check it, roll Open WebUI back when the new version fails, leave the stack running only when it
-# ran before, and offer to remove superseded aliases. Returns 0; 2 when degraded or declined; 1 on a failure.
+# The update verb, with the PC kept awake: when anything differs from its pin (Get-LocalAIUpdatePlan), show the plan and ask, stop the stack but not Ollama,
+# update each part and, with -Tools, the winget packages; then start the stack to check it, roll Open WebUI back when the new version fails, offer to remove
+# superseded aliases while Ollama still answers, and leave the stack running only when it ran before. Ollama ends as update found it: the app its first wait
+# started, recorded as start records it, is quit again unless the stack runs, also after an early return or a throw. Returns 0; 2 when degraded or declined,
+# or when that quit fails; 1 on a failure.
 function Update-LocalAI {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'A launcher verb, which asks through Confirm-LocalAIAction instead of -WhatIf.')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', 'stopDone',
+        Justification = 'The finally reads what the dot-sourced body sets.')]
     [CmdletBinding()]
     [OutputType([int])]
     param(
@@ -6262,182 +6930,228 @@ function Update-LocalAI {
     foreach ($key in $Context.Keys) { $quiet[$key] = $Context[$key] }
     $quiet['NoBrowser'] = $true
     $quiet['Launched'] = $launchedNames
+    # The finally below reads both, and sets $quitFailed when it cannot quit the Ollama app the first wait started.
+    $firstWait = $null
+    $stopDone = $false
+    $quitFailed = $false
     Set-LocalAIKeepAwake -Enabled $true
     try {
-        Update-SessionPath
-        $url = Resolve-OllamaUrl -Setting $settings.Ollama.Url
-        Assert-OllamaCliUrl -Url $url
-        $null = Wait-OllamaServer -Url $url
-        $stamp = Read-LocalAIState -Path $paths.InstallStamp
-        $missing = @(foreach ($key in 'Ollama', 'Model', 'OpenWebUI') { if ($stamp[$key] -isnot [hashtable]) { $key } })
-        if ($missing.Count -gt 0) {
-            Write-Host "install-stamp.json does not record $($missing -join ', '), so there is nothing to update yet. Run 'local-ai install' first." -ForegroundColor Red
-            return 1
-        }
-        Write-Host 'Comparing what is installed with the pins...'
-        $plan = Get-LocalAIUpdatePlan -Settings $settings -Paths $paths -Stamp $stamp -State (Read-LocalAIState -Path $paths.State) -RepoRoot $Context.RepoRoot `
-            -Tools:([bool]$Context.Tools) -WarningVariable +warned
-        $blocked = @($plan.Components | Where-Object { $_.Problem })
-        if ($blocked.Count -gt 0) {
-            foreach ($component in $blocked) { Write-Host "$($component.Display): $($component.Problem)" -ForegroundColor Red }
-            Write-Host 'Update changed nothing.' -ForegroundColor Red
-            return 1
-        }
-        $pending = @($plan.Components | Where-Object { $_.Changes.Count -gt 0 })
-        if ($pending.Count -eq 0 -and @($plan.Tools).Count -eq 0) {
-            Write-Host 'Everything matches its pin.' -ForegroundColor Green
-            $null = Remove-SupersededAlias -Settings $settings -WarningVariable +warned
-            if ((& $count) -gt 0) { return 2 }
-            return 0
-        }
-        Write-LocalAIUpdatePlan -Plan $plan -Paths $paths
-        if (-not (Confirm-LocalAIAction -Question 'Update these now?')) {
-            Write-Host 'Nothing was changed, so the parts above still differ from their pins.' -ForegroundColor Yellow
-            return 2
-        }
-
-        $before = @(Get-LocalAIRunningService -Path $paths.State)
-        if ((Stop-LocalAI -Context $Context) -ne 0) {
-            Write-Host ("Update changed nothing, because not everything the launcher runs could be stopped; see above. Run 'local-ai stop', then " +
-                'update again.') -ForegroundColor Red
-            return 1
-        }
-        # 'local-ai stop' stops only what state.json records, not what another program started, for example. Windows locks what a running Python loaded,
-        # and a uv reinstall that cannot remove it leaves a broken environment that 'uv tool list' still lists.
-        $folders = New-Object System.Collections.Generic.List[string]
-        $programs = New-Object System.Collections.Generic.List[string]
-        foreach ($component in $pending) {
-            if ($component.Name -eq 'OpenWebUI' -and $component.Reinstall) {
-                $folders.Add((Join-Path $plan.ToolDir 'open-webui'))
-                $programs.Add([string]$component.Tool.Path)
+        # Dot-sourced, so its variables are this function's and each return leaves only the block, whose result the finally can still change.
+        $code = . {
+            Update-SessionPath
+            $url = Resolve-OllamaUrl -Setting $settings.Ollama.Url
+            Assert-OllamaCliUrl -Url $url
+            $firstWait = Wait-OllamaServer -Url $url -PassThru -How 'update'
+            # An Ollama that answered without this wait's start, the user's own or one an earlier start recorded, stays running after update.
+            $ollamaWasUp = -not $firstWait.Started
+            # As start records it, at once, so the app this wait started is quit again also when update ends early. Otherwise the recorded Url and Alias stay
+            # until the stack is stopped below, as that stop unloads the alias they name.
+            if ($firstWait.App) { $null = Save-OllamaRecord -Path $paths.State -Url $url -Alias $settings.Model.Alias -App $firstWait.App }
+            $stamp = Read-LocalAIState -Path $paths.InstallStamp
+            $missing = @(foreach ($key in 'Ollama', 'Model', 'OpenWebUI') { if ($stamp[$key] -isnot [hashtable]) { $key } })
+            if ($missing.Count -gt 0) {
+                Write-Host "install-stamp.json does not record $($missing -join ', '), so there is nothing to update yet. Run 'local-ai install' first." -ForegroundColor Red
+                return 1
             }
-            if ($component.Name -eq 'ComfyUI') { $folders.Add($component.Dir) }
-            if ($component.Name -eq 'Files') { $folders.Add((Join-Path $plan.ToolDir 'mcpo')) }
-        }
-        $busy = @()
-        if ($folders.Count -gt 0) { $busy = @(Get-BusyProcess -Folder $folders.ToArray() -File $programs.ToArray()) }
-        if ($busy.Count -gt 0) {
-            $what = @($busy | ForEach-Object { "$($_.Name) (PID $($_.Id), $($_.Path))" }) -join ', '
-            Write-Host ("Update changed nothing: $what still run from what it would replace, although 'local-ai stop' stopped what the launcher started; " +
-                'another program may have started them. Close them, then run update again.') -ForegroundColor Red
-            if ($before.Count -gt 0) { $null = Start-LocalAI -Context $quiet }
-            return 1
-        }
+            Write-Host 'Comparing what is installed with the pins...'
+            $plan = Get-LocalAIUpdatePlan -Settings $settings -Paths $paths -Stamp $stamp -State (Read-LocalAIState -Path $paths.State) -RepoRoot $Context.RepoRoot `
+                -Tools:([bool]$Context.Tools) -WarningVariable +warned
+            $blocked = @($plan.Components | Where-Object { $_.Problem })
+            if ($blocked.Count -gt 0) {
+                foreach ($component in $blocked) { Write-Host "$($component.Display): $($component.Problem)" -ForegroundColor Red }
+                Write-Host 'Update changed nothing.' -ForegroundColor Red
+                return 1
+            }
+            $pending = @($plan.Components | Where-Object { $_.Changes.Count -gt 0 })
+            if ($pending.Count -eq 0 -and @($plan.Tools).Count -eq 0) {
+                Write-Host 'Everything matches its pin.' -ForegroundColor Green
+                $null = Remove-SupersededAlias -Settings $settings -Url $url -WarningVariable +warned
+                if ((& $count) -gt 0) { return 2 }
+                return 0
+            }
+            Write-LocalAIUpdatePlan -Plan $plan -Paths $paths
+            if (-not (Confirm-LocalAIAction -Question 'Update these now?')) {
+                Write-Host 'Nothing was changed, so the parts above still differ from their pins.' -ForegroundColor Yellow
+                return 2
+            }
 
-        $done = New-Object System.Collections.Generic.List[string]
-        $failure = $null
-        $webChange = $null
-        # In the plan's order: Open WebUI after a backup, ComfyUI moved to its tag, the file tools, the model and the checkpoint; then uv, Git, Node.js and
-        # Ollama last with winget. The backups are pruned only once the new Open WebUI passed the check below.
-        try {
+            $before = @(Get-LocalAIRunningService -Path $paths.State)
+            # Ollama stays: the model step and the check need it.
+            if ((Stop-LocalAI -Context $Context -KeepOllama) -ne 0) {
+                Write-Host ("Update changed nothing, because not everything the launcher runs could be stopped; see above. Run 'local-ai stop', then " +
+                    'update again.') -ForegroundColor Red
+                return 1
+            }
+            # 'local-ai stop' stops only what state.json records, not what another program started, for example. Windows locks what a running Python loaded,
+            # and a uv reinstall that cannot remove it leaves a broken environment that 'uv tool list' still lists.
+            $folders = New-Object System.Collections.Generic.List[string]
+            $programs = New-Object System.Collections.Generic.List[string]
             foreach ($component in $pending) {
-                switch ($component.Name) {
-                    'OpenWebUI' {
-                        $result = Update-OpenWebUITool -Settings $settings -Paths $paths -Plan $component -ToolDir $plan.ToolDir -WarningVariable +warned
-                        if ($result.Previous) { $webChange = $result }
-                        $done.Add($result.Done)
-                    }
-                    'ComfyUI' {
-                        $done.Add((Update-ComfyUICheckout -Settings $settings -Paths $paths -Plan $component -RepoRoot $Context.RepoRoot -WarningVariable +warned))
-                    }
-                    'Files' {
-                        $stamp = Read-LocalAIState -Path $paths.InstallStamp
-                        $recorded = $stamp['Files']
-                        $stamp['Files'] = Install-FilesServer -Settings $settings -Paths $paths -RepoRoot $Context.RepoRoot -Stamp $stamp -Recorded $recorded `
-                            -WarningVariable +warned
-                        Write-LocalAIState -Path $paths.InstallStamp -State $stamp
-                        $done.Add("File tools: mcpo $($recorded.McpoVersion) -> $($stamp.Files.McpoVersion), files server $($recorded.ServerVersion) -> $($stamp.Files.ServerVersion)")
-                    }
-                    'Model' {
-                        # A changed Model.Sha256 pulls the weights again.
-                        Test-ChatModelSpace -Settings $settings -Blobs @(Get-OllamaModelBlob -Name $settings.Model.Source) -WarningVariable +warned
-                        $state = Install-ChatModel -Settings $settings -Paths $paths -State (Read-LocalAIState -Path $paths.State) -Url $url -RepoRoot $Context.RepoRoot `
-                            -WarningVariable +warned
-                        Write-LocalAIState -Path $paths.State -State $state
-                        $stamp = Read-LocalAIState -Path $paths.InstallStamp
-                        $stamp['Model'] = @{
-                            Alias           = $state.Model.Alias
-                            BaseDigest      = $state.Model.BaseDigest
-                            ProjectorDigest = $state.Model.ProjectorDigest
-                            ModelfileSha256 = $state.Model.ModelfileSha256
-                        }
-                        Write-LocalAIState -Path $paths.InstallStamp -State $stamp
-                        $done.Add("Model: $($state.Model.Alias) on $($state.Model.BaseDigest), from $($state.Model.Modelfile)")
-                    }
-                    'Checkpoint' {
-                        $state = Read-LocalAIState -Path $paths.State
-                        $images = $state['Images']
-                        if ($images -isnot [hashtable]) { $images = @{} }
-                        $verified = $images['VerifiedFiles']
-                        if ($verified -isnot [hashtable]) { $verified = @{} }
-                        $checkpoint = Install-ImageModel -Settings $settings -Verified $verified -WarningVariable +warned
-                        $state['Images'] = @{ VerifiedFiles = $verified }
-                        Write-LocalAIState -Path $paths.State -State $state
-                        $stamp = Read-LocalAIState -Path $paths.InstallStamp
-                        $stamp['Images'] = @{ File = $settings.Images.File; Sha256 = $checkpoint.Sha256 }
-                        Write-LocalAIState -Path $paths.InstallStamp -State $stamp
-                        $done.Add("Checkpoint: $($settings.Images.File), checked against Images.Sha256")
-                    }
+                if ($component.Name -eq 'OpenWebUI' -and $component.Reinstall) {
+                    $folders.Add((Join-Path $plan.ToolDir 'open-webui'))
+                    $programs.Add([string]$component.Tool.Path)
                 }
+                if ($component.Name -eq 'ComfyUI') { $folders.Add($component.Dir) }
+                if ($component.Name -eq 'Files') { $folders.Add((Join-Path $plan.ToolDir 'mcpo')) }
             }
-            foreach ($tool in $plan.Tools) {
-                if ($tool.Name -eq 'Ollama') { Write-Host 'Upgrading Ollama last; its installer stops the Ollama app and any model it has loaded.' -ForegroundColor Yellow }
-                $outcome = Update-WingetPackage -Package $tool.Package -LogDir $paths.Logs -WarningVariable +warned
-                if (@('upgraded', 'restart') -contains $outcome) { $done.Add("$($tool.Display): $($tool.Upgrade.Installed) -> $($tool.Upgrade.Available)") }
-                if ($tool.Name -eq 'Ollama') {
-                    $version = Wait-OllamaServer -Url $url
-                    $stamp = Read-LocalAIState -Path $paths.InstallStamp
-                    $stamp['Ollama'] = @{ Version = $version }
-                    Write-LocalAIState -Path $paths.InstallStamp -State $stamp
-                }
+            $busy = @()
+            if ($folders.Count -gt 0) { $busy = @(Get-BusyProcess -Folder $folders.ToArray() -File $programs.ToArray()) }
+            if ($busy.Count -gt 0) {
+                $what = @($busy | ForEach-Object { "$($_.Name) (PID $($_.Id), $($_.Path))" }) -join ', '
+                Write-Host ("Update changed nothing: $what still run from what it would replace, although 'local-ai stop' stopped what the launcher started; " +
+                    'another program may have started them. Close them, then run update again.') -ForegroundColor Red
+                if ($before.Count -gt 0) { $null = Start-LocalAI -Context $quiet }
+                return 1
             }
-        } catch {
-            # The parts done so far stay; the smoke test below checks them.
-            $failure = $_.Exception.Message
-            Write-Host "Error: $failure" -ForegroundColor Red
-        }
 
-        Write-Host ''
-        Write-Host 'Starting the stack to check the update...'
-        $startError = $null
-        $startCode = $null
-        try {
-            $startCode = @(Start-LocalAI -Context $quiet -WarningVariable +warned)[-1]
-        } catch {
-            $startError = $_.Exception.Message
-        }
-        # Start-LocalAI returns 1 when Open WebUI does not come up, after stopping every service it launched.
-        $startFailed = [bool]$startError -or $startCode -eq 1
-        $expected = if ($webChange) { $settings.OpenWebUI.Version } else { [string](Read-LocalAIState -Path $paths.InstallStamp)['OpenWebUI'].Version }
-        $check = Test-LocalAIUpdateSmoke -Settings $settings -Paths $paths -OllamaUrl $url -OpenWebUIVersion $expected
-        $rolledBack = $false
-        if ($check.OpenWebUI) {
-            $why = ([string]$check.OpenWebUI).TrimEnd()
-            # A .NET message such as 'Unable to connect to the remote server' ends without a period, and more text follows.
-            if ($why -notmatch '[.!?]\z') { $why += '.' }
-            if ($startError) { $why = "$startError $why" } elseif ($startFailed) { $why += ' The start stopped with the error shown above.' }
-            if ($webChange -and $launchedNames.Contains('OpenWebUI')) {
-                Write-Host "Open WebUI fails the check: $why Putting back $($webChange.Previous.Version)..." -ForegroundColor Red
-                $undone = Undo-OpenWebUIUpdate -Context $Context -Change $webChange
-                $rolledBack = $true
-                $null = $done.Remove($webChange.Done)
-                $why = "Open WebUI $($settings.OpenWebUI.Version) failed the check after the update: $why $undone"
+            $done = New-Object System.Collections.Generic.List[string]
+            $failure = $null
+            $webChange = $null
+            # In the plan's order: Open WebUI after a backup, ComfyUI moved to its tag, the file tools, the model and the checkpoint; then uv, Git, Node.js and
+            # Ollama last with winget. The backups are pruned only once the new Open WebUI passed the check below.
+            try {
+                foreach ($component in $pending) {
+                    switch ($component.Name) {
+                        'OpenWebUI' {
+                            $result = Update-OpenWebUITool -Settings $settings -Paths $paths -Plan $component -ToolDir $plan.ToolDir -WarningVariable +warned
+                            if ($result.Previous) { $webChange = $result }
+                            $done.Add($result.Done)
+                        }
+                        'ComfyUI' {
+                            $done.Add((Update-ComfyUICheckout -Settings $settings -Paths $paths -Plan $component -RepoRoot $Context.RepoRoot -WarningVariable +warned))
+                        }
+                        'Files' {
+                            $stamp = Read-LocalAIState -Path $paths.InstallStamp
+                            $recorded = $stamp['Files']
+                            $stamp['Files'] = Install-FilesServer -Settings $settings -Paths $paths -RepoRoot $Context.RepoRoot -Stamp $stamp -Recorded $recorded `
+                                -WarningVariable +warned
+                            Write-LocalAIState -Path $paths.InstallStamp -State $stamp
+                            $done.Add("File tools: mcpo $($recorded.McpoVersion) -> $($stamp.Files.McpoVersion), files server $($recorded.ServerVersion) -> $($stamp.Files.ServerVersion)")
+                        }
+                        'Model' {
+                            # A changed Model.Sha256 pulls the weights again.
+                            Test-ChatModelSpace -Settings $settings -Blobs @(Get-OllamaModelBlob -Name $settings.Model.Source) -WarningVariable +warned
+                            $state = Install-ChatModel -Settings $settings -Paths $paths -State (Read-LocalAIState -Path $paths.State) -Url $url -RepoRoot $Context.RepoRoot `
+                                -WarningVariable +warned
+                            Write-LocalAIState -Path $paths.State -State $state
+                            $stamp = Read-LocalAIState -Path $paths.InstallStamp
+                            $stamp['Model'] = @{
+                                Alias           = $state.Model.Alias
+                                BaseDigest      = $state.Model.BaseDigest
+                                ProjectorDigest = $state.Model.ProjectorDigest
+                                ModelfileSha256 = $state.Model.ModelfileSha256
+                            }
+                            Write-LocalAIState -Path $paths.InstallStamp -State $stamp
+                            $done.Add("Model: $($state.Model.Alias) on $($state.Model.BaseDigest), from $($state.Model.Modelfile)")
+                        }
+                        'Checkpoint' {
+                            $state = Read-LocalAIState -Path $paths.State
+                            $images = $state['Images']
+                            if ($images -isnot [hashtable]) { $images = @{} }
+                            $verified = $images['VerifiedFiles']
+                            if ($verified -isnot [hashtable]) { $verified = @{} }
+                            $checkpoint = Install-ImageModel -Settings $settings -Verified $verified -WarningVariable +warned
+                            $state['Images'] = @{ VerifiedFiles = $verified }
+                            Write-LocalAIState -Path $paths.State -State $state
+                            $stamp = Read-LocalAIState -Path $paths.InstallStamp
+                            $stamp['Images'] = @{ File = $settings.Images.File; Sha256 = $checkpoint.Sha256 }
+                            Write-LocalAIState -Path $paths.InstallStamp -State $stamp
+                            $done.Add("Checkpoint: $($settings.Images.File), checked against Images.Sha256")
+                        }
+                    }
+                }
+                foreach ($tool in $plan.Tools) {
+                    $appsBefore = $null
+                    $ownedBefore = $false
+                    $since = [long]0
+                    if ($tool.Name -eq 'Ollama') {
+                        Write-Host 'Upgrading Ollama last; its installer stops the Ollama app and any model it has loaded.' -ForegroundColor Yellow
+                        # The installer starts the app again with a new PID. That one is local-ai's only when the app local-ai started ran until now.
+                        $entry = (Read-LocalAIState -Path $paths.State)['Ollama']
+                        if ($entry -is [hashtable] -and $entry.App -is [hashtable] -and (Test-RecordedProcess -Record $entry.App)) {
+                            $ownedBefore = $true
+                            $ownedId = [int]$entry.App.Pid
+                            try {
+                                $appsBefore = @(Get-OllamaAppProcess | Where-Object { [int]$_.Id -ne $ownedId })
+                            } catch {
+                                Write-Verbose "The Ollama apps cannot be listed, so update records no app the Ollama installer starts: $($_.Exception.Message)"
+                            }
+                            $since = [DateTime]::UtcNow.AddSeconds(-1).Ticks
+                        }
+                    }
+                    $outcome = Update-WingetPackage -Package $tool.Package -LogDir $paths.Logs -WarningVariable +warned
+                    if (@('upgraded', 'restart') -contains $outcome) { $done.Add("$($tool.Display): $($tool.Upgrade.Installed) -> $($tool.Upgrade.Available)") }
+                    if ($tool.Name -eq 'Ollama') {
+                        $wait = Wait-OllamaServer -Url $url -PassThru -How 'update'
+                        $version = $wait.Version
+                        # Only in place of the app local-ai started, so one that replaces the user's own Ollama stays one stop leaves running.
+                        $app = $null
+                        if ($ownedBefore) {
+                            $app = $wait.App
+                            if (-not $app -and $null -ne $appsBefore) {
+                                $app = Get-OllamaOwnStart -Before $appsBefore -Since $since -Url $url -ExpectedPath ([string](Resolve-OllamaAppPath)) -How 'update'
+                                if ($app) { Write-Host "The Ollama installer started the Ollama app again (PID $($app.Pid)); local-ai stop quits it." }
+                            }
+                        } elseif ($wait.App) {
+                            Write-Host ("The Ollama app local-ai started (PID $($wait.App.Pid)) replaces one that state.json does not record as local-ai's, so " +
+                                'local-ai stop leaves it running.')
+                        }
+                        # Without a new app, the one recorded before stays only while it still runs, as when winget changed nothing. The stop above unloaded
+                        # the alias the recorded Url and Alias named, so the new ones hold from here.
+                        $null = Save-OllamaRecord -Path $paths.State -Url $url -Alias $settings.Model.Alias -App $app
+                        $stamp = Read-LocalAIState -Path $paths.InstallStamp
+                        $stamp['Ollama'] = @{ Version = $version }
+                        Write-LocalAIState -Path $paths.InstallStamp -State $stamp
+                    }
+                }
+            } catch {
+                # The parts done so far stay; the smoke test below checks them.
+                $failure = $_.Exception.Message
+                Write-Host "Error: $failure" -ForegroundColor Red
+            }
+
+            Write-Host ''
+            Write-Host 'Starting the stack to check the update...'
+            $startError = $null
+            $startCode = $null
+            try {
+                $startCode = @(Start-LocalAI -Context $quiet -WarningVariable +warned)[-1]
+            } catch {
+                $startError = $_.Exception.Message
+            }
+            # Start-LocalAI returns 1 when Open WebUI does not come up, after stopping every service it launched.
+            $startFailed = [bool]$startError -or $startCode -eq 1
+            $expected = if ($webChange) { $settings.OpenWebUI.Version } else { [string](Read-LocalAIState -Path $paths.InstallStamp)['OpenWebUI'].Version }
+            $check = Test-LocalAIUpdateSmoke -Settings $settings -Paths $paths -OllamaUrl $url -OpenWebUIVersion $expected
+            $rolledBack = $false
+            if ($check.OpenWebUI) {
+                $why = ([string]$check.OpenWebUI).TrimEnd()
+                # A .NET message such as 'Unable to connect to the remote server' ends without a period, and more text follows.
+                if ($why -notmatch '[.!?]\z') { $why += '.' }
+                if ($startError) { $why = "$startError $why" } elseif ($startFailed) { $why += ' The start stopped with the error shown above.' }
+                if ($webChange -and $launchedNames.Contains('OpenWebUI')) {
+                    Write-Host "Open WebUI fails the check: $why Putting back $($webChange.Previous.Version)..." -ForegroundColor Red
+                    $undone = Undo-OpenWebUIUpdate -Context $Context -Change $webChange
+                    $rolledBack = $true
+                    $null = $done.Remove($webChange.Done)
+                    $why = "Open WebUI $($settings.OpenWebUI.Version) failed the check after the update: $why $undone"
+                } elseif ($webChange) {
+                    # It never ran, so its data is as the backup holds it, and a rollback would undo the update for a problem elsewhere, such as Ollama.
+                    $why = ("The check did not get to start Open WebUI $($settings.OpenWebUI.Version): $why It stays installed, its data is unchanged and the backup " +
+                        "$($webChange.Backup) stays; fix that, then run 'local-ai start'.")
+                } else {
+                    $why = "Open WebUI fails the check after the update: $why"
+                }
+                $failure = if ($failure) { "$failure $why" } else { $why }
             } elseif ($webChange) {
-                # It never ran, so its data is as the backup holds it, and a rollback would undo the update for a problem elsewhere, such as Ollama.
-                $why = ("The check did not get to start Open WebUI $($settings.OpenWebUI.Version): $why It stays installed, its data is unchanged and the backup " +
-                    "$($webChange.Backup) stays; fix that, then run 'local-ai start'.")
-            } else {
-                $why = "Open WebUI fails the check after the update: $why"
+                # Only now, so a failed update never loses an older backup, and never the one it made.
+                foreach ($removed in @(Remove-OldOpenWebUIBackup -BackupRoot $paths.Backups -Keep $settings.Update.KeepBackups -Current $webChange.Backup -WarningVariable +warned)) {
+                    Write-Host "Deleted the older backup $removed, as Update.KeepBackups keeps $($settings.Update.KeepBackups)."
+                }
             }
-            $failure = if ($failure) { "$failure $why" } else { $why }
-        } elseif ($webChange) {
-            # Only now, so a failed update never loses an older backup, and never the one it made.
-            foreach ($removed in @(Remove-OldOpenWebUIBackup -BackupRoot $paths.Backups -Keep $settings.Update.KeepBackups -Current $webChange.Backup -WarningVariable +warned)) {
-                Write-Host "Deleted the older backup $removed, as Update.KeepBackups keeps $($settings.Update.KeepBackups)."
-            }
-        }
-        if ($rolledBack) {
-            if ($before.Count -gt 0) {
+            # Before the stop below, which may quit the Ollama app; a rollback adds to a failure set above, so it never reaches the offer.
+            if (-not $failure) { $null = Remove-SupersededAlias -Settings $settings -Url $url -WarningVariable +warned }
+            if ($rolledBack -and $before.Count -gt 0) {
                 $again = $null
                 try {
                     $again = @(Start-LocalAI -Context $quiet)[-1]
@@ -6447,41 +7161,61 @@ function Update-LocalAI {
                 if (-not ($again -eq 0 -or $again -eq 2)) {
                     $failure += " The stack, which ran before the update, did not start again after the rollback; see above, then run 'local-ai start'."
                 }
+            } elseif ($before.Count -eq 0) {
+                # Also after a rollback, whose stop kept Ollama: the app this update started goes too, an Ollama that answered at its start stays.
+                $stopDone = $true
+                Write-Host 'Stopping the stack again, since it did not run before the update...'
+                if ((Stop-LocalAI -Context $Context -KeepOllama:$ollamaWasUp) -ne 0) {
+                    Write-Warning "Not everything could be stopped again; run 'local-ai stop'." -WarningVariable +warned
+                }
+            } else {
+                # As one unit: Open WebUI reads where images and the file tools are only when it starts, so stopping a service the check started besides
+                # would leave it pointing at a stopped one.
+                Write-Host 'The stack ran before the update, so what the check started stays running.'
             }
-        } elseif ($before.Count -eq 0) {
-            Write-Host 'Stopping the stack again, since it did not run before the update...'
-            if ((Stop-LocalAI -Context $Context) -ne 0) { Write-Warning "Not everything could be stopped again; run 'local-ai stop'." -WarningVariable +warned }
-        } else {
-            # As one unit: Open WebUI reads where images and the file tools are only when it starts, so stopping a service the check started besides
-            # would leave it pointing at a stopped one.
-            Write-Host 'The stack ran before the update, so what the check started stays running.'
+            if ($startFailed -and $check.Problems.Count -gt 0) {
+                # Their answers would only say that the failed start stopped them again.
+                Write-Host 'The other services were not checked, since the start stops them again when Open WebUI does not come up.'
+            } else {
+                foreach ($problem in $check.Problems) { Write-Warning $problem -WarningVariable +warned }
+            }
+            if ($done.Count -gt 0) {
+                Write-Host ''
+                Write-Host 'Updated:'
+                foreach ($line in $done) { Write-Host "  $line" }
+            }
+            if ($failure) {
+                Write-Host "Update failed: $failure" -ForegroundColor Red
+                return 1
+            }
+            $warnings = & $count
+            if ($warnings -gt 0) {
+                Write-Host "Update finished with $warnings warning(s); see above." -ForegroundColor Yellow
+                return 2
+            }
+            Write-Host 'Update finished; everything matches its pin.' -ForegroundColor Green
+            return 0
         }
-        if ($startFailed -and $check.Problems.Count -gt 0) {
-            # Their answers would only say that the failed start stopped them again.
-            Write-Host 'The other services were not checked, since the start stops them again when Open WebUI does not come up.'
-        } else {
-            foreach ($problem in $check.Problems) { Write-Warning $problem -WarningVariable +warned }
-        }
-        if (-not $failure) { $null = Remove-SupersededAlias -Settings $settings -WarningVariable +warned }
-        if ($done.Count -gt 0) {
-            Write-Host ''
-            Write-Host 'Updated:'
-            foreach ($line in $done) { Write-Host "  $line" }
-        }
-        if ($failure) {
-            Write-Host "Update failed: $failure" -ForegroundColor Red
-            return 1
-        }
-        $warnings = & $count
-        if ($warnings -gt 0) {
-            Write-Host "Update finished with $warnings warning(s); see above." -ForegroundColor Yellow
-            return 2
-        }
-        Write-Host 'Update finished; everything matches its pin.' -ForegroundColor Green
-        return 0
     } finally {
-        Set-LocalAIKeepAwake -Enabled $false
+        try {
+            # After an early return or a throw, the Ollama app the first wait started goes again, unless the stack runs on it.
+            if (-not $stopDone -and $firstWait -and $firstWait.App -and @(Get-LocalAIRunningService -Path $paths.State).Count -eq 0) {
+                Write-Host 'Quitting the Ollama app update started, since Ollama did not run before the update...'
+                if ((Stop-LocalAI -Context $Context) -ne 0) {
+                    $quitFailed = $true
+                    Write-Warning "The Ollama app update started could not be quit; see above, then run 'local-ai stop'."
+                }
+            }
+        } catch {
+            $quitFailed = $true
+            Write-Warning "The Ollama app update started could not be quit: $($_.Exception.Message) Run 'local-ai stop'."
+        } finally {
+            Set-LocalAIKeepAwake -Enabled $false
+        }
     }
+    # Reached only after a return, as a throw goes on past the finally. An Ollama app left running is a warning, so it turns a 0 into a 2.
+    if ($quitFailed -and $code -eq 0) { $code = 2 }
+    return $code
 }
 
 # Return the settings uninstall goes by when Get-LocalAISettings refuses them: the defaults at $DefaultsPath with every value of $UserPath that merges, %VAR% expanded and
@@ -6842,8 +7576,8 @@ function Get-LocalAIDataPlan {
 }
 
 # The uninstall verb: list what goes (Get-LocalAIUninstallPlan), ask once (default No), stop the stack and remove it, keeping Ollama, uv, Git, Node.js and every other
-# model; -RemoveData asks again for a typed word, then also deletes what Get-LocalAIDataPlan lists. Works without settings, going by state.json and install-stamp.json.
-# Returns 0, or 1 naming what stayed.
+# model, then quit the Ollama app state.json records as local-ai's (Stop-OllamaApp), also one it started to remove the alias; -RemoveData asks again for a typed
+# word, then also deletes what Get-LocalAIDataPlan lists. Works without settings, going by state.json and install-stamp.json. Returns 0, or 1 naming what stayed.
 function Uninstall-LocalAI {
     # High, as it deletes what install made; it asks through Confirm-LocalAIAction, whose default is No, rather than ShouldProcess, whose default is Yes.
     [CmdletBinding(ConfirmImpact = 'High')]
@@ -6882,6 +7616,9 @@ function Uninstall-LocalAI {
     $plan = Get-LocalAIUninstallPlan -Settings $settings -Paths $paths -Stamp $stamp -State $state
     $running = @(Get-LocalAIRunningService -Path $paths.State)
     $removeData = [bool]$Context.RemoveData
+    # An Ollama app an earlier start, install or update began, which uninstall quits last; as stop judges it, also one this window may not inspect.
+    $recordedApp = if ($state['Ollama'] -is [hashtable] -and $state['Ollama'].App -is [hashtable]) { $state['Ollama'].App } else { $null }
+    $appRuns = $null -ne $recordedApp -and @('match', 'unreadable') -contains (Get-RecordedProcessState -Record $recordedApp)
 
     Write-Host ''
     if ($plan.Items.Count -gt 0) {
@@ -6891,6 +7628,10 @@ function Uninstall-LocalAI {
         Write-Host 'None of the parts install sets up is left to remove.'
     }
     if ($running.Count -gt 0) { Write-Host "It first stops what the launcher runs: $($running -join ', ')." }
+    if ($appRuns) {
+        Write-Host ("Last it quits the Ollama app local-ai started (PID $($recordedApp.Pid)), unless another program has a model loaded in it or its " +
+            'window is open.')
+    }
     if ($plan.Kept.Count -gt 0) {
         Write-Host 'It leaves:'
         foreach ($line in $plan.Kept) { Write-Host "  $line" }
@@ -6908,7 +7649,7 @@ function Uninstall-LocalAI {
             Write-Host "Your data stays: $joined. 'local-ai uninstall -RemoveData' deletes it too, but not a ComfyUI checkout that install did not clone."
         }
     }
-    $work = $plan.Items.Count -gt 0 -or $running.Count -gt 0
+    $work = $plan.Items.Count -gt 0 -or $running.Count -gt 0 -or $appRuns
     if ($work -and -not (Confirm-LocalAIAction -Question 'Uninstall these now?')) {
         Write-Host 'Nothing was removed.' -ForegroundColor Yellow
         return 0
@@ -6943,7 +7684,8 @@ function Uninstall-LocalAI {
 
     $failed = New-Object System.Collections.Generic.List[string]
     if ($work -or $data.Count -gt 0) {
-        if ((Stop-LocalAI -Context $Context) -ne 0) {
+        # Ollama stays until the alias is removed; the app local-ai started is quit at the end.
+        if ((Stop-LocalAI -Context $Context -KeepOllama) -ne 0) {
             Write-Host ("Uninstall removed nothing, because not everything the launcher runs could be stopped; see above. Run 'local-ai stop', then uninstall " +
                 'again.') -ForegroundColor Red
             return 1
@@ -6982,7 +7724,9 @@ function Uninstall-LocalAI {
                     } else {
                         $url = Resolve-OllamaUrl -Setting $settings.Ollama.Url
                         Assert-OllamaCliUrl -Url $url
-                        $null = Wait-OllamaServer -Url $url
+                        $wait = Wait-OllamaServer -Url $url -PassThru -How 'uninstall'
+                        # Saved at once; the end of uninstall quits it, or a later 'local-ai stop' when uninstall stops early.
+                        if ($wait.App) { $null = Save-OllamaRecord -Path $paths.State -Url $url -Alias $item.Name -App $wait.App }
                         if (@(Get-OllamaListedModel -Name $item.Name).Count -eq 0) {
                             Write-Host "Ollama holds no $($item.Name)."
                         } else {
@@ -7010,6 +7754,31 @@ function Uninstall-LocalAI {
         if ($dropped.Count -gt 0 -or $venvGone) { Write-LocalAIState -Path $paths.InstallStamp -State $stamp }
     }
 
+    # Ollama last, as stop quits it: the app state.json records as local-ai's, also one the wait above started. Before -RemoveData deletes state.json.
+    $final = @{}
+    try {
+        $final = Read-LocalAIState -Path $paths.State
+    } catch {
+        Write-Verbose "state.json cannot be read again, so uninstall quits no Ollama app: $($_.Exception.Message)"
+    }
+    $ollama = $final['Ollama']
+    $keptApp = $null
+    if ($ollama -is [hashtable] -and $ollama.App -is [hashtable] -and $ollama.Url) {
+        $quit = Stop-OllamaApp -Record $ollama.App -Url ([string]$ollama.Url) -Alias ([string]$ollama.Alias)
+        if ($quit.Result -eq 'failed') {
+            $failed.Add($quit.Reason)
+        } elseif ($quit.Result -eq 'kept') {
+            $keptApp = $ollama.App
+        } else {
+            $ollama['App'] = $null
+            try {
+                Write-LocalAIState -Path $paths.State -State $final
+            } catch {
+                Write-Warning "The Ollama app is no longer running, but state.json still records it: $($_.Exception.Message)"
+            }
+        }
+    }
+
     foreach ($item in $data) {
         if ($item.Root -and $failed.Count -gt 0) {
             Write-Host "Kept $($item.Path), since the next uninstall run needs its install-stamp.json to remove what stays above." -ForegroundColor Yellow
@@ -7019,6 +7788,11 @@ function Uninstall-LocalAI {
             Assert-LocalAIIdle -Path $item.Path
             Remove-LocalAIFolder -Path $item.Path
             Write-Host "Deleted $($item.Path)."
+            if ($item.Root -and $keptApp) {
+                # Its record went with state.json, so 'local-ai stop' can no longer quit it.
+                Write-Host ("local-ai no longer tracks the Ollama app it started (PID $($keptApp.Pid)), which keeps running; quit it from its tray icon once " +
+                    'you are done with it.') -ForegroundColor Yellow
+            }
         } catch {
             $failed.Add("$($item.Path): $($_.Exception.Message)")
             Write-Host "Could not delete $($item.Path): $($_.Exception.Message)" -ForegroundColor Red

@@ -1764,6 +1764,14 @@ Describe 'Wait-OllamaServer' {
         Mock Start-Sleep -ModuleName LocalAI -MockWith { [Threading.Thread]::Sleep(50) }
         Mock Invoke-Native -ModuleName LocalAI -MockWith { 0 }
         Mock Get-Command -ModuleName LocalAI -ParameterFilter { $Name -eq 'ollama' } -MockWith { [pscustomobject]@{ Name = 'ollama.exe' } }
+        # No app beside ollama.exe, so the start goes through 'ollama list'; the context below starts the app itself.
+        Mock Resolve-OllamaAppPath -ModuleName LocalAI
+        Mock Test-OllamaSetupRunning -ModuleName LocalAI -MockWith { $false }
+        Mock Get-OllamaAppProcess -ModuleName LocalAI
+        Mock Start-OllamaApp -ModuleName LocalAI -MockWith { throw 'Start-OllamaApp ran.' }
+        # A server on this PC, and nothing holds its port.
+        Mock Test-LocalHostName -ModuleName LocalAI -MockWith { $true }
+        Mock Get-PortOwner -ModuleName LocalAI
     }
 
     It 'returns the version at once when the server answers' {
@@ -1808,6 +1816,357 @@ Describe 'Wait-OllamaServer' {
         Mock Invoke-RestMethod -ModuleName LocalAI -MockWith { throw 'Unable to connect to the remote server' }
         { Wait-OllamaServer -Url 'http://127.0.0.1:11434' 6>$null } | Should -Throw -ExpectedMessage '*ollama program is not on PATH*'
         Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly
+    }
+
+    It 'only polls while OllamaSetup.exe runs, then throws naming the upgrade, starting nothing' {
+        Mock Test-OllamaSetupRunning -ModuleName LocalAI -MockWith { $true }
+        Mock Invoke-RestMethod -ModuleName LocalAI -MockWith { throw 'Unable to connect to the remote server' }
+        $printed = $null
+        $failure = $null
+        try {
+            $null = Wait-OllamaServer -Url 'http://127.0.0.1:11434' -TimeoutSeconds 1 -PassThru -InformationVariable printed 6>$null
+        } catch {
+            $failure = $_.Exception.Message
+        }
+        $failure | Should -BeLike '*within 1 s while its upgrade (OllamaSetup.exe) was running*Wait for the upgrade to finish*'
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly
+        Should -Invoke Start-OllamaApp -ModuleName LocalAI -Times 0 -Exactly
+        Should -Invoke Get-OllamaAppProcess -ModuleName LocalAI -Times 0 -Exactly
+        @($printed | Where-Object { "$_" -like '*waiting for the upgrade*' }).Count | Should -Be 1
+    }
+
+    It 'claims no app it started through ollama list, whose path it cannot know, and says stop leaves it running' {
+        $calls = @{ Count = 0 }
+        Mock Invoke-RestMethod -ModuleName LocalAI -MockWith {
+            $calls.Count++
+            if ($calls.Count -lt 2) { throw 'Unable to connect to the remote server' }
+            [pscustomobject]@{ version = '0.40.13' }
+        }
+        $output = @(Wait-OllamaServer -Url 'http://127.0.0.1:11434' -PassThru 6>&1)
+        $result = @($output | Where-Object { $_ -isnot [System.Management.Automation.InformationRecord] })[0]
+        $printed = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$($_.MessageData)" }) -join "`n"
+        $result.Version | Should -Be '0.40.13'
+        $result.App | Should -BeNullOrEmpty
+        $result.Started | Should -BeTrue
+        $printed | Should -BeLike '*local-ai cannot tell that the Ollama app answering now is the one it started, so local-ai stop leaves it running.*'
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'ollama' -and ($ArgumentList -join ' ') -eq 'list' }
+        Should -Invoke Get-OllamaAppProcess -ModuleName LocalAI -Times 0 -Exactly
+    }
+
+    It 'only polls a server on another computer, starting nothing here, and throws naming it after the timeout' {
+        Mock Test-LocalHostName -ModuleName LocalAI -MockWith { $false }
+        $calls = @{ Count = 0 }
+        Mock Invoke-RestMethod -ModuleName LocalAI -MockWith {
+            $calls.Count++
+            if ($calls.Count -lt 3) { throw 'Unable to connect to the remote server' }
+            [pscustomobject]@{ version = '0.40.13' }
+        }
+        $output = @(Wait-OllamaServer -Url 'http://gpu-box:11434' -PassThru 6>&1)
+        $result = @($output | Where-Object { $_ -isnot [System.Management.Automation.InformationRecord] })[0]
+        $printed = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$($_.MessageData)" })
+        $result.Version | Should -Be '0.40.13'
+        $result.App | Should -BeNullOrEmpty
+        $result.Started | Should -BeFalse
+        # Said once, though it polled twice.
+        @($printed | Where-Object { $_ -like '*gpu-box is another computer, so local-ai does not start the Ollama app here*' }).Count | Should -Be 1
+        Mock Invoke-RestMethod -ModuleName LocalAI -MockWith { throw 'Unable to connect to the remote server' }
+        { Wait-OllamaServer -Url 'http://gpu-box:11434' -TimeoutSeconds 1 6>$null } |
+            Should -Throw -ExpectedMessage '*gpu-box is another computer, so local-ai does not start the Ollama app for it*'
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly
+        Should -Invoke Start-OllamaApp -ModuleName LocalAI -Times 0 -Exactly
+        Should -Invoke Get-PortOwner -ModuleName LocalAI -Times 0 -Exactly
+    }
+
+    It 'only polls while another program holds the port, and throws naming it after the timeout' {
+        Mock Get-PortOwner -ModuleName LocalAI -MockWith { [pscustomobject]@{ Id = 4321; Name = 'java'; Path = 'C:\Tools\java.exe'; StartTicks = 5 } }
+        Mock Invoke-RestMethod -ModuleName LocalAI -MockWith { throw 'The operation has timed out.' }
+        $printed = $null
+        $failure = $null
+        try {
+            $null = Wait-OllamaServer -Url 'http://127.0.0.1:11434' -TimeoutSeconds 1 -PassThru -InformationVariable printed 6>$null
+        } catch {
+            $failure = $_.Exception.Message
+        }
+        $failure | Should -BeLike ('*within 1 s (The operation has timed out.), and java (PID 4321, C:\Tools\java.exe) holds port 11434, so local-ai did not start ' +
+            'the Ollama app. Close that program*')
+        @($printed | Where-Object { "$_" -like '*but java (PID 4321) holds port 11434, so local-ai does not start the Ollama app*' }).Count | Should -Be 1
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly
+        Should -Invoke Start-OllamaApp -ModuleName LocalAI -Times 0 -Exactly
+    }
+
+    It 'starts the app once the program that held the port has left it' {
+        $world = @{ Calls = 0 }
+        Mock Get-PortOwner -ModuleName LocalAI -MockWith { if ($world.Calls -lt 2) { [pscustomobject]@{ Id = 4321; Name = $null; Path = $null; StartTicks = 5 } } }
+        Mock Invoke-RestMethod -ModuleName LocalAI -MockWith {
+            $world.Calls++
+            if ($world.Calls -lt 4) { throw 'Unable to connect to the remote server' }
+            [pscustomobject]@{ version = '0.40.13' }
+        }
+        $printed = @(Wait-OllamaServer -Url 'http://127.0.0.1:11434' 6>&1 | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$_" })
+        @($printed | Where-Object { $_ -like '*but a program (PID 4321) holds port 11434*' }).Count | Should -Be 1
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'ollama' -and ($ArgumentList -join ' ') -eq 'list' }
+    }
+
+    Context 'when the Ollama app lies beside ollama.exe' {
+        BeforeEach {
+            $appExe = 'C:\Users\User\AppData\Local\Programs\Ollama\ollama app.exe'
+            $serve = [pscustomobject]@{ Id = 200; Name = 'ollama'; Path = 'C:\Users\User\AppData\Local\Programs\Ollama\ollama.exe'; StartTicks = 555 }
+            # Apps lists what Win32_Process holds; Start adds what Start-OllamaApp leaves running and Returns the PID it gives back.
+            $world = @{ Apps = New-Object System.Collections.Generic.List[object]; Fails = 2; Calls = 0; Start = @(100); Returns = 100; Setup = 0 }
+            Mock Resolve-OllamaAppPath -ModuleName LocalAI -MockWith { $appExe }
+            Mock Get-OllamaAppProcess -ModuleName LocalAI -MockWith { $world.Apps.ToArray() }
+            Mock Start-OllamaApp -ModuleName LocalAI -MockWith {
+                foreach ($id in $world.Start) { $world.Apps.Add([pscustomobject]@{ Id = $id; Path = $appExe; StartTicks = [DateTime]::UtcNow.Ticks; ParentId = 9 }) }
+                $world.Returns
+            }
+            Mock Invoke-RestMethod -ModuleName LocalAI -MockWith {
+                $world.Calls++
+                if ($world.Calls -le $world.Fails) { throw 'Unable to connect to the remote server' }
+                [pscustomobject]@{ version = '0.40.13' }
+            }
+            Mock Test-LocalHostName -ModuleName LocalAI -MockWith { $true }
+            # The server holds the port once it answers.
+            Mock Get-PortOwner -ModuleName LocalAI -MockWith { if ($world.Calls -gt $world.Fails) { $serve } }
+            Mock Test-ProcessDescendant -ModuleName LocalAI -MockWith { $ProcessId -eq 200 -and $AncestorId -eq 100 -and $MaxDepth -eq 1 }
+        }
+
+        It 'starts nothing and claims no app when the server answers at once' {
+            $world.Fails = 0
+            $result = Wait-OllamaServer -Url 'http://127.0.0.1:11434' -PassThru 6>$null
+            $result.Version | Should -Be '0.40.13'
+            $result.App | Should -BeNullOrEmpty
+            $result.Started | Should -BeFalse
+            Should -Invoke Start-OllamaApp -ModuleName LocalAI -Times 0 -Exactly
+            Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly
+            Should -Invoke Get-OllamaAppProcess -ModuleName LocalAI -Times 0 -Exactly
+        }
+
+        It 'starts the app itself, not through ollama list, and returns the record of the app it started' {
+            $output = @(Wait-OllamaServer -Url 'http://127.0.0.1:11434' -PassThru -How 'install' 6>&1)
+            $result = @($output | Where-Object { $_ -isnot [System.Management.Automation.InformationRecord] })[0]
+            $printed = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$($_.MessageData)" }) -join "`n"
+            $result.Version | Should -Be '0.40.13'
+            $result.Started | Should -BeTrue
+            $app = $result.App
+            $app.Pid | Should -Be 100
+            $app.Path | Should -Be $appExe
+            $app.StartTicks | Should -Be $world.Apps[0].StartTicks
+            $app.StartedTicks | Should -BeLessOrEqual $app.StartTicks
+            $app.Port | Should -Be 11434
+            $app.How | Should -Be 'install'
+            $app.Listener.Pid | Should -Be 200
+            $app.Listener.StartTicks | Should -Be 555
+            $app.Listener.Path | Should -Be $serve.Path
+            $printed | Should -BeLike '*Started the Ollama app (PID 100); local-ai stop quits it again.*'
+            Should -Invoke Start-OllamaApp -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Path -eq $appExe }
+            Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly
+            Should -Invoke Test-ProcessDescendant -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $ProcessId -eq 200 -and $AncestorId -eq 100 -and $MaxDepth -eq 1 }
+            # What Get-RecordedProcessState and Write-LocalAIState take.
+            Write-LocalAIState -Path (Join-Path $TestDrive 'app-record.json') -State @{ Ollama = @{ App = $app } }
+        }
+
+        It 'still returns the version string without -PassThru, listing no apps' {
+            $output = @(Wait-OllamaServer -Url 'http://127.0.0.1:11434' 6>&1)
+            @($output | Where-Object { $_ -is [string] }) | Should -Be @('0.40.13')
+            @($output | Where-Object { "$_" -like '*Started the Ollama app*' }).Count | Should -Be 0
+            Should -Invoke Start-OllamaApp -ModuleName LocalAI -Times 1 -Exactly
+            Should -Invoke Get-OllamaAppProcess -ModuleName LocalAI -Times 0 -Exactly
+        }
+
+        It 'claims no app when <Case>' -ForEach @(
+            @{ Case = 'an app already ran before the start'; Setup = 'before'; Says = $false }
+            @{ Case = 'another program holds the port'; Setup = 'foreign listener'; Says = $true }
+            @{ Case = 'two apps began'; Setup = 'two apps'; Says = $true }
+            @{ Case = 'the app it started exited, as a second one does, while another began'; Setup = 'exited'; Says = $true }
+            @{ Case = 'the app runs from another folder'; Setup = 'other path'; Says = $true }
+        ) {
+            switch ($Setup) {
+                'before' {
+                    $world.Apps.Add([pscustomobject]@{ Id = 50; Path = $appExe; StartTicks = [DateTime]::UtcNow.AddMinutes(-5).Ticks; ParentId = 9 })
+                    # The second app exits at once, as one does while another runs.
+                    $world.Start = @()
+                }
+                'foreign listener' { Mock Test-ProcessDescendant -ModuleName LocalAI -MockWith { $false } }
+                'two apps' { $world.Start = @(100, 101) }
+                'exited' { $world.Start = @(101) }
+                'other path' { Mock Resolve-OllamaAppPath -ModuleName LocalAI -MockWith { 'C:\Other\ollama app.exe' } }
+            }
+            $output = @(Wait-OllamaServer -Url 'http://127.0.0.1:11434' -PassThru 6>&1)
+            $result = @($output | Where-Object { $_ -isnot [System.Management.Automation.InformationRecord] })[0]
+            $printed = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$($_.MessageData)" }) -join "`n"
+            $result.Version | Should -Be '0.40.13'
+            $result.App | Should -BeNullOrEmpty
+            $result.Started | Should -BeTrue
+            Should -Invoke Start-OllamaApp -ModuleName LocalAI -Times 1 -Exactly
+            # An app that ran before answers for itself; for one it started but cannot tell apart, it says that stop leaves it running.
+            ($printed -like '*cannot tell that the Ollama app answering now is the one it started, so local-ai stop leaves it running.*') | Should -Be $Says
+            $printed | Should -Not -BeLike '*Started the Ollama app (PID*'
+        }
+
+        It 'starts the app once the upgrade has finished, but claims none, as the installer starts one too' {
+            $world.Fails = 4
+            Mock Test-OllamaSetupRunning -ModuleName LocalAI -MockWith {
+                $world.Setup++
+                $world.Setup -le 2
+            }
+            $printed = $null
+            $result = Wait-OllamaServer -Url 'http://127.0.0.1:11434' -PassThru -InformationVariable printed 6>$null
+            $result.Version | Should -Be '0.40.13'
+            $result.App | Should -BeNullOrEmpty
+            $result.Started | Should -BeTrue
+            Should -Invoke Start-OllamaApp -ModuleName LocalAI -Times 1 -Exactly
+            Should -Invoke Test-OllamaSetupRunning -ModuleName LocalAI -Times 3 -Exactly
+            @($printed | Where-Object { "$_" -like '*waiting for the upgrade*' }).Count | Should -Be 1
+            @($printed | Where-Object { "$_" -like '*Started the Ollama app (PID*' }).Count | Should -Be 0
+        }
+
+        It 'names the app in the timeout message when starting it failed' {
+            Mock Start-OllamaApp -ModuleName LocalAI -MockWith { throw 'Access is denied.' }
+            Mock Invoke-RestMethod -ModuleName LocalAI -MockWith { throw 'Unable to connect to the remote server' }
+            { Wait-OllamaServer -Url 'http://127.0.0.1:11434' -TimeoutSeconds 1 -PassThru 6>$null } |
+                Should -Throw -ExpectedMessage "*Starting it with '$appExe' failed: Access is denied.*"
+        }
+
+        It 'names the app it started in the timeout message, as stop leaves an app it never claimed running' {
+            Mock Invoke-RestMethod -ModuleName LocalAI -MockWith { throw 'Unable to connect to the remote server' }
+            { Wait-OllamaServer -Url 'http://127.0.0.1:11434' -TimeoutSeconds 1 -PassThru 6>$null } |
+                Should -Throw -ExpectedMessage '*within 1 s (Unable to connect to the remote server). The Ollama app local-ai started (PID 100) may still come up; local-ai stop leaves it running.*'
+            Should -Invoke Start-OllamaApp -ModuleName LocalAI -Times 1 -Exactly
+        }
+    }
+}
+
+Describe 'Ollama app helpers' {
+    It 'lists the Ollama apps Win32_Process holds with their UTC start ticks' {
+        $created = [datetime]::new(2026, 11, 2, 9, 30, 0, [DateTimeKind]::Local)
+        Mock Get-CimInstance -ModuleName LocalAI -MockWith {
+            [pscustomobject]@{ ProcessId = [uint32]100; ExecutablePath = 'C:\Ollama\ollama app.exe'; CreationDate = $created; ParentProcessId = [uint32]9 }
+            [pscustomobject]@{ ProcessId = [uint32]101; ExecutablePath = $null; CreationDate = $created; ParentProcessId = [uint32]9 }
+        }
+        $apps = @(Invoke-ModuleFunction 'Get-OllamaAppProcess')
+        $apps.Count | Should -Be 2
+        $apps[0].Id | Should -Be 100
+        $apps[0].Path | Should -Be 'C:\Ollama\ollama app.exe'
+        $apps[0].StartTicks | Should -Be $created.ToUniversalTime().Ticks
+        $apps[0].ParentId | Should -Be 9
+        $apps[1].Path | Should -BeNullOrEmpty
+        Should -Invoke Get-CimInstance -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $ClassName -eq 'Win32_Process' -and $Filter -eq "Name='ollama app.exe'" }
+    }
+
+    It 'throws when Win32_Process cannot be read, rather than reporting no app' {
+        Mock Get-CimInstance -ModuleName LocalAI -MockWith { throw 'The RPC server is unavailable.' }
+        { Invoke-ModuleFunction 'Get-OllamaAppProcess' } | Should -Throw -ExpectedMessage '*RPC server*'
+    }
+
+    It 'finds ollama app.exe beside the ollama program on PATH, and nothing when either is missing' {
+        $folder = Join-Path $TestDrive 'Programs\Ollama'
+        $null = Write-TestFile 'Programs\Ollama\ollama.exe' 'program'
+        Mock Get-Command -ModuleName LocalAI -ParameterFilter { $Name -eq 'ollama' } -MockWith { [pscustomobject]@{ Name = 'ollama.exe'; Path = (Join-Path $folder 'ollama.exe') } }
+        Invoke-ModuleFunction 'Resolve-OllamaAppPath' | Should -BeNullOrEmpty
+        $app = Write-TestFile 'Programs\Ollama\ollama app.exe' 'program'
+        Invoke-ModuleFunction 'Resolve-OllamaAppPath' | Should -Be $app
+        Mock Get-Command -ModuleName LocalAI -ParameterFilter { $Name -eq 'ollama' }
+        Invoke-ModuleFunction 'Resolve-OllamaAppPath' | Should -BeNullOrEmpty
+    }
+
+    It 'starts the app hidden, with the CLI''s arguments, from its own folder and without the console, returning its PID' {
+        Mock Start-Process -ModuleName LocalAI -MockWith { [pscustomobject]@{ Id = 4321 } }
+        Invoke-ModuleFunction 'Start-OllamaApp' @{ Path = 'C:\Ollama\ollama app.exe' } | Should -Be 4321
+        Should -Invoke Start-Process -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter {
+            $FilePath -eq 'C:\Ollama\ollama app.exe' -and ($ArgumentList -join ' ') -eq '--hide --fast-startup' -and $WorkingDirectory -eq 'C:\Ollama' -and
+            $PassThru -and -not $NoNewWindow
+        }
+    }
+
+    It 'finds only the OllamaClass window of the given PID' {
+        Mock Get-TopLevelWindow -ModuleName LocalAI -MockWith {
+            [pscustomobject]@{ Handle = [IntPtr]0x1111; ClassName = 'OllamaClass'; ProcessId = 7; Visible = $false; Owned = $false }
+            [pscustomobject]@{ Handle = [IntPtr]0x2222; ClassName = 'Chrome_WidgetWin_1'; ProcessId = 100; Visible = $true; Owned = $false }
+            [pscustomobject]@{ Handle = [IntPtr]0x3333; ClassName = 'ollamaclass'; ProcessId = 100; Visible = $false; Owned = $false }
+            [pscustomobject]@{ Handle = [IntPtr]0x4444; ClassName = 'OllamaClass'; ProcessId = 100; Visible = $false; Owned = $false }
+        }
+        Invoke-ModuleFunction 'Find-OllamaAppWindow' @{ ProcessId = 100 } | Should -Be ([IntPtr]0x4444)
+        Invoke-ModuleFunction 'Find-OllamaAppWindow' @{ ProcessId = 8 } | Should -Be ([IntPtr]::Zero)
+    }
+
+    It 'counts only a visible window without an owner of the given PID as an open window' {
+        $windows = New-Object System.Collections.Generic.List[object]
+        Mock Get-TopLevelWindow -ModuleName LocalAI -MockWith { $windows.ToArray() }
+        $windows.Add([pscustomobject]@{ Handle = [IntPtr]0x4444; ClassName = 'OllamaClass'; ProcessId = 100; Visible = $false; Owned = $false })
+        $windows.Add([pscustomobject]@{ Handle = [IntPtr]0x5555; ClassName = '#32768'; ProcessId = 100; Visible = $true; Owned = $true })
+        $windows.Add([pscustomobject]@{ Handle = [IntPtr]0x6666; ClassName = 'Chrome_WidgetWin_1'; ProcessId = 7; Visible = $true; Owned = $false })
+        Invoke-ModuleFunction 'Test-OllamaAppWindowOpen' @{ ProcessId = 100 } | Should -BeFalse
+        $windows.Add([pscustomobject]@{ Handle = [IntPtr]0x7777; ClassName = 'Chrome_WidgetWin_1'; ProcessId = 100; Visible = $true; Owned = $false })
+        Invoke-ModuleFunction 'Test-OllamaAppWindowOpen' @{ ProcessId = 100 } | Should -BeTrue
+    }
+
+    # Compiles the binding, as the keep-awake test does; it calls neither EnumWindows nor PostMessage.
+    It 'compiles the window binding once, with the calls the helpers use' {
+        $api = Invoke-ModuleFunction 'Get-LocalAIWindowApi'
+        $api.FullName | Should -Be 'LocalAI.WindowApi'
+        $api.GetMethod('GetTopLevelWindows') | Should -Not -BeNullOrEmpty
+        $api.GetMethod('PostMessage') | Should -Not -BeNullOrEmpty
+        Mock Add-Type -ModuleName LocalAI
+        Invoke-ModuleFunction 'Get-LocalAIWindowApi' | Should -Be $api
+        Should -Invoke Add-Type -ModuleName LocalAI -Times 0 -Exactly
+    }
+
+    Context 'Save-OllamaRecord' {
+        BeforeEach {
+            $statePath = Join-Path $TestDrive ([guid]::NewGuid().ToString('N') + '\state.json')
+            $earlier = @{ Pid = 90; StartTicks = 9; Path = 'C:\Ollama\ollama app.exe'; Port = 11434; How = 'start' }
+            $new = @{ Pid = 100; StartTicks = 10; Path = 'C:\Ollama\ollama app.exe'; Port = 11434; How = 'update' }
+            Write-LocalAIState -Path $statePath -State @{ Services = @{ OpenWebUI = @{ Pid = 4242 } }; Ollama = @{ Url = 'http://127.0.0.1:11434'; Alias = 'old'; App = $earlier } }
+            $found = @{ State = 'match' }
+            Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith { $found.State }
+            # 192.0.2.20 stands for another computer.
+            Mock Test-LocalHostName -ModuleName LocalAI -MockWith { $HostName -ne '192.0.2.20' }
+            $save = {
+                param([hashtable]$App, [string]$Url = 'http://127.0.0.1:11434')
+                Invoke-ModuleFunction 'Save-OllamaRecord' @{ Path = $statePath; Url = $Url; Alias = 'local-chat'; App = $App }
+            }
+        }
+
+        It 'records a new app over an earlier one, keeping the rest of state.json' {
+            (& $save $new 'http://127.0.0.1:11500').Pid | Should -Be 100
+            $state = Read-LocalAIState -Path $statePath
+            $state.Ollama.App.Pid | Should -Be 100
+            $state.Ollama.App.How | Should -Be 'update'
+            $state.Ollama.Url | Should -Be 'http://127.0.0.1:11500'
+            $state.Ollama.Alias | Should -Be 'local-chat'
+            $state.Services.OpenWebUI.Pid | Should -Be 4242
+            Should -Invoke Get-RecordedProcessState -ModuleName LocalAI -Times 0 -Exactly
+        }
+
+        It 'keeps the earlier app while it runs as recorded <Case>, and drops it once it does not' -ForEach @(
+            @{ Case = 'and this window can inspect it'; State = 'match' }
+            @{ Case = 'but this window may not inspect it, as stop and status still count it'; State = 'unreadable' }
+        ) {
+            $found.State = $State
+            (& $save $null).Pid | Should -Be 90
+            (Read-LocalAIState -Path $statePath).Ollama.App.Pid | Should -Be 90
+            Should -Invoke Get-RecordedProcessState -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Record.Pid -eq 90 }
+            $found.State = 'other'
+            & $save $null | Should -BeNullOrEmpty
+            $state = Read-LocalAIState -Path $statePath
+            $state.Ollama.ContainsKey('App') | Should -BeTrue
+            $state.Ollama.App | Should -BeNullOrEmpty
+        }
+
+        It 'drops an earlier app that serves another port than the new Url, whose models stop would not see' {
+            & $save $null 'http://127.0.0.1:11500' | Should -BeNullOrEmpty
+            (Read-LocalAIState -Path $statePath).Ollama.App | Should -BeNullOrEmpty
+            Should -Invoke Get-RecordedProcessState -ModuleName LocalAI -Times 0 -Exactly
+        }
+
+        It 'drops an earlier app when the new Url names another computer, even on the same port' {
+            & $save $null 'http://192.0.2.20:11434' | Should -BeNullOrEmpty
+            $state = Read-LocalAIState -Path $statePath
+            $state.Ollama.App | Should -BeNullOrEmpty
+            $state.Ollama.Url | Should -Be 'http://192.0.2.20:11434'
+            Should -Invoke Test-LocalHostName -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $HostName -eq '192.0.2.20' }
+            Should -Invoke Get-RecordedProcessState -ModuleName LocalAI -Times 0 -Exactly
+        }
     }
 }
 
@@ -2271,7 +2630,10 @@ Describe 'Install-LocalAI' {
         Mock Update-SessionPath -ModuleName LocalAI
         Mock Resolve-OllamaUrl -ModuleName LocalAI -MockWith { 'http://127.0.0.1:11434' }
         Mock Get-Command -ModuleName LocalAI -ParameterFilter { $Name -eq 'ollama' } -MockWith { [pscustomobject]@{ Name = 'ollama.exe' } }
-        Mock Wait-OllamaServer -ModuleName LocalAI -MockWith { '0.40.11' }
+        Mock Wait-OllamaServer -ModuleName LocalAI -MockWith { if ($PassThru) { [pscustomobject]@{ Version = '0.40.11'; App = $null } } else { '0.40.11' } }
+        # No Ollama app runs, and none starts.
+        Mock Get-OllamaAppProcess -ModuleName LocalAI
+        Mock Resolve-OllamaAppPath -ModuleName LocalAI
         Mock Get-OllamaModelBlob -ModuleName LocalAI
         Mock Test-FreeSpace -ModuleName LocalAI
         Mock Install-WingetPackage -ModuleName LocalAI -MockWith { 'present' }
@@ -2631,6 +2993,65 @@ Describe 'Install-LocalAI' {
         { Install-LocalAI -Context $context 6>$null } | Should -Throw -ExpectedMessage '*pull failed*'
         Should -Invoke Set-LocalAIKeepAwake -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { -not $Enabled }
         Test-Path -LiteralPath (Join-Path $root 'install-stamp.json') | Should -BeFalse
+    }
+
+    It 'records at once the Ollama app its first wait started, so stop quits it also when a later step fails' {
+        $app = @{ Pid = 100; StartTicks = 111; Path = 'C:\Ollama\ollama app.exe'; Port = 11434; StartedTicks = 110; How = 'install' }
+        $waits = @{ Count = 0 }
+        Mock Wait-OllamaServer -ModuleName LocalAI -MockWith {
+            $waits.Count++
+            $started = if ($waits.Count -eq 1) { $app } else { $null }
+            [pscustomobject]@{ Version = '0.40.11'; App = $started }
+        }
+        Mock Test-RecordedProcess -ModuleName LocalAI -MockWith { $true }
+        Mock Install-ChatModel -ModuleName LocalAI -MockWith { throw 'pull failed' }
+        { Install-LocalAI -Context $context 6>$null } | Should -Throw -ExpectedMessage '*pull failed*'
+        Should -Invoke Wait-OllamaServer -ModuleName LocalAI -Times 2 -Exactly -ParameterFilter { $PassThru -and $How -eq 'install' }
+        $ollama = (Read-LocalAIState -Path (Join-Path $root 'state.json')).Ollama
+        $ollama.App.Pid | Should -Be 100
+        $ollama.App.How | Should -Be 'install'
+        $ollama.Url | Should -Be 'http://127.0.0.1:11434'
+        $ollama.Alias | Should -Be 'local-chat'
+    }
+
+    Context 'when the Ollama installer starts the app' {
+        BeforeEach {
+            $appExe = 'C:\Users\User\AppData\Local\Programs\Ollama\ollama app.exe'
+            # Apps holds what Win32_Process lists; the Ollama package's winget step leaves New running, as its installer does.
+            $world = @{ Apps = New-Object System.Collections.Generic.List[object]; New = @(300) }
+            Mock Get-OllamaAppProcess -ModuleName LocalAI -MockWith { $world.Apps.ToArray() }
+            Mock Install-WingetPackage -ModuleName LocalAI -ParameterFilter { $Package.Id -eq 'Ollama.Ollama' } -MockWith {
+                foreach ($id in $world.New) { $world.Apps.Add([pscustomobject]@{ Id = $id; Path = $appExe; StartTicks = [DateTime]::UtcNow.Ticks; ParentId = 9 }) }
+                'installed'
+            }
+            Mock Resolve-OllamaAppPath -ModuleName LocalAI -MockWith { $appExe }
+            Mock Get-PortOwner -ModuleName LocalAI -MockWith { [pscustomobject]@{ Id = 301; Name = 'ollama'; Path = 'C:\Ollama\ollama.exe'; StartTicks = 5 } }
+            Mock Test-ProcessDescendant -ModuleName LocalAI -MockWith { $ProcessId -eq 301 -and $AncestorId -eq 300 -and $MaxDepth -eq 1 }
+        }
+
+        It 'records the app the installer started when no app ran before' {
+            $printed = @(Install-LocalAI -Context $context 6>&1 | ForEach-Object { "$_" }) -join "`n"
+            $printed | Should -BeLike '*The Ollama installer started the Ollama app (PID 300); local-ai stop quits it again.*'
+            $app = (Read-LocalAIState -Path (Join-Path $root 'state.json')).Ollama.App
+            $app.Pid | Should -Be 300
+            $app.Path | Should -Be $appExe
+            $app.How | Should -Be 'install'
+            $app.Listener.Pid | Should -Be 301
+        }
+
+        It 'records no app when one ran before the winget step, or when <Case>' -ForEach @(
+            @{ Case = 'two apps began'; New = @(300, 302) }
+            @{ Case = 'none began'; New = @() }
+        ) {
+            $world.New = $New
+            $null = Install-LocalAI -Context $context 6>$null
+            (Read-LocalAIState -Path (Join-Path $root 'state.json')).ContainsKey('Ollama') | Should -BeFalse
+            $world.Apps.Clear()
+            $world.Apps.Add([pscustomobject]@{ Id = 50; Path = $appExe; StartTicks = [DateTime]::UtcNow.AddMinutes(-5).Ticks; ParentId = 9 })
+            $world.New = @(300)
+            $null = Install-LocalAI -Context $context 6>$null
+            (Read-LocalAIState -Path (Join-Path $root 'state.json')).ContainsKey('Ollama') | Should -BeFalse
+        }
     }
 }
 
@@ -5147,6 +5568,51 @@ Describe 'Get-PortOwner' {
     }
 }
 
+Describe 'Get-LoopbackClient and Test-ProcessInThisSession' {
+    It 'returns each process connected to the port from a loopback address once, leaving out the PIDs it is told to' {
+        Mock Get-NetTCPConnection -ModuleName LocalAI -MockWith {
+            [pscustomobject]@{ RemoteAddress = '127.0.0.1'; RemotePort = 11434; OwningProcess = 300 }
+            [pscustomobject]@{ RemoteAddress = '127.0.0.1'; RemotePort = 11434; OwningProcess = 300 }
+            [pscustomobject]@{ RemoteAddress = '::1'; RemotePort = 11434; OwningProcess = 301 }
+            [pscustomobject]@{ RemoteAddress = '::ffff:127.0.0.1'; RemotePort = 11434; OwningProcess = 302 }
+            [pscustomobject]@{ RemoteAddress = '192.0.2.30'; RemotePort = 11434; OwningProcess = 303 }
+            [pscustomobject]@{ RemoteAddress = '127.0.0.1'; RemotePort = 11434; OwningProcess = 400 }
+        }
+        Mock Get-Process -ModuleName LocalAI -MockWith { if ($Id[0] -ne 302) { [pscustomobject]@{ Id = $Id[0]; Name = "client$($Id[0])" } } }
+        $clients = @(Invoke-ModuleFunction 'Get-LoopbackClient' @{ Port = 11434; Exclude = @(400) })
+        @($clients | ForEach-Object { $_.Id }) | Should -Be @(300, 301, 302)
+        @($clients | ForEach-Object { $_.Name }) | Should -Be @('client300', 'client301', $null)
+        Should -Invoke Get-NetTCPConnection -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter {
+            $State -eq 'Established' -and $RemotePort -eq 11434 -and $PesterBoundParameters['ErrorAction'] -eq 'SilentlyContinue'
+        }
+    }
+
+    It 'returns nothing when no connection matches, and throws any other Get-NetTCPConnection error' {
+        Mock Get-NetTCPConnection -ModuleName LocalAI -MockWith {
+            $reason = New-Object System.Exception 'No matching MSFT_NetTCPConnection objects found by CIM query.'
+            $record = New-Object System.Management.Automation.ErrorRecord $reason, 'CmdletizationQuery_NotFound,Get-NetTCPConnection', 'ObjectNotFound', $null
+            Write-Error -ErrorRecord $record -ErrorAction $PesterBoundParameters['ErrorAction']
+        }
+        @(Invoke-ModuleFunction 'Get-LoopbackClient' @{ Port = 11434 }).Count | Should -Be 0
+        Mock Get-NetTCPConnection -ModuleName LocalAI -MockWith { throw 'The CIM server is unavailable.' }
+        { Invoke-ModuleFunction 'Get-LoopbackClient' @{ Port = 11434 } } | Should -Throw -ExpectedMessage '*CIM server is unavailable*'
+    }
+
+    It 'says whether a process runs in this window''s Windows session, and no when its session cannot be read' {
+        $own = [Diagnostics.Process]::GetCurrentProcess()
+        $session = $own.SessionId
+        $own.Dispose()
+        $found = @{ Process = [pscustomobject]@{ ProcessId = 100; SessionId = [uint32]$session } }
+        Mock Get-CimInstance -ModuleName LocalAI -MockWith { $found.Process }
+        Invoke-ModuleFunction 'Test-ProcessInThisSession' @{ ProcessId = 100 } | Should -BeTrue
+        Should -Invoke Get-CimInstance -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $ClassName -eq 'Win32_Process' -and $Filter -eq 'ProcessId=100' }
+        $found.Process = [pscustomobject]@{ ProcessId = 100; SessionId = [uint32]($session + 1) }
+        Invoke-ModuleFunction 'Test-ProcessInThisSession' @{ ProcessId = 100 } | Should -BeFalse
+        $found.Process = $null
+        Invoke-ModuleFunction 'Test-ProcessInThisSession' @{ ProcessId = 100 } | Should -BeFalse
+    }
+}
+
 Describe 'Test-RecordedProcess' {
     BeforeAll {
         $start = [datetime]::new(2026, 10, 27, 9, 30, 0, [DateTimeKind]::Local).AddTicks(1234567)
@@ -5784,7 +6250,7 @@ Describe 'Start-LocalAI' {
         Mock Update-SessionPath -ModuleName LocalAI
         Mock Resolve-OllamaUrl -ModuleName LocalAI -MockWith { 'http://127.0.0.1:11434' }
         Mock Install-LocalAI -ModuleName LocalAI -MockWith { 0 }
-        Mock Wait-OllamaServer -ModuleName LocalAI -MockWith { '0.40.11' }
+        Mock Wait-OllamaServer -ModuleName LocalAI -MockWith { if ($PassThru) { [pscustomobject]@{ Version = '0.40.11'; App = $null } } else { '0.40.11' } }
         Mock Test-LocalHostName -ModuleName LocalAI -MockWith { $true }
         Mock Test-LoopbackListener -ModuleName LocalAI -MockWith { $true }
         Mock Get-OllamaModelBlob -ModuleName LocalAI -MockWith { [pscustomobject]@{ Digest = 'a' * 64; Path = 'C:\models\blobs\a' } }
@@ -5870,8 +6336,79 @@ Describe 'Start-LocalAI' {
 
     It 'checks Ollama and its bind address when install does not run' {
         $null = Invoke-StartVerb -Context $context
-        Should -Invoke Wait-OllamaServer -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Url -eq 'http://127.0.0.1:11434' }
+        Should -Invoke Wait-OllamaServer -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Url -eq 'http://127.0.0.1:11434' -and $PassThru -and $How -eq 'start' }
         Should -Invoke Test-LoopbackListener -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Name -eq 'Ollama' -and $Port -eq 11434 }
+    }
+
+    It 'records the Ollama app its wait started before a later step can throw' {
+        $app = @{ Pid = 100; StartTicks = 111; Path = 'C:\Ollama\ollama app.exe'; Port = 11434; StartedTicks = 110; How = 'start' }
+        Mock Wait-OllamaServer -ModuleName LocalAI -MockWith { [pscustomobject]@{ Version = '0.40.11'; App = $app } }
+        Mock Get-OllamaModelBlob -ModuleName LocalAI
+        { Start-LocalAI -Context $context 6>$null } | Should -Throw -ExpectedMessage "*has no model 'local-chat'*"
+        $ollama = (Read-LocalAIState -Path $paths.State).Ollama
+        $ollama.App.Pid | Should -Be 100
+        $ollama.App.How | Should -Be 'start'
+        $ollama.Url | Should -Be 'http://127.0.0.1:11434'
+        $ollama.Alias | Should -Be 'local-chat'
+    }
+
+    It 'keeps the app an earlier start recorded <Case>' -ForEach @(
+        @{ Case = 'while it runs as recorded'; Found = 'match'; Port = 11434; New = $false; Expected = 90 }
+        @{ Case = 'while it runs where this window may not inspect it'; Found = 'unreadable'; Port = 11434; New = $false; Expected = 90 }
+        @{ Case = 'only while it runs, dropping it once it does not'; Found = 'other'; Port = 11434; New = $false; Expected = $null }
+        @{ Case = 'only while it serves the port of Ollama.Url, whose models stop checks'; Found = 'match'; Port = 11500; New = $false; Expected = $null }
+        @{ Case = 'unless its wait started a new one, which wins'; Found = 'match'; Port = 11434; New = $true; Expected = 100 }
+    ) {
+        $earlier = @{ Pid = 90; StartTicks = 9; Path = 'C:\Ollama\ollama app.exe'; Port = $Port; How = 'start' }
+        Write-LocalAIState -Path $paths.State -State @{ Services = @{}; Ollama = @{ Url = "http://127.0.0.1:$Port"; Alias = 'local-chat'; App = $earlier } }
+        $app = if ($New) { @{ Pid = 100; StartTicks = 111; Path = 'C:\Ollama\ollama app.exe'; Port = 11434; How = 'start' } } else { $null }
+        Mock Wait-OllamaServer -ModuleName LocalAI -MockWith { [pscustomobject]@{ Version = '0.40.11'; App = $app } }
+        Mock Get-RecordedProcessState -ModuleName LocalAI -ParameterFilter { [int]$Record.Pid -eq 90 } -MockWith { $Found }
+        Mock Get-RecordedProcessState -ModuleName LocalAI -ParameterFilter { [int]$Record.Pid -eq 100 } -MockWith { 'match' }
+        (Invoke-StartVerb -Context $context).Code | Should -Be @(0)
+        $state = Read-LocalAIState -Path $paths.State
+        if ($null -eq $Expected) { $state.Ollama.App | Should -BeNullOrEmpty } else { $state.Ollama.App.Pid | Should -Be $Expected }
+        $state.Ollama.Url | Should -Be 'http://127.0.0.1:11434'
+        $state.Services.OpenWebUI.Pid | Should -Be 4242
+    }
+
+    It 'drops the app an earlier start recorded once Ollama.Url names another computer, even on the same port' {
+        # 192.0.2.20 stands for another computer, which the Ollama app on this PC never serves.
+        Mock Resolve-OllamaUrl -ModuleName LocalAI -MockWith { 'http://192.0.2.20:11434' }
+        Mock Test-LocalHostName -ModuleName LocalAI -MockWith { $HostName -ne '192.0.2.20' }
+        $earlier = @{ Pid = 90; StartTicks = 9; Path = 'C:\Ollama\ollama app.exe'; Port = 11434; How = 'start' }
+        Write-LocalAIState -Path $paths.State -State @{ Services = @{}; Ollama = @{ Url = 'http://127.0.0.1:11434'; Alias = 'local-chat'; App = $earlier } }
+        Mock Get-RecordedProcessState -ModuleName LocalAI -ParameterFilter { [int]$Record.Pid -eq 90 } -MockWith { 'match' }
+        (Invoke-StartVerb -Context $context).Code | Should -Be @(0)
+        $ollama = (Read-LocalAIState -Path $paths.State).Ollama
+        $ollama.App | Should -BeNullOrEmpty
+        $ollama.Url | Should -Be 'http://192.0.2.20:11434'
+        Should -Invoke Test-LocalHostName -ModuleName LocalAI -ParameterFilter { $HostName -eq '192.0.2.20' }
+    }
+
+    It 'keeps the app the install it runs first recorded' {
+        Write-LocalAIState -Path $paths.InstallStamp -State @{ Ollama = $complete.Ollama; Model = $complete.Model }
+        Mock Install-LocalAI -ModuleName LocalAI -MockWith {
+            Write-LocalAIState -Path $Context.Paths.InstallStamp -State $complete
+            Write-LocalAIState -Path $Context.Paths.State -State @{
+                Ollama = @{ Url = 'http://127.0.0.1:11434'; Alias = 'local-chat'; App = @{ Pid = 300; StartTicks = 3; Path = 'C:\x'; Port = 11434; How = 'install' } }
+            }
+            0
+        }
+        Mock Get-RecordedProcessState -ModuleName LocalAI -ParameterFilter { [int]$Record.Pid -eq 300 } -MockWith { 'match' }
+        (Invoke-StartVerb -Context $context).Code | Should -Be @(0)
+        (Read-LocalAIState -Path $paths.State).Ollama.App.Pid | Should -Be 300
+        Should -Invoke Wait-OllamaServer -ModuleName LocalAI -Times 0 -Exactly
+    }
+
+    It 'leaves the recorded Url and Alias for stop until the model check passes, when Ollama answered without a start' {
+        # An earlier start ran the stack with the alias settings.psd1 named then; stop must still unload that one.
+        Write-LocalAIState -Path $paths.State -State @{ Services = @{}; Ollama = @{ Url = 'http://127.0.0.1:11434'; Alias = 'old-chat'; App = $null } }
+        Mock Get-OllamaModelBlob -ModuleName LocalAI
+        { Start-LocalAI -Context $context 6>$null } | Should -Throw -ExpectedMessage "*has no model 'local-chat'*"
+        $ollama = (Read-LocalAIState -Path $paths.State).Ollama
+        $ollama.Alias | Should -Be 'old-chat'
+        $ollama.App | Should -BeNullOrEmpty
     }
 
     It 'stops before anything when Ollama.Url and the ollama program name different servers' {
@@ -6903,12 +7440,15 @@ Describe 'Stop-LocalAI and Stop-LocalAIService' {
         (Read-LocalAIState -Path $paths.State).Services.Count | Should -Be 0
     }
 
-    It 'kills the recorded listener when only it still runs' {
+    It 'kills the recorded listener when only it still runs, and names it as the server the service left running' {
         Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith { if ($world.Alive -and $Record.Pid -eq 1624) { 'match' } else { 'other' } }
-        (Invoke-StopVerb -Context $context).Code | Should -Be @(0)
+        $run = Invoke-StopVerb -Context $context
+        $run.Code | Should -Be @(0)
         Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter {
             $FilePath -eq 'taskkill' -and ($ArgumentList -join ' ') -eq '/PID 1624 /T /F'
         }
+        $run.Printed | Should -BeLike '*Stopped the server (PID 1624) that OpenWebUI (PID 4242) left running.*'
+        $run.Printed | Should -Not -BeLike '*Stopped OpenWebUI (PID*'
     }
 
     It 'counts taskkill exit code 128, a process that already ended, as stopped once the poll confirms it' {
@@ -6970,7 +7510,9 @@ Describe 'Stop-LocalAI and Stop-LocalAIService' {
         }
         Should -Invoke Invoke-RestMethod -ModuleName LocalAI -Times 2 -Exactly -ParameterFilter { $Uri -eq 'http://127.0.0.1:11434/api/ps' }
         Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $FilePath -eq 'ollama' }
-        $run.Printed | Should -BeLike '*Unloaded local-chat; Ollama keeps running.*'
+        # state.json records no Ollama app, so local-ai did not start the one that runs.
+        $run.Printed | Should -BeLike ('*Unloaded local-chat.*Ollama keeps running, since state.json records no Ollama app that local-ai started.*' +
+            'Stop finished: stopped OpenWebUI, local-chat; Ollama keeps running.')
     }
 
     It 'sends no unload request when <Case>' -ForEach @(
@@ -6996,6 +7538,432 @@ Describe 'Stop-LocalAI and Stop-LocalAIService' {
         $run.Code | Should -Be @(0)
         $run.Printed | Should -BeLike '*nothing was running*'
         Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly
+    }
+}
+
+Describe 'Stop-OllamaApp' {
+    BeforeEach {
+        $app = @{ Pid = 100; StartTicks = 111; Path = 'C:\Ollama\ollama app.exe'; Port = 11434; StartedTicks = 110; How = 'start'
+            Listener = @{ Pid = 200; StartTicks = 222; Path = 'C:\Ollama\ollama.exe' } }
+        $serve = [pscustomobject]@{ Id = 200; Name = 'ollama'; Path = 'C:\Ollama\ollama.exe'; StartTicks = 222 }
+        # Alive: the app and its server run; Held: the server holds the port; Quits: the app ends on WM_CLOSE; Free: polls until the port frees after it.
+        $world = @{ Alive = $true; Held = $true; Quits = $true; Free = 0; Models = @(); Window = $false; Handle = [IntPtr]0x1234 }
+        Mock Test-LocalHostName -ModuleName LocalAI -MockWith { $true }
+        Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith { if ($world.Alive -and @(100, 200) -contains [int]$Record.Pid) { 'match' } else { 'other' } }
+        Mock Get-PortOwner -ModuleName LocalAI -MockWith {
+            if ($world.Free -gt 0) {
+                $world.Free--
+                if ($world.Free -eq 0) { $world.Held = $false }
+            }
+            if ($world.Held) { $serve }
+        }
+        Mock Test-ProcessDescendant -ModuleName LocalAI -MockWith { $world.Alive -and $ProcessId -eq 200 -and $AncestorId -eq 100 }
+        Mock Invoke-RestMethod -ModuleName LocalAI -MockWith { [pscustomobject]@{ models = @($world.Models) } }
+        # No other program is connected to Ollama, and the app runs in this Windows session.
+        Mock Get-LoopbackClient -ModuleName LocalAI
+        Mock Test-ProcessInThisSession -ModuleName LocalAI -MockWith { $true }
+        Mock Test-OllamaAppWindowOpen -ModuleName LocalAI -MockWith { $world.Window }
+        Mock Find-OllamaAppWindow -ModuleName LocalAI -MockWith { $world.Handle }
+        Mock Send-OllamaAppClose -ModuleName LocalAI -MockWith {
+            if ($world.Quits) {
+                $world.Alive = $false
+                if ($world.Free -eq 0) { $world.Held = $false }
+            }
+            $true
+        }
+        Mock Invoke-Native -ModuleName LocalAI -MockWith { throw "Unexpected program $FilePath $($ArgumentList -join ' ')" }
+        Mock Invoke-Native -ModuleName LocalAI -ParameterFilter { $FilePath -eq 'taskkill' } -MockWith {
+            $world.Alive = $false
+            $world.Held = $false
+            0
+        }
+        Mock Start-Sleep -ModuleName LocalAI
+        # Run Stop-OllamaApp with $Extra added to its arguments and return @{ Result (its table); Printed (the host text joined) }.
+        $quit = {
+            param([hashtable]$Extra = @{})
+            $arguments = @{ Record = $app; Url = 'http://127.0.0.1:11434'; Alias = 'local-chat' }
+            foreach ($key in $Extra.Keys) { $arguments[$key] = $Extra[$key] }
+            $output = @(Invoke-ModuleFunction 'Stop-OllamaApp' $arguments 6>&1)
+            @{
+                Result  = @($output | Where-Object { $_ -is [hashtable] })[0]
+                Printed = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$($_.MessageData)" }) -join "`n"
+            }
+        }
+    }
+
+    It 'quits the app through the window its PID owns, as the tray does, and waits for the app to end and the port to free' {
+        # The look before the quit, and two polls after it, still find the server on the port.
+        $world.Free = 4
+        $run = & $quit
+        $run.Result.Result | Should -Be 'stopped'
+        $run.Printed | Should -Be 'Quit the Ollama app local-ai started (PID 100).'
+        $run.Result.Reason | Should -Be $run.Printed
+        Should -Invoke Find-OllamaAppWindow -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $ProcessId -eq 100 }
+        Should -Invoke Send-OllamaAppClose -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Handle -eq [IntPtr]0x1234 }
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $FilePath -eq 'taskkill' }
+        Should -Invoke Start-Sleep -ModuleName LocalAI -Times 3 -Exactly
+    }
+
+    It 'ends the app with taskkill /PID /T /F once, never /IM, when it does not quit within the timeout, and says so once it did' {
+        $world.Quits = $false
+        $run = & $quit
+        $run.Result.Result | Should -Be 'forced'
+        $run.Printed | Should -Be ("Stopped Ollama app (PID 100).`nThe Ollama app local-ai started (PID 100) did not quit within 20 s, so taskkill /T /F ended it, " +
+            'its server and the models it held.')
+        $run.Result.Reason | Should -BeLike 'The Ollama app local-ai started (PID 100) did not quit within 20 s*'
+        Should -Invoke Send-OllamaAppClose -ModuleName LocalAI -Times 1 -Exactly
+        Should -Invoke Start-Sleep -ModuleName LocalAI -Times 40 -Exactly
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'taskkill' }
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'taskkill' -and ($ArgumentList -join ' ') -eq '/PID 100 /T /F' }
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $ArgumentList -contains '/IM' }
+    }
+
+    It 'goes straight to taskkill for the verified PID when <Case>' -ForEach @(
+        @{ Case = 'the app has no window'; NoWindow = $true; Why = 'has no window to ask it to quit' }
+        @{ Case = 'Windows refuses the quit'; NoWindow = $false; Why = 'refused the request to quit' }
+    ) {
+        if ($NoWindow) { $world.Handle = [IntPtr]::Zero } else { Mock Send-OllamaAppClose -ModuleName LocalAI -MockWith { $false } }
+        $run = & $quit
+        $run.Result.Result | Should -Be 'forced'
+        $run.Printed | Should -BeLike "Stopped Ollama app (PID 100).*The Ollama app local-ai started (PID 100) $Why, so taskkill /T /F ended it, its server*"
+        Should -Invoke Start-Sleep -ModuleName LocalAI -Times 0 -Exactly
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'taskkill' -and ($ArgumentList -join ' ') -eq '/PID 100 /T /F' }
+        if ($NoWindow) { Should -Invoke Send-OllamaAppClose -ModuleName LocalAI -Times 0 -Exactly }
+    }
+
+    It 'keeps the app running when <Case>, killing nothing' -ForEach @(
+        @{ Case = 'another program has a model loaded'; Setup = 'model'
+            Message = ('Ollama still has qwen3:8b loaded, which another program may be using, so the Ollama app local-ai started (PID 100) keeps running. ' +
+                "Ollama unloads an idle model after its keep-alive (5 minutes by default); run 'local-ai stop' again then, or quit the app from its tray icon.")
+        }
+        @{ Case = 'its window is open'; Setup = 'window'; Message = "The Ollama app local-ai started (PID 100) has a window open, so it keeps running; close that window*" }
+        @{ Case = 'Ollama does not list its models while a server holds the port'; Setup = 'no list'; Message = 'Ollama does not list its loaded models at http://127.0.0.1:11434/api/ps (timed out)*keeps running*' }
+        @{ Case = 'another program is still connected to Ollama'; Setup = 'client'
+            Message = ('Ollama at http://127.0.0.1:11434 still has connections from node (PID 4400), PID 4401, which may still use it, so the Ollama app local-ai ' +
+                "started (PID 100) keeps running; run 'local-ai stop' again once they are done, or quit the app from its tray icon.")
+        }
+        @{ Case = 'the programs connected to Ollama cannot be listed'; Setup = 'no clients'; Message = 'Cannot tell which programs are connected to Ollama on port 11434 (Access denied.)*keeps running*' }
+        @{ Case = 'the app runs in another Windows session, whose windows stop cannot see'; Setup = 'session'
+            Message = ("The Ollama app local-ai started (PID 100) runs in another Windows session, whose windows stop cannot see, so it keeps running; run " +
+                "'local-ai stop' on that desktop, or quit the app from its tray icon.")
+        }
+    ) {
+        switch ($Setup) {
+            'model' { $world.Models = @([pscustomobject]@{ name = 'local-chat:latest'; model = 'local-chat:latest' }, [pscustomobject]@{ name = 'qwen3:8b'; model = 'qwen3:8b' }) }
+            'window' { $world.Window = $true }
+            'no list' { Mock Invoke-RestMethod -ModuleName LocalAI -MockWith { throw 'timed out' } }
+            'client' {
+                Mock Get-LoopbackClient -ModuleName LocalAI -MockWith {
+                    [pscustomobject]@{ Id = 4400; Name = 'node' }
+                    [pscustomobject]@{ Id = 4401; Name = $null }
+                }
+            }
+            'no clients' { Mock Get-LoopbackClient -ModuleName LocalAI -MockWith { throw 'Access denied.' } }
+            'session' { Mock Test-ProcessInThisSession -ModuleName LocalAI -MockWith { $false } }
+        }
+        $run = & $quit
+        $run.Result.Result | Should -Be 'kept'
+        $run.Printed | Should -BeLike $Message
+        $run.Result.Reason | Should -Be $run.Printed
+        Should -Invoke Find-OllamaAppWindow -ModuleName LocalAI -Times 0 -Exactly
+        Should -Invoke Send-OllamaAppClose -ModuleName LocalAI -Times 0 -Exactly
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly
+    }
+
+    It 'counts no connection of this window or of the app and its own processes as another program''s' {
+        Mock Get-LoopbackClient -ModuleName LocalAI -MockWith { [pscustomobject]@{ Id = 210; Name = 'msedgewebview2' } }
+        Mock Test-ProcessDescendant -ModuleName LocalAI -MockWith { ($world.Alive -and $ProcessId -eq 200 -and $AncestorId -eq 100) -or ($ProcessId -eq 210 -and $AncestorId -eq 100) }
+        (& $quit).Result.Result | Should -Be 'stopped'
+        Should -Invoke Get-LoopbackClient -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Port -eq 11434 -and $Exclude -contains $PID -and $Exclude -contains 100 }
+        Should -Invoke Test-ProcessInThisSession -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $ProcessId -eq 100 }
+    }
+
+    It 'ends with taskkill /PID <server> /T /F the server the app left running when the app ended only after the wait' {
+        $world.Quits = $false
+        $life = @{ App = $true; Serve = $true; Sleeps = 0 }
+        Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith {
+            switch ([int]$Record.Pid) {
+                100 { if ($life.App) { 'match' } else { 'other' } }
+                200 { if ($life.Serve) { 'match' } else { 'other' } }
+                default { 'other' }
+            }
+        }
+        # The app ends at the last poll, and its server keeps the port.
+        Mock Start-Sleep -ModuleName LocalAI -MockWith {
+            $life.Sleeps++
+            if ($life.Sleeps -eq 40) { $life.App = $false }
+        }
+        Mock Get-PortOwner -ModuleName LocalAI -MockWith { if ($life.Serve) { $serve } }
+        Mock Test-ProcessDescendant -ModuleName LocalAI -MockWith { $life.App -and $ProcessId -eq 200 -and $AncestorId -eq 100 }
+        Mock Invoke-Native -ModuleName LocalAI -ParameterFilter { $FilePath -eq 'taskkill' } -MockWith {
+            if (($ArgumentList -join ' ') -eq '/PID 200 /T /F') { $life.Serve = $false }
+            0
+        }
+        $run = & $quit
+        $run.Result.Result | Should -Be 'forced'
+        $run.Printed | Should -Be ("Stopped the server (PID 200) that Ollama app (PID 100) left running.`nThe Ollama app local-ai started (PID 100) did not quit " +
+            'within 20 s, so taskkill /T /F ended the server it left running, with the models it held.')
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'taskkill' }
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'taskkill' -and ($ArgumentList -join ' ') -eq '/PID 200 /T /F' }
+    }
+
+    It 'fails, killing nothing, when neither the app nor its recorded server runs but the server the app ran last still holds the port' {
+        $world.Quits = $false
+        $life = @{ App = $true; Sleeps = 0 }
+        Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith { if ([int]$Record.Pid -eq 100 -and $life.App) { 'match' } else { 'other' } }
+        Mock Start-Sleep -ModuleName LocalAI -MockWith {
+            $life.Sleeps++
+            if ($life.Sleeps -eq 40) { $life.App = $false }
+        }
+        # The app restarted its server since state.json recorded the one before, PID 150; the newer one, PID 200, keeps the port after the app ends.
+        $restarted = @{ Pid = 100; StartTicks = 111; Path = 'C:\Ollama\ollama app.exe'; Port = 11434; StartedTicks = 110; How = 'start'
+            Listener = @{ Pid = 150; StartTicks = 150; Path = 'C:\Ollama\ollama.exe' } }
+        Mock Get-PortOwner -ModuleName LocalAI -MockWith { $serve }
+        Mock Test-ProcessDescendant -ModuleName LocalAI -MockWith { $life.App -and $ProcessId -eq 200 -and $AncestorId -eq 100 }
+        $run = & $quit @{ Record = $restarted }
+        $run.Result.Result | Should -Be 'failed'
+        $run.Printed | Should -BeLike ('*Ollama app (PID 100) is no longer running, or its PID belongs to another program now, so nothing was stopped. Port 11434 is ' +
+            'now held by ollama (PID 200, C:\Ollama\ollama.exe).*The Ollama app local-ai started (PID 100), or its server on port 11434, still runs; see above.')
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly
+    }
+
+    It 'says the app ended by itself, killing nothing, when it is gone before taskkill and the port is free' {
+        # The app ends just as stop finds it has no window.
+        Mock Find-OllamaAppWindow -ModuleName LocalAI -MockWith {
+            $world.Alive = $false
+            $world.Held = $false
+            [IntPtr]::Zero
+        }
+        $run = & $quit
+        $run.Result.Result | Should -Be 'stopped'
+        $run.Printed | Should -BeLike '*so nothing was stopped. Port 11434 is free.*The Ollama app local-ai started (PID 100) ended before taskkill ran.'
+        $run.Printed | Should -Not -BeLike '*taskkill /T /F ended*'
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly
+    }
+
+    It 'quits the app when only the alias is loaded, or when nothing serves the port to list models' {
+        $world.Models = @([pscustomobject]@{ name = 'local-chat:latest'; model = 'local-chat:latest' })
+        (& $quit).Result.Result | Should -Be 'stopped'
+        $world.Alive = $true
+        $world.Held = $false
+        Mock Invoke-RestMethod -ModuleName LocalAI -MockWith { throw 'Unable to connect to the remote server' }
+        (& $quit).Result.Result | Should -Be 'stopped'
+    }
+
+    It 'leaves Ollama alone when <Case>' -ForEach @(
+        @{ Case = 'the recorded app no longer runs'; Setup = 'gone'; Message = 'The Ollama app local-ai started (PID 100) no longer runs, or was restarted by an update or by you, so stop leaves Ollama as it is.' }
+        @{ Case = 'the server is on another computer'; Setup = 'remote'; Message = 'Ollama at http://127.0.0.1:11434 runs on another computer, so stop quits no Ollama app for it.' }
+    ) {
+        if ($Setup -eq 'gone') { $world.Alive = $false } else { Mock Test-LocalHostName -ModuleName LocalAI -MockWith { $false } }
+        $run = & $quit
+        $run.Result.Result | Should -Be 'stale'
+        $run.Printed | Should -Be $Message
+        Should -Invoke Find-OllamaAppWindow -ModuleName LocalAI -Times 0 -Exactly
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly
+    }
+
+    It 'fails without killing anything when the app cannot be inspected' {
+        Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith { 'unreadable' }
+        $run = & $quit
+        $run.Result.Result | Should -Be 'failed'
+        $run.Printed | Should -BeLike "*still runs, but this window may not inspect it*Run 'local-ai stop' from an elevated window.*"
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly
+    }
+
+    It 'fails without killing anything when the windows cannot be read' {
+        Mock Test-OllamaAppWindowOpen -ModuleName LocalAI -MockWith { throw 'Cannot add type. Compilation is not allowed.' }
+        $run = & $quit
+        $run.Result.Result | Should -Be 'failed'
+        $run.Printed | Should -BeLike '*Cannot tell whether the Ollama app local-ai started (PID 100) has a window open*Compilation is not allowed.*'
+        Should -Invoke Send-OllamaAppClose -ModuleName LocalAI -Times 0 -Exactly
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly
+    }
+
+    It 'fails when the app or its server outlives taskkill' {
+        $world.Quits = $false
+        Mock Invoke-Native -ModuleName LocalAI -ParameterFilter { $FilePath -eq 'taskkill' } -MockWith { 0 }
+        $run = & $quit @{ TimeoutSeconds = 1 }
+        $run.Result.Result | Should -Be 'failed'
+        $run.Printed | Should -BeLike '*Ollama app (PID 100) still runs, or port 11434 is still held, 1 s after taskkill.*The Ollama app local-ai started (PID 100), or its server on port 11434, still runs; see above.'
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'taskkill' }
+    }
+}
+
+Describe 'Stop-LocalAI and the Ollama app' {
+    BeforeAll {
+        # Run Stop-LocalAI with $Arguments added and return @{ Code; Printed } with the host text joined.
+        function Invoke-StopVerb([hashtable]$Context, [hashtable]$Arguments = @{}) {
+            $output = @(Stop-LocalAI -Context $Context @Arguments 6>&1)
+            return @{
+                Code    = @($output | Where-Object { $_ -is [int] })
+                Printed = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$($_.MessageData)" }) -join "`n"
+            }
+        }
+    }
+
+    BeforeEach {
+        $root = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $paths = Get-LocalAIPaths -Root $root
+        $context = @{ Verb = 'stop'; Paths = $paths; Settings = $null; SettingsError = 'Invalid settings' }
+        $app = @{ Pid = 100; StartTicks = 111; Path = 'C:\Ollama\ollama app.exe'; Port = 11434; StartedTicks = 110; How = 'start'
+            Listener = @{ Pid = 200; StartTicks = 222; Path = 'C:\Ollama\ollama.exe' } }
+        $serve = [pscustomobject]@{ Id = 200; Name = 'ollama'; Path = 'C:\Ollama\ollama.exe'; StartTicks = 222 }
+        Write-LocalAIState -Path $paths.State -State @{ Services = @{}; Ollama = @{ Url = 'http://127.0.0.1:11434'; Alias = 'local-chat'; App = $app } }
+        $world = @{ Alive = $true; Quits = $true; Loaded = $true; Models = @(); Window = $false; Handle = [IntPtr]0x1234; Answers = $true }
+        Mock Test-LocalHostName -ModuleName LocalAI -MockWith { $true }
+        Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith { if ($world.Alive -and @(100, 200) -contains [int]$Record.Pid) { 'match' } else { 'other' } }
+        Mock Get-PortOwner -ModuleName LocalAI -MockWith { if ($world.Alive) { $serve } }
+        Mock Test-ProcessDescendant -ModuleName LocalAI -MockWith { $world.Alive -and $ProcessId -eq 200 -and $AncestorId -eq 100 }
+        Mock Invoke-RestMethod -ModuleName LocalAI -MockWith {
+            if (-not $world.Answers) { throw 'Unable to connect to the remote server' }
+            $models = @($world.Models)
+            if ($world.Loaded) { $models += [pscustomobject]@{ name = 'local-chat:latest'; model = 'local-chat:latest' } }
+            [pscustomobject]@{ models = $models }
+        }
+        Mock Invoke-RestMethod -ModuleName LocalAI -ParameterFilter { $Method -eq 'Post' } -MockWith {
+            $world.Loaded = $false
+            [pscustomobject]@{ model = 'local-chat'; done = $true; done_reason = 'unload' }
+        }
+        # Clients holds the programs still connected to Ollama; Session says whether the app runs in this Windows session.
+        $world.Clients = @()
+        $world.Session = $true
+        Mock Get-LoopbackClient -ModuleName LocalAI -MockWith { $world.Clients }
+        Mock Test-ProcessInThisSession -ModuleName LocalAI -MockWith { $world.Session }
+        Mock Test-OllamaAppWindowOpen -ModuleName LocalAI -MockWith { $world.Window }
+        Mock Find-OllamaAppWindow -ModuleName LocalAI -MockWith { $world.Handle }
+        Mock Send-OllamaAppClose -ModuleName LocalAI -MockWith {
+            if ($world.Quits) { $world.Alive = $false }
+            $true
+        }
+        Mock Invoke-Native -ModuleName LocalAI -MockWith { throw "Unexpected program $FilePath $($ArgumentList -join ' ')" }
+        Mock Invoke-Native -ModuleName LocalAI -ParameterFilter { $FilePath -eq 'taskkill' } -MockWith {
+            $world.Alive = $false
+            0
+        }
+        Mock Start-Sleep -ModuleName LocalAI
+    }
+
+    It 'unloads the alias, then quits the app local-ai started through its window, never with taskkill, and drops the record' {
+        $run = Invoke-StopVerb -Context $context
+        $run.Code | Should -Be @(0)
+        $run.Printed | Should -BeLike '*Unloaded local-chat.*Quit the Ollama app local-ai started (PID 100).*Stop finished: stopped local-chat, Ollama.'
+        Should -Invoke Send-OllamaAppClose -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Handle -eq [IntPtr]0x1234 }
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly
+        $state = Read-LocalAIState -Path $paths.State
+        $state.Ollama.App | Should -BeNullOrEmpty
+        $state.Ollama.Url | Should -Be 'http://127.0.0.1:11434'
+    }
+
+    It 'ends the app with taskkill /T /F on its PID exactly once, never /IM, when it does not quit in time' {
+        $world.Quits = $false
+        $run = Invoke-StopVerb -Context $context
+        $run.Code | Should -Be @(0)
+        $run.Printed | Should -BeLike '*Stopped Ollama app (PID 100).*did not quit within 20 s, so taskkill /T /F ended it, its server and the models it held.*Stop finished: stopped local-chat, Ollama.'
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'taskkill' -and ($ArgumentList -join ' ') -eq '/PID 100 /T /F' }
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $ArgumentList -contains '/IM' }
+        (Read-LocalAIState -Path $paths.State).Ollama.App | Should -BeNullOrEmpty
+    }
+
+    It 'ends the verified app with taskkill when it has no window to ask' {
+        $world.Handle = [IntPtr]::Zero
+        $run = Invoke-StopVerb -Context $context
+        $run.Code | Should -Be @(0)
+        $run.Printed | Should -BeLike '*has no window to ask it to quit, so taskkill /T /F ended it, its server and the models it held.*Stop finished: stopped local-chat, Ollama.'
+        Should -Invoke Send-OllamaAppClose -ModuleName LocalAI -Times 0 -Exactly
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'taskkill' -and ($ArgumentList -join ' ') -eq '/PID 100 /T /F' }
+    }
+
+    It 'says Ollama keeps running, and quits nothing, when state.json records no app' {
+        Write-LocalAIState -Path $paths.State -State @{ Ollama = @{ Url = 'http://127.0.0.1:11434'; Alias = 'local-chat' } }
+        $world.Loaded = $false
+        $run = Invoke-StopVerb -Context $context
+        $run.Code | Should -Be @(0)
+        $run.Printed | Should -BeLike '*Ollama keeps running, since state.json records no Ollama app that local-ai started.*Stop finished: Ollama keeps running.'
+        Should -Invoke Find-OllamaAppWindow -ModuleName LocalAI -Times 0 -Exactly
+        Should -Invoke Send-OllamaAppClose -ModuleName LocalAI -Times 0 -Exactly
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly
+    }
+
+    It 'says nothing of an Ollama that does not answer when state.json records no app' {
+        Write-LocalAIState -Path $paths.State -State @{ Ollama = @{ Url = 'http://127.0.0.1:11434'; Alias = 'local-chat' } }
+        $world.Answers = $false
+        $run = Invoke-StopVerb -Context $context
+        $run.Code | Should -Be @(0)
+        $run.Printed | Should -Not -BeLike '*records no Ollama app*'
+        $run.Printed | Should -BeLike '*Stop finished: nothing was running.'
+    }
+
+    It 'drops a stale record, killing nothing, and says why Ollama is left as it is' {
+        $world.Alive = $false
+        $run = Invoke-StopVerb -Context $context
+        $run.Code | Should -Be @(0)
+        $run.Printed | Should -BeLike '*The Ollama app local-ai started (PID 100) no longer runs, or was restarted by an update or by you*'
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly
+        $state = Read-LocalAIState -Path $paths.State
+        $state.Ollama.ContainsKey('App') | Should -BeTrue
+        $state.Ollama.App | Should -BeNullOrEmpty
+    }
+
+    It 'returns 1, killing nothing and keeping the record, when the app cannot be inspected' {
+        Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith { 'unreadable' }
+        $run = Invoke-StopVerb -Context $context
+        $run.Code | Should -Be @(1)
+        $run.Printed | Should -BeLike '*Stop finished, but Ollama could not be stopped; see above.'
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly
+        (Read-LocalAIState -Path $paths.State).Ollama.App.Pid | Should -Be 100
+    }
+
+    It 'returns 0 and keeps the app and its record when <Case>' -ForEach @(
+        @{ Case = 'another program has a model loaded'; Setup = 'model'; Message = '*Ollama still has qwen3:8b loaded, which another program may be using*' }
+        @{ Case = 'another program is still connected'; Setup = 'client'; Message = '*still has connections from python (PID 4500), which may still use it*' }
+        @{ Case = 'the app runs in another Windows session'; Setup = 'session'; Message = '*runs in another Windows session, whose windows stop cannot see*' }
+        @{ Case = 'the Ollama window is open'; Setup = 'window'; Message = '*has a window open, so it keeps running*' }
+    ) {
+        switch ($Setup) {
+            'model' { $world.Models = @([pscustomobject]@{ name = 'qwen3:8b'; model = 'qwen3:8b' }) }
+            'client' { $world.Clients = @([pscustomobject]@{ Id = 4500; Name = 'python' }) }
+            'session' { $world.Session = $false }
+            'window' { $world.Window = $true }
+        }
+        $run = Invoke-StopVerb -Context $context
+        $run.Code | Should -Be @(0)
+        $run.Printed | Should -BeLike $Message
+        $run.Printed | Should -BeLike '*Stop finished: stopped local-chat; Ollama keeps running.'
+        Should -Invoke Send-OllamaAppClose -ModuleName LocalAI -Times 0 -Exactly
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly
+        (Read-LocalAIState -Path $paths.State).Ollama.App.Pid | Should -Be 100
+    }
+
+    It 'never quits Ollama with -KeepOllama, keeping the record' {
+        Mock Stop-OllamaApp -ModuleName LocalAI
+        $run = Invoke-StopVerb -Context $context -Arguments @{ KeepOllama = $true }
+        $run.Code | Should -Be @(0)
+        $run.Printed | Should -BeLike '*Unloaded local-chat.*Stop finished: stopped local-chat; Ollama keeps running.'
+        Should -Invoke Stop-OllamaApp -ModuleName LocalAI -Times 0 -Exactly
+        Should -Invoke Find-OllamaAppWindow -ModuleName LocalAI -Times 0 -Exactly
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly
+        (Read-LocalAIState -Path $paths.State).Ollama.App.Pid | Should -Be 100
+    }
+
+    It 'stops the services first, then unloads the alias, then quits the app' {
+        Write-LocalAIState -Path $paths.State -State @{
+            Services = @{ OpenWebUI = @{ Pid = 4242; StartTicks = 1; Path = 'C:\uv\bin\open-webui.exe'; Port = 18431 } }
+            Ollama   = @{ Url = 'http://127.0.0.1:11434'; Alias = 'local-chat'; App = $app }
+        }
+        $order = New-Object System.Collections.Generic.List[string]
+        Mock Stop-LocalAIService -ModuleName LocalAI -MockWith { $order.Add("service $Name"); 'stopped' }
+        Mock Invoke-RestMethod -ModuleName LocalAI -ParameterFilter { $Method -eq 'Post' } -MockWith {
+            $order.Add('unload')
+            $world.Loaded = $false
+            [pscustomobject]@{ done = $true }
+        }
+        Mock Stop-OllamaApp -ModuleName LocalAI -MockWith {
+            $order.Add("quit $($Record.Pid) $Url $Alias")
+            @{ Result = 'stopped'; Reason = 'Quit the Ollama app local-ai started (PID 100).' }
+        }
+        (Invoke-StopVerb -Context $context).Code | Should -Be @(0)
+        @($order) | Should -Be @('service OpenWebUI', 'unload', 'quit 100 http://127.0.0.1:11434 local-chat')
     }
 }
 
@@ -7605,6 +8573,69 @@ Describe 'Get-LocalAIStatus' {
         $run = Invoke-StatusVerb -Context $context
         $run.Code | Should -Be @(0)
         $run.Printed | Should -BeLike '*Ollama 0.40.12 answers at http://127.0.0.1:11434; install recorded 0.40.11.*'
+    }
+
+    It 'says the Ollama app was not started by local-ai when state.json records none, in the text and in -Json' {
+        $run = Invoke-StatusVerb -Context $context
+        $run.Code | Should -Be @(0)
+        $run.Printed | Should -BeLike '*Ollama 0.40.11 answers at http://127.0.0.1:11434.*Not started by local-ai; local-ai stop leaves it running.*'
+        $context.Json = $true
+        $document = ConvertFrom-LocalAIJson -Text ([string](Invoke-StatusVerb -Context $context).Records[0].MessageData)
+        $document.ollama.startedByLauncher | Should -BeFalse
+        $document.ollama.ContainsKey('appPid') | Should -BeTrue
+        $document.ollama.appPid | Should -BeNullOrEmpty
+        $document.ollama.appStartedUtc | Should -BeNullOrEmpty
+    }
+
+    It 'says local-ai started the Ollama app, so stop quits it, with its PID and start time in -Json' {
+        $state = Read-LocalAIState -Path $paths.State
+        $state.Ollama['App'] = @{ Pid = 4600; StartTicks = $started; Path = 'C:\Ollama\ollama app.exe'; Port = 11434; How = 'start' }
+        Write-LocalAIState -Path $paths.State -State $state
+        $world.Live.Add(4600)
+        $run = Invoke-StatusVerb -Context $context
+        $run.Code | Should -Be @(0)
+        $run.Printed | Should -BeLike '*Started by local-ai (app PID 4600); local-ai stop quits it.*'
+        $run.Printed | Should -Not -BeLike '*Not started by local-ai*'
+        $context.Json = $true
+        $document = ConvertFrom-LocalAIJson -Text ([string](Invoke-StatusVerb -Context $context).Records[0].MessageData)
+        $document.ollama.startedByLauncher | Should -BeTrue
+        $document.ollama.appPid | Should -Be 4600
+        $document.ollama.appStartedUtc | Should -Be ([datetime]::new($started, [DateTimeKind]::Utc).ToString('o', [Globalization.CultureInfo]::InvariantCulture))
+    }
+
+    It 'says the Ollama at Ollama.Url was not started by local-ai when state.json records the app for <Case>, naming that app' -ForEach @(
+        @{ Case = 'another port'; Url = ''; Port = 11500; Expected = 'http://127.0.0.1:11434' }
+        @{ Case = 'this PC while Ollama.Url names another computer on the same port'; Url = 'http://192.0.2.20:11434'; Port = 11434; Expected = 'http://192.0.2.20:11434' }
+    ) {
+        # 192.0.2.20 stands for another computer.
+        Mock Test-LocalHostName -ModuleName LocalAI -MockWith { $HostName -ne '192.0.2.20' }
+        $settings.Ollama.Url = $Url
+        $state = Read-LocalAIState -Path $paths.State
+        $state.Ollama['App'] = @{ Pid = 4600; StartTicks = $started; Path = 'C:\Ollama\ollama app.exe'; Port = $Port; How = 'start' }
+        Write-LocalAIState -Path $paths.State -State $state
+        $world.Live.Add(4600)
+        $run = Invoke-StatusVerb -Context $context
+        $run.Printed | Should -BeLike ("*Ollama 0.40.11 answers at $Expected.*state.json records an Ollama app local-ai started (PID 4600) for port $Port on this PC, " +
+            "not for $Expected; local-ai stop quits it.*Not started by local-ai; local-ai stop leaves it running.*")
+        $run.Printed | Should -Not -BeLike '*Started by local-ai (app PID 4600)*'
+        $context.Json = $true
+        $document = ConvertFrom-LocalAIJson -Text ([string](Invoke-StatusVerb -Context $context).Records[0].MessageData)
+        $document.ollama.startedByLauncher | Should -BeFalse
+        $document.ollama.appPid | Should -BeNullOrEmpty
+        $document.ollama.appStartedUtc | Should -BeNullOrEmpty
+        Should -Invoke Write-LocalAIState -ModuleName LocalAI -Times 0 -Exactly
+    }
+
+    It 'notes a stale app record without changing the exit code, and leaves it for stop to drop' {
+        $state = Read-LocalAIState -Path $paths.State
+        $state.Ollama['App'] = @{ Pid = 4600; StartTicks = $started; Path = 'C:\Ollama\ollama app.exe'; Port = 11434; How = 'start' }
+        Write-LocalAIState -Path $paths.State -State $state
+        $run = Invoke-StatusVerb -Context $context
+        $run.Code | Should -Be @(0)
+        $run.Printed | Should -BeLike ('*state.json records an Ollama app local-ai started (PID 4600), but it no longer runs, or was restarted by an update or by you; ' +
+            'local-ai stop drops that record.*Not started by local-ai; local-ai stop leaves it running.*')
+        Should -Invoke Write-LocalAIState -ModuleName LocalAI -Times 0 -Exactly
+        (Read-LocalAIState -Path $paths.State).Ollama.App.Pid | Should -Be 4600
     }
 
     It 'returns 2 when ComfyUI renders on the CPU' {
@@ -8219,7 +9250,8 @@ Describe 'Set-LocalAIShortcut' {
             $run.Printed | Should -BeLike "*Created $folder\$verb Local AI.lnk.*"
         }
         $store[(Join-Path $folder 'Start Local AI.lnk')].Description | Should -BeExactly 'Start Open WebUI, ComfyUI and the image gate, with local-chat in Ollama'
-        $store[(Join-Path $folder 'Stop Local AI.lnk')].Description | Should -BeExactly 'Stop Open WebUI, ComfyUI and the image gate, and unload local-chat from Ollama'
+        $store[(Join-Path $folder 'Stop Local AI.lnk')].Description |
+            Should -BeExactly 'Stop Open WebUI, ComfyUI and the image gate, unload local-chat from Ollama, and quit the Ollama app when local-ai started it'
         $store[(Join-Path $folder 'Status Local AI.lnk')].Description | Should -BeExactly 'Show whether Ollama, Open WebUI, ComfyUI and the image gate run, and what needs attention'
         $saves.Count | Should -Be 3
     }
@@ -9457,9 +10489,11 @@ Describe 'Remove-SupersededAlias' {
         }
         # Not this PC's %USERPROFILE%\.qwen\settings.json.
         Mock Get-QwenCodeModel -ModuleName LocalAI
+        # Ollama answers unless a test says otherwise.
+        Mock Invoke-RestMethod -ModuleName LocalAI -MockWith { [pscustomobject]@{ version = '0.40.12' } }
         # Run Remove-SupersededAlias and return @{ Removed; Printed; Warnings }.
         $run = {
-            $output = @(Invoke-ModuleFunction 'Remove-SupersededAlias' @{ Settings = $settings } 3>&1 6>&1)
+            $output = @(Invoke-ModuleFunction 'Remove-SupersededAlias' @{ Settings = $settings; Url = 'http://127.0.0.1:11434' } 3>&1 6>&1)
             @{
                 Removed  = @($output | Where-Object { $_ -is [string] })
                 Printed  = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$($_.MessageData)" }) -join "`n"
@@ -9489,6 +10523,29 @@ Describe 'Remove-SupersededAlias' {
     It 'asks nothing and runs no ollama when no alias is superseded' {
         $settings.Model.SupersededAliases = @()
         $null = & $run
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly
+        Should -Invoke Invoke-RestMethod -ModuleName LocalAI -Times 0 -Exactly
+        Should -Invoke Confirm-LocalAIAction -ModuleName LocalAI -Times 0 -Exactly
+    }
+
+    It 'asks Ollama for its version at the given Url before it runs ollama list' {
+        $null = & $run
+        Should -Invoke Invoke-RestMethod -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Uri -eq 'http://127.0.0.1:11434/api/version' }
+    }
+
+    It 'warns, asks nothing and runs no ollama when Ollama <Case>, as ollama list would start the Ollama app' -ForEach @(
+        @{ Case = 'does not answer'; Answer = 'throw'; Reason = 'Unable to connect to the remote server' }
+        @{ Case = 'answers without a version'; Answer = 'empty'; Reason = 'it answered without a version' }
+    ) {
+        if ($Answer -eq 'throw') {
+            Mock Invoke-RestMethod -ModuleName LocalAI -MockWith { throw 'Unable to connect to the remote server' }
+        } else {
+            Mock Invoke-RestMethod -ModuleName LocalAI -MockWith { [pscustomobject]@{ error = 'not found' } }
+        }
+        $result = & $run
+        $result.Removed.Count | Should -Be 0
+        $result.Warnings | Should -BeExactly ("Could not list Ollama's models to offer removing the superseded aliases: Ollama does not answer at " +
+            "http://127.0.0.1:11434/api/version ($Reason).")
         Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly
         Should -Invoke Confirm-LocalAIAction -ModuleName LocalAI -Times 0 -Exactly
     }
@@ -9725,6 +10782,8 @@ Describe 'Undo-OpenWebUIUpdate' {
         & $run | Should -BeExactly ('Open WebUI 0.12.3 on Python 3.11.17 is installed again, with its data back as C:\b\open-webui-20261028-120000 holds it, and the data ' +
             'the new version used is in C:\b\open-webui-failed-20261028-121500.')
         @($order) | Should -Be @('stop', "tool 0.12.3 3.11.17 $($change.Constraints)", "data $dataDir $($change.Backup) $($paths.Backups)")
+        # The stack starts again afterwards against the same Ollama.
+        Should -Invoke Stop-LocalAI -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $KeepOllama }
         $entry = (Read-LocalAIState -Path $paths.InstallStamp).OpenWebUI
         $entry.Version | Should -Be '0.12.3'
         $entry.Python | Should -Be '3.11.17'
@@ -10009,7 +11068,9 @@ Describe 'Update-LocalAI' {
         Mock Set-LocalAIKeepAwake -ModuleName LocalAI -MockWith { $calls.Add("awake $Enabled") }
         Mock Update-SessionPath -ModuleName LocalAI
         Mock Assert-OllamaCliUrl -ModuleName LocalAI
-        Mock Wait-OllamaServer -ModuleName LocalAI -MockWith { '0.40.12' }
+        Mock Wait-OllamaServer -ModuleName LocalAI -MockWith { if ($PassThru) { [pscustomobject]@{ Version = '0.40.12'; App = $null } } else { '0.40.12' } }
+        # No Ollama app is recorded or listed unless a test says so.
+        Mock Get-OllamaAppProcess -ModuleName LocalAI
         Mock Get-LocalAIUpdatePlan -ModuleName LocalAI -MockWith {
             $calls.Add("plan Tools=$([bool]$Tools)")
             $world.Plan
@@ -10079,12 +11140,14 @@ Describe 'Update-LocalAI' {
         Mock Remove-SupersededAlias -ModuleName LocalAI -MockWith { $calls.Add('superseded') }
     }
 
-    It 'asks, stops the stack, runs the planned steps in order, checks the stack, stops it again and offers the superseded aliases' {
+    It 'asks, stops the stack, runs the planned steps in order, checks the stack, offers the superseded aliases and stops it again' {
         $run = Invoke-UpdateVerb -Context $context
         $run.Code | Should -Be @(0)
-        # What ran before is read before the stop, and the programs the stop missed are looked for after it.
+        # What ran before is read before the stop, and the programs the stop missed are looked for after it. The offer comes before the stop at the end,
+        # which may quit the Ollama app.
         @($calls) | Should -Be @('awake True', 'plan Tools=False', 'ask Update these now?', 'running', 'stop', 'busy', 'webui', 'comfy', 'start NoBrowser=True',
-            'smoke 0.12.4', 'prune 3 C:\b\open-webui-1', 'stop', 'superseded', 'awake False')
+            'smoke 0.12.4', 'prune 3 C:\b\open-webui-1', 'superseded', 'stop', 'awake False')
+        Should -Invoke Remove-SupersededAlias -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Url -eq 'http://127.0.0.1:11434' }
         $run.Printed | Should -BeLike ('*Update plan:*Open WebUI: 0.12.3 on Python 3.11.17 -> 0.12.4 on Python 3.12, after a backup of its data*' +
             'ComfyUI: commit e087 (branch master) -> v0.42.5 (483d)*')
         $run.Printed | Should -BeLike "*Open WebUI's data is backed up to $($paths.Backups) first*"
@@ -10363,6 +11426,256 @@ Describe 'Update-LocalAI' {
         Mock Wait-OllamaServer -ModuleName LocalAI -MockWith { throw 'Ollama did not answer' }
         { Update-LocalAI -Context $context 6>$null } | Should -Throw -ExpectedMessage 'Ollama did not answer'
         @($calls) | Should -Be @('awake True', 'awake False')
+    }
+
+    It 'stops the stack without Ollama before updating, and afterwards, when the stack did not run before, <Case>' -ForEach @(
+        @{ Case = 'keeps an Ollama that answered at once'; Started = $false; Keep = 'True' }
+        @{ Case = 'quits the Ollama its own wait started'; Started = $true; Keep = 'False' }
+    ) {
+        Mock Wait-OllamaServer -ModuleName LocalAI -MockWith { [pscustomobject]@{ Version = '0.40.12'; App = $null; Started = $Started } }
+        Mock Stop-LocalAI -ModuleName LocalAI -MockWith {
+            $calls.Add("stop KeepOllama=$([bool]$KeepOllama)")
+            0
+        }
+        (Invoke-UpdateVerb -Context $context).Code | Should -Be @(0)
+        @($calls | Where-Object { $_ -like 'stop*' }) | Should -Be @('stop KeepOllama=True', "stop KeepOllama=$Keep")
+    }
+
+    It 'records at once the Ollama app its first wait started, as start does' {
+        $app = @{ Pid = 100; StartTicks = 111; Path = 'C:\Ollama\ollama app.exe'; Port = 11434; StartedTicks = 110; How = 'update' }
+        Mock Wait-OllamaServer -ModuleName LocalAI -MockWith { [pscustomobject]@{ Version = '0.40.12'; App = $app; Started = $true } }
+        $world.Plan.Components = @((Get-TestPlanPart -Name 'Model' -Changes 'weights a -> b'))
+        Mock Stop-LocalAI -ModuleName LocalAI -MockWith {
+            $calls.Add("stop KeepOllama=$([bool]$KeepOllama) app=$((Read-LocalAIState -Path $paths.State).Ollama.App.Pid)")
+            0
+        }
+        (Invoke-UpdateVerb -Context $context).Code | Should -Be @(0)
+        Should -Invoke Wait-OllamaServer -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $PassThru -and $How -eq 'update' }
+        $ollama = (Read-LocalAIState -Path $paths.State).Ollama
+        $ollama.App.Pid | Should -Be 100
+        $ollama.Alias | Should -Be 'local-chat'
+        # Recorded before the stop before the update, and quit by the stop at its end.
+        @($calls | Where-Object { $_ -like 'stop*' }) | Should -Be @('stop KeepOllama=True app=100', 'stop KeepOllama=False app=100')
+    }
+
+    It 'offers the superseded aliases before the stop at its end quits the Ollama app its first wait started, while Ollama still answers' {
+        $app = @{ Pid = 100; StartTicks = 111; Path = 'C:\Ollama\ollama app.exe'; Port = 11434; StartedTicks = 110; How = 'update' }
+        Mock Wait-OllamaServer -ModuleName LocalAI -MockWith { [pscustomobject]@{ Version = '0.40.12'; App = $app; Started = $true } }
+        Mock Stop-LocalAI -ModuleName LocalAI -MockWith {
+            $calls.Add("stop KeepOllama=$([bool]$KeepOllama)")
+            0
+        }
+        (Invoke-UpdateVerb -Context $context).Code | Should -Be @(0)
+        @($calls | Where-Object { $_ -like 'stop*' -or $_ -eq 'superseded' }) | Should -Be @('stop KeepOllama=True', 'superseded', 'stop KeepOllama=False')
+    }
+
+    It 'leaves the recorded Url and Alias for the stop before the update when Ollama answered without a start' {
+        # The stack still runs with the alias settings.psd1 named before; the stop before the update must unload that one.
+        Write-LocalAIState -Path $paths.State -State @{ Services = @{}; Ollama = @{ Url = 'http://127.0.0.1:11434'; Alias = 'old-chat'; App = $null } }
+        Mock Stop-LocalAI -ModuleName LocalAI -MockWith {
+            $calls.Add("stop KeepOllama=$([bool]$KeepOllama) alias=$((Read-LocalAIState -Path $paths.State).Ollama.Alias)")
+            0
+        }
+        (Invoke-UpdateVerb -Context $context).Code | Should -Be @(0)
+        @($calls | Where-Object { $_ -like 'stop*' })[0] | Should -Be 'stop KeepOllama=True alias=old-chat'
+    }
+
+    It 'quits the Ollama app its first wait started when it ends early <Case>, as Ollama did not run before' -ForEach @(
+        @{ Case = 'with everything at its pin'; Setup = 'pin'; Code = 0 }
+        @{ Case = 'on a declined plan'; Setup = 'declined'; Code = 2 }
+        @{ Case = 'on a part it cannot update'; Setup = 'blocked'; Code = 1 }
+        @{ Case = 'when a program it did not start runs from what it would replace'; Setup = 'busy'; Code = 1 }
+        @{ Case = 'when install-stamp.json records no Ollama'; Setup = 'stamp'; Code = 1 }
+    ) {
+        $app = @{ Pid = 100; StartTicks = 111; Path = 'C:\Ollama\ollama app.exe'; Port = 11434; StartedTicks = 110; How = 'update' }
+        Mock Wait-OllamaServer -ModuleName LocalAI -MockWith { [pscustomobject]@{ Version = '0.40.12'; App = $app; Started = $true } }
+        Mock Stop-LocalAI -ModuleName LocalAI -MockWith {
+            $calls.Add("stop KeepOllama=$([bool]$KeepOllama)")
+            0
+        }
+        switch ($Setup) {
+            'pin' { $world.Plan.Components = @((Get-TestPlanPart -Name 'Model')) }
+            'declined' { $world.Yes = $false }
+            'blocked' { $world.Plan.Components[1].Problem = 'The tag v0.42.5 has moved.' }
+            'busy' { $world.Busy = @([pscustomobject]@{ Id = 7950; Name = 'python'; Path = 'C:\uv\tools\open-webui\Scripts\python.exe' }) }
+            'stamp' {
+                $stamp = Read-LocalAIState -Path $paths.InstallStamp
+                $stamp.Remove('Ollama')
+                Write-LocalAIState -Path $paths.InstallStamp -State $stamp
+            }
+        }
+        $run = Invoke-UpdateVerb -Context $context
+        $run.Code | Should -Be @($Code)
+        $run.Printed | Should -BeLike '*Quitting the Ollama app update started, since Ollama did not run before the update...*'
+        @($calls | Where-Object { $_ -like 'stop*' })[-1] | Should -Be 'stop KeepOllama=False'
+        @($calls)[-1] | Should -Be 'awake False'
+    }
+
+    It 'returns <Code> when the Ollama app its first wait started cannot be quit <Case>' -ForEach @(
+        @{ Case = 'after everything matched its pin, as that is a warning'; Setup = 'pin'; Quit = 'fails'; Code = 2
+            Warning = "The Ollama app update started could not be quit; see above, then run 'local-ai stop'." }
+        @{ Case = 'because the stop throws, after everything matched its pin'; Setup = 'pin'; Quit = 'throws'; Code = 2
+            Warning = "The Ollama app update started could not be quit: state.json is not valid JSON. Run 'local-ai stop'." }
+        @{ Case = 'on a declined plan, which already returns 2'; Setup = 'declined'; Quit = 'fails'; Code = 2
+            Warning = "The Ollama app update started could not be quit; see above, then run 'local-ai stop'." }
+        @{ Case = 'on a part it cannot update, which stays a failure'; Setup = 'blocked'; Quit = 'fails'; Code = 1
+            Warning = "The Ollama app update started could not be quit; see above, then run 'local-ai stop'." }
+    ) {
+        $app = @{ Pid = 100; StartTicks = 111; Path = 'C:\Ollama\ollama app.exe'; Port = 11434; StartedTicks = 110; How = 'update' }
+        Mock Wait-OllamaServer -ModuleName LocalAI -MockWith { [pscustomobject]@{ Version = '0.40.12'; App = $app; Started = $true } }
+        if ($Quit -eq 'throws') { Mock Stop-LocalAI -ModuleName LocalAI -MockWith { throw 'state.json is not valid JSON.' } } else { $world.Stop = 1 }
+        switch ($Setup) {
+            'pin' { $world.Plan.Components = @((Get-TestPlanPart -Name 'Model')) }
+            'declined' { $world.Yes = $false }
+            'blocked' { $world.Plan.Components[1].Problem = 'The tag v0.42.5 has moved.' }
+        }
+        $run = Invoke-UpdateVerb -Context $context
+        $run.Code | Should -Be @($Code)
+        $run.Printed | Should -BeLike '*Quitting the Ollama app update started, since Ollama did not run before the update...*'
+        $run.Warnings | Should -BeExactly $Warning
+        Should -Invoke Stop-LocalAI -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { -not $KeepOllama }
+        @($calls)[-1] | Should -Be 'awake False'
+    }
+
+    It 'leaves the Ollama app its first wait started running when it ends early while the stack runs' {
+        $app = @{ Pid = 100; StartTicks = 111; Path = 'C:\Ollama\ollama app.exe'; Port = 11434; StartedTicks = 110; How = 'update' }
+        Mock Wait-OllamaServer -ModuleName LocalAI -MockWith { [pscustomobject]@{ Version = '0.40.12'; App = $app; Started = $true } }
+        $world.Plan.Components = @((Get-TestPlanPart -Name 'Model'))
+        $world.Running = @('OpenWebUI')
+        $run = Invoke-UpdateVerb -Context $context
+        $run.Code | Should -Be @(0)
+        Should -Invoke Stop-LocalAI -ModuleName LocalAI -Times 0 -Exactly
+        $run.Printed | Should -Not -BeLike '*Quitting the Ollama app*'
+    }
+
+    It 'quits the Ollama app its first wait started also when it throws, and still lets the PC sleep' {
+        $app = @{ Pid = 100; StartTicks = 111; Path = 'C:\Ollama\ollama app.exe'; Port = 11434; StartedTicks = 110; How = 'update' }
+        Mock Wait-OllamaServer -ModuleName LocalAI -MockWith { [pscustomobject]@{ Version = '0.40.12'; App = $app; Started = $true } }
+        Mock Get-LocalAIUpdatePlan -ModuleName LocalAI -MockWith { throw 'git is not on PATH' }
+        Mock Stop-LocalAI -ModuleName LocalAI -MockWith { throw 'state.json is not valid JSON.' }
+        $warnings = $null
+        $failure = $null
+        try {
+            $null = Update-LocalAI -Context $context -WarningVariable warnings 3>$null 6>$null
+        } catch {
+            $failure = $_.Exception.Message
+        }
+        $failure | Should -Be 'git is not on PATH'
+        Should -Invoke Stop-LocalAI -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { -not $KeepOllama }
+        @($warnings | Where-Object { "$_" -like "*The Ollama app update started could not be quit: state.json is not valid JSON. Run 'local-ai stop'.*" }).Count | Should -Be 1
+        @($calls)[-1] | Should -Be 'awake False'
+    }
+
+    It 'stops the stack and the Ollama app its first wait started after a rollback, when the stack did not run before' {
+        $app = @{ Pid = 100; StartTicks = 111; Path = 'C:\Ollama\ollama app.exe'; Port = 11434; StartedTicks = 110; How = 'update' }
+        Mock Wait-OllamaServer -ModuleName LocalAI -MockWith { [pscustomobject]@{ Version = '0.40.12'; App = $app; Started = $true } }
+        Mock Stop-LocalAI -ModuleName LocalAI -MockWith {
+            $calls.Add("stop KeepOllama=$([bool]$KeepOllama)")
+            0
+        }
+        $world.Smoke = @{ OpenWebUI = 'Unable to connect to the remote server'; Problems = @() }
+        $run = Invoke-UpdateVerb -Context $context
+        $run.Code | Should -Be @(1)
+        @($calls | Where-Object { $_ -like 'stop*' -or $_ -like 'start*' -or $_ -eq 'undo' }) |
+            Should -Be @('stop KeepOllama=True', 'start NoBrowser=True', 'undo', 'stop KeepOllama=False')
+        $run.Printed | Should -BeLike '*Stopping the stack again, since it did not run before the update...*'
+        $run.Printed | Should -Not -BeLike '*Quitting the Ollama app*'
+    }
+
+    Context 'when -Tools upgrades Ollama' {
+        BeforeEach {
+            $context.Tools = $true
+            $world.Plan.Components = @((Get-TestPlanPart -Name 'Model'))
+            $world.Plan.Tools = @(@{ Name = 'Ollama'; Display = 'Ollama'; Package = $settings.Winget.Packages.Ollama; Upgrade = @{ Installed = '0.40.11'; Available = '0.40.12' } })
+            $appExe = 'C:\Users\User\AppData\Local\Programs\Ollama\ollama app.exe'
+            $recorded = @{ Pid = 100; StartTicks = 111; Path = $appExe; Port = 11434; StartedTicks = 110; How = 'start' }
+            Write-LocalAIState -Path $paths.State -State @{ Ollama = @{ Url = 'http://127.0.0.1:11434'; Alias = 'local-chat'; App = $recorded } }
+            # The installer ends the recorded app and starts another, which Win32_Process lists from then on.
+            $apps = @{ List = @([pscustomobject]@{ Id = 100; Path = $appExe; StartTicks = [DateTime]::UtcNow.AddMinutes(-30).Ticks; ParentId = 9 }); Upgraded = $false }
+            Mock Get-OllamaAppProcess -ModuleName LocalAI -MockWith { $apps.List }
+            Mock Update-WingetPackage -ModuleName LocalAI -MockWith {
+                $calls.Add("winget $($Package.Id)")
+                $apps.Upgraded = $true
+                $apps.List = @([pscustomobject]@{ Id = 300; Path = $appExe; StartTicks = [DateTime]::UtcNow.Ticks; ParentId = 9 })
+                'upgraded'
+            }
+            # The recorded app runs until the upgrade; the app that replaces it, or one the wait after it started, is the one Recorded names.
+            $apps.Runs = $true
+            $apps.Recorded = 300
+            Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith {
+                if (([int]$Record.Pid -eq 100 -and $apps.Runs -and -not $apps.Upgraded) -or ([int]$Record.Pid -eq $apps.Recorded -and $apps.Upgraded)) { 'match' } else { 'other' }
+            }
+            Mock Resolve-OllamaAppPath -ModuleName LocalAI -MockWith { $appExe }
+            Mock Test-LocalHostName -ModuleName LocalAI -MockWith { $true }
+            Mock Get-PortOwner -ModuleName LocalAI -MockWith { [pscustomobject]@{ Id = 301; Name = 'ollama'; Path = 'C:\Ollama\ollama.exe'; StartTicks = 5 } }
+            Mock Test-ProcessDescendant -ModuleName LocalAI -MockWith { $ProcessId -eq 301 -and $AncestorId -eq 300 -and $MaxDepth -eq 1 }
+        }
+
+        It 'records the app the Ollama installer starts again when the app local-ai started ran until the upgrade' {
+            $run = Invoke-UpdateVerb -Context $context
+            $run.Code | Should -Be @(0)
+            $run.Printed | Should -BeLike '*The Ollama installer started the Ollama app again (PID 300); local-ai stop quits it.*'
+            $app = (Read-LocalAIState -Path $paths.State).Ollama.App
+            $app.Pid | Should -Be 300
+            $app.How | Should -Be 'update'
+            $app.Listener.Pid | Should -Be 301
+            (Read-LocalAIState -Path $paths.InstallStamp).Ollama.Version | Should -Be '0.40.12'
+        }
+
+        It 'records no app after the upgrade when the recorded app no longer ran before it' {
+            $apps.Runs = $false
+            (Invoke-UpdateVerb -Context $context).Code | Should -Be @(0)
+            (Read-LocalAIState -Path $paths.State).Ollama.App | Should -BeNullOrEmpty
+            Should -Invoke Get-OllamaAppProcess -ModuleName LocalAI -Times 0 -Exactly
+        }
+
+        It 'records the app its wait after the upgrade started, in place of the app local-ai started' {
+            $started = @{ Pid = 310; StartTicks = 333; Path = $appExe; Port = 11434; StartedTicks = 330; How = 'update' }
+            $apps.Recorded = 310
+            $waits = @{ Count = 0 }
+            Mock Wait-OllamaServer -ModuleName LocalAI -MockWith {
+                $waits.Count++
+                $own = if ($waits.Count -eq 2) { $started } else { $null }
+                [pscustomobject]@{ Version = '0.40.12'; App = $own; Started = $null -ne $own }
+            }
+            (Invoke-UpdateVerb -Context $context).Code | Should -Be @(0)
+            (Read-LocalAIState -Path $paths.State).Ollama.App.Pid | Should -Be 310
+        }
+
+        It 'records no app its wait after the upgrade started when the app before it was not local-ai''s, and says stop leaves it running' {
+            Write-LocalAIState -Path $paths.State -State @{ Ollama = @{ Url = 'http://127.0.0.1:11434'; Alias = 'local-chat'; App = $null } }
+            $started = @{ Pid = 310; StartTicks = 333; Path = $appExe; Port = 11434; StartedTicks = 330; How = 'update' }
+            $waits = @{ Count = 0 }
+            Mock Wait-OllamaServer -ModuleName LocalAI -MockWith {
+                $waits.Count++
+                $own = if ($waits.Count -eq 2) { $started } else { $null }
+                [pscustomobject]@{ Version = '0.40.12'; App = $own; Started = $null -ne $own }
+            }
+            Mock Stop-LocalAI -ModuleName LocalAI -MockWith {
+                $calls.Add("stop KeepOllama=$([bool]$KeepOllama)")
+                0
+            }
+            $run = Invoke-UpdateVerb -Context $context
+            $run.Code | Should -Be @(0)
+            $run.Printed | Should -BeLike "*The Ollama app local-ai started (PID 310) replaces one that state.json does not record as local-ai's, so local-ai stop leaves it running.*"
+            (Read-LocalAIState -Path $paths.State).Ollama.App | Should -BeNullOrEmpty
+            Should -Invoke Get-OllamaAppProcess -ModuleName LocalAI -Times 0 -Exactly
+            # Ollama answered when update began, so the stop at its end keeps it.
+            @($calls | Where-Object { $_ -like 'stop*' })[-1] | Should -Be 'stop KeepOllama=True'
+        }
+
+        It 'records no app when another app began beside the one the installer started' {
+            Mock Update-WingetPackage -ModuleName LocalAI -MockWith {
+                $apps.Upgraded = $true
+                $apps.List = @(
+                    [pscustomobject]@{ Id = 300; Path = $appExe; StartTicks = [DateTime]::UtcNow.Ticks; ParentId = 9 }
+                    [pscustomobject]@{ Id = 302; Path = $appExe; StartTicks = [DateTime]::UtcNow.Ticks; ParentId = 9 }
+                )
+                'upgraded'
+            }
+            (Invoke-UpdateVerb -Context $context).Code | Should -Be @(0)
+            (Read-LocalAIState -Path $paths.State).Ollama.App | Should -BeNullOrEmpty
+        }
     }
 }
 
@@ -10662,7 +11975,10 @@ Describe 'Uninstall-LocalAI' {
         Mock Get-Command -ModuleName LocalAI -ParameterFilter { @('uv', 'ollama') -contains $Name } -MockWith { [pscustomobject]@{ Name = "$Name.exe"; Path = "C:\x\$Name.exe" } }
         Mock Resolve-OllamaUrl -ModuleName LocalAI -MockWith { 'http://127.0.0.1:11434' }
         Mock Assert-OllamaCliUrl -ModuleName LocalAI
-        Mock Wait-OllamaServer -ModuleName LocalAI -MockWith { $calls.Add('ollama up'); '0.40.11' }
+        Mock Wait-OllamaServer -ModuleName LocalAI -MockWith {
+            $calls.Add('ollama up')
+            if ($PassThru) { [pscustomobject]@{ Version = '0.40.11'; App = $null } } else { '0.40.11' }
+        }
         Mock Invoke-Native -ModuleName LocalAI -MockWith { throw "Unexpected call: $FilePath $($ArgumentList -join ' ')" }
         Mock Invoke-Native -ModuleName LocalAI -ParameterFilter { $FilePath -eq 'uv' } -MockWith {
             $calls.Add("uv $env:UV_TOOL_DIR|$($ArgumentList -join ' ')")
@@ -10953,6 +12269,117 @@ Describe 'Uninstall-LocalAI' {
         $run.Code | Should -Be @(1)
         $run.Printed | Should -BeLike "*is not valid JSON*So uninstall cannot tell what the launcher runs, and it removed nothing.*delete $($paths.State)*"
         $questions.Count | Should -Be 0
+    }
+
+    Context 'with an Ollama app local-ai started' {
+        BeforeEach {
+            Write-TestInstall -Settings $settings -Paths $paths -ToolDir $toolDir -Cloned $false -CreatedVenv $true -NodeByLauncher $false
+            $app = @{ Pid = 100; StartTicks = 111; Path = 'C:\Ollama\ollama app.exe'; Port = 11434; StartedTicks = 110; How = 'start' }
+            $state = Read-LocalAIState -Path $paths.State
+            $state['Ollama'] = @{ Url = 'http://127.0.0.1:11434'; Alias = 'local-chat'; App = $app }
+            Write-LocalAIState -Path $paths.State -State $state
+            $world.Quit = @{ Result = 'stopped'; Reason = 'Quit the Ollama app local-ai started (PID 100).' }
+            $world.Found = 'match'
+            Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith { $world.Found }
+            Mock Stop-LocalAI -ModuleName LocalAI -MockWith {
+                $calls.Add("stop KeepOllama=$([bool]$KeepOllama)")
+                $world.Stop
+            }
+            Mock Stop-OllamaApp -ModuleName LocalAI -MockWith {
+                $calls.Add("quit $($Record.Pid) $Url $Alias")
+                $world.Quit
+            }
+        }
+
+        It 'keeps Ollama through the stop, removes the alias, then quits the app and drops its record' {
+            $world.Answers.Enqueue($true)
+            $run = Invoke-UninstallVerb -Context $context
+            $run.Code | Should -Be @(0)
+            $run.Printed | Should -BeLike '*Last it quits the Ollama app local-ai started (PID 100), unless another program has a model loaded in it or its window is open.*'
+            @($calls | Where-Object { $_ -like 'stop*' -or $_ -like 'ollama*' -or $_ -like 'quit*' }) |
+                Should -Be @('stop KeepOllama=True', 'ollama up', 'ollama list', 'ollama rm local-chat', 'quit 100 http://127.0.0.1:11434 local-chat')
+            (Read-LocalAIState -Path $paths.State).Ollama.App | Should -BeNullOrEmpty
+        }
+
+        It 'counts the running app as work to ask about, also when nothing else is left and <Case>' -ForEach @(
+            @{ Case = 'this window can inspect it'; Found = 'match' }
+            @{ Case = 'this window may not inspect it, as stop and status still count it'; Found = 'unreadable' }
+        ) {
+            $world.Found = $Found
+            Remove-Item -LiteralPath $paths.InstallStamp
+            foreach ($gone in $settings.Shortcuts.Folder, $paths.FilesServer, $paths.FilesKey, $paths.McpoConfig, (Join-Path $paths.Root 'image-gate'), (Join-Path $paths.Root 'mcpo'),
+                (Join-Path $settings.ComfyUI.Dir '.venv')) {
+                Remove-Item -LiteralPath $gone -Recurse -Force
+            }
+            $world.Answers.Enqueue($true)
+            $run = Invoke-UninstallVerb -Context $context
+            $run.Code | Should -Be @(0)
+            @($questions) | Should -Be @('Uninstall these now?')
+            $run.Printed | Should -BeLike '*Last it quits the Ollama app local-ai started (PID 100)*'
+            $calls | Should -Contain 'quit 100 http://127.0.0.1:11434 local-chat'
+        }
+
+        It 'neither lists nor asks about an app that no longer runs as recorded' {
+            $world.Found = 'other'
+            Remove-Item -LiteralPath $paths.InstallStamp
+            foreach ($gone in $settings.Shortcuts.Folder, $paths.FilesServer, $paths.FilesKey, $paths.McpoConfig, (Join-Path $paths.Root 'image-gate'), (Join-Path $paths.Root 'mcpo'),
+                (Join-Path $settings.ComfyUI.Dir '.venv')) {
+                Remove-Item -LiteralPath $gone -Recurse -Force
+            }
+            $run = Invoke-UninstallVerb -Context $context
+            $run.Code | Should -Be @(0)
+            $questions.Count | Should -Be 0
+            $run.Printed | Should -Not -BeLike '*Last it quits*'
+        }
+
+        It 'quits the app its own wait started to remove the alias' {
+            $state = Read-LocalAIState -Path $paths.State
+            $state.Remove('Ollama')
+            Write-LocalAIState -Path $paths.State -State $state
+            $started = @{ Pid = 300; StartTicks = 333; Path = 'C:\Ollama\ollama app.exe'; Port = 11434; StartedTicks = 330; How = 'uninstall' }
+            Mock Wait-OllamaServer -ModuleName LocalAI -MockWith {
+                $calls.Add('ollama up')
+                [pscustomobject]@{ Version = '0.40.11'; App = $started }
+            }
+            $world.Answers.Enqueue($true)
+            $run = Invoke-UninstallVerb -Context $context
+            $run.Code | Should -Be @(0)
+            $run.Printed | Should -Not -BeLike '*Last it quits*'
+            Should -Invoke Wait-OllamaServer -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $PassThru -and $How -eq 'uninstall' }
+            @($calls | Where-Object { $_ -like 'quit*' }) | Should -Be @('quit 300 http://127.0.0.1:11434 local-chat')
+        }
+
+        It 'returns 1 naming the app when it cannot be quit, keeping its record and the launcher folder' {
+            $context.RemoveData = $true
+            $world.Quit = @{ Result = 'failed'; Reason = 'The Ollama app local-ai started (PID 100), or its server on port 11434, still runs; see above.' }
+            $world.Answers.Enqueue($true)
+            $world.Answers.Enqueue($true)
+            $run = Invoke-UninstallVerb -Context $context
+            $run.Code | Should -Be @(1)
+            $run.Printed | Should -BeLike '*Kept *, since the next uninstall run needs its install-stamp.json*Uninstall finished, but these stay:*The Ollama app local-ai started (PID 100), or its server on port 11434, still runs*'
+            (Read-LocalAIState -Path $paths.State).Ollama.App.Pid | Should -Be 100
+        }
+
+        It 'keeps the record when the app keeps running for another program, without failing' {
+            $world.Quit = @{ Result = 'kept'; Reason = 'Ollama still has qwen3:8b loaded, which another program may be using, so the Ollama app local-ai started (PID 100) keeps running.' }
+            $world.Answers.Enqueue($true)
+            $run = Invoke-UninstallVerb -Context $context
+            $run.Code | Should -Be @(0)
+            (Read-LocalAIState -Path $paths.State).Ollama.App.Pid | Should -Be 100
+            $run.Printed | Should -Not -BeLike '*no longer tracks*'
+        }
+
+        It 'says local-ai no longer tracks an app it kept once -RemoveData deleted state.json with the launcher folder' {
+            $context.RemoveData = $true
+            $world.Quit = @{ Result = 'kept'; Reason = 'The Ollama app local-ai started (PID 100) has a window open, so it keeps running.' }
+            $world.Answers.Enqueue($true)
+            $world.Answers.Enqueue($true)
+            $run = Invoke-UninstallVerb -Context $context
+            $run.Code | Should -Be @(0)
+            $run.Printed | Should -BeLike ("*Deleted $($paths.Root).*local-ai no longer tracks the Ollama app it started (PID 100), which keeps running; quit it from " +
+                'its tray icon once you are done with it.*')
+            Test-Path -LiteralPath $paths.Root | Should -BeFalse
+        }
     }
 
     Context 'with -RemoveData' {

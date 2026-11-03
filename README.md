@@ -11,7 +11,7 @@ frees the GPU for each image, and optional **file tools** let the model read one
 
 | Service | Address | Runs when |
 |---|---|---|
-| Ollama, with an OpenAI-compatible API under `/v1` | `http://127.0.0.1:11434` | always; the Ollama tray app |
+| Ollama, with an OpenAI-compatible API under `/v1` | `http://127.0.0.1:11434` | always; the Ollama tray app, which the launcher starts when it does not run |
 | Open WebUI 0.12.4 | `http://127.0.0.1:8080` | always |
 | ComfyUI v0.42.5 | `http://127.0.0.1:8188` | `Images.Enabled` is `$true` (the default) |
 | Image gate (`src\image_gate.py`) | `http://127.0.0.1:8190` | `Images.UnloadChat` is `$true` (the default) |
@@ -22,8 +22,26 @@ app chooses its own bind address. The launcher never sets `OLLAMA_HOST`, and `in
 `start` and `status` warn when Ollama listens beyond loopback. If that happens, turn off *Expose Ollama to
 the network* in the Ollama app's settings and restart the app.
 
-The launcher never runs `ollama serve`. When Ollama does not answer, `start` runs
-`ollama list` once, which starts the Ollama app.
+The launcher never runs `ollama serve`. When Ollama does not answer, `install`, `start`,
+`update` and `uninstall` start the Ollama app hidden, as the `ollama` program does:
+`ollama app.exe --hide --fast-startup` from the folder of `ollama.exe`. When the app is not
+there, they run `ollama list` instead. They only wait, and start nothing, while Ollama's
+installer runs, when `Ollama.Url` names another computer, or while another program holds its
+port.
+
+The launcher records in `state.json` an Ollama app that it started, and `local-ai stop` quits
+that app again. That includes the app Ollama's installer starts when `install` installs Ollama,
+and the one it starts again when `update -Tools` upgrades an app the launcher started. An app
+started through `ollama list`, or one the launcher cannot tell apart from another app, is not
+recorded; the launcher says so, and `stop` leaves it running. An Ollama that already ran keeps
+running. So does an app the launcher started while another program has a model loaded in it or
+is still connected to it, while the Ollama window is open, or while it runs in another Windows
+session, whose windows `stop` cannot see; `stop` then says so.
+
+After you point `Ollama.Url` at another server, run `local-ai stop` before `start` or `update`.
+Until then `status` names the app the launcher recorded for the old server, and `stop` quits it.
+Once `start` runs, also the start that `update` runs for its check, the launcher forgets that
+app, and it keeps running until you quit it from its tray icon.
 
 ## Requirements
 
@@ -78,7 +96,7 @@ so a window that a shortcut opened stays readable. With `-Json` it never pauses.
 |---|---|
 | `local-ai install` | Installs what is missing: the winget packages, the chat model, Open WebUI, and with their settings the file tools and ComfyUI with its checkpoint. It never changes an installed Open WebUI version; that is `update`'s job. |
 | `local-ai start [-NoBrowser]` | Runs `install` first when parts are missing. Starts ComfyUI, the image gate, the file tools and Open WebUI, then opens the browser unless `-NoBrowser` is given. It prints the web address and the endpoint for coding tools. |
-| `local-ai stop` | Stops what `start` started and unloads `local-chat`. Ollama keeps running. |
+| `local-ai stop` | Stops what `start` started, unloads `local-chat` and quits the Ollama app when the launcher started it. An Ollama that already ran keeps running, and so does one that holds another program's model, still has another program connected, such as a coding tool on the `/v1` endpoint, or shows its window. |
 | `local-ai status [-Json]` | Reports what runs and what needs attention, and changes nothing. `-Json` prints one line of JSON and nothing else. |
 | `local-ai update [-Tools]` | Brings every part to the versions the settings pin (`config\defaults.psd1`, or `settings.psd1` where it sets a pin), after it shows the plan and you confirm. `-Tools` also upgrades the winget packages. |
 | `local-ai uninstall [-RemoveData]` | Removes what `install` set up, after you confirm. `-RemoveData` also deletes the data folders. |
@@ -103,7 +121,7 @@ By verb:
   1 when Ollama, uv, the chat model or Open WebUI failed.
 - `start`: 2 when it started with warnings, for example with images or file tools off.
   1 when Open WebUI did not come up.
-- `stop`: 1 when something could not be stopped.
+- `stop`: 1 when something could not be stopped, such as an Ollama app the launcher started.
 - `update`: 2 when it finished with warnings or you declined the plan. 1 when it failed.
 - `uninstall`: 0 also when you decline. 1 when something stays.
 - Every verb returns 1 on an error, for example a refused run inside a packaged app.
@@ -116,8 +134,9 @@ By verb:
 
 - **Launcher**: the repository and state folder, another run in progress, settings that do not
   load, and packaged-app redirection.
-- **Ollama**: the version, whether it listens beyond loopback, the loaded models and their
-  share of VRAM, whether `local-chat` exists, and superseded aliases it still holds.
+- **Ollama**: the version, whether the launcher started the Ollama app, so that `stop` quits
+  it, whether it listens beyond loopback, the loaded models and their share of VRAM, whether
+  `local-chat` exists, and superseded aliases it still holds.
 - **Services**: each service's process, port, version and pin.
 - **GPU and Ollama environment**: what `nvidia-smi` reports, and `OLLAMA_KV_CACHE_TYPE`.
 - **File tools folder**: whether `start` would serve `Files.Root`, and why not.
@@ -217,7 +236,7 @@ address out of `settings.psd1`, but Open WebUI and the tools and functions insid
 read it. The settings check refuses a name that ends in `_TOKEN` or `_API_KEY`, and
 `PYTHONHOME`, `PYTHONPATH`, `PYTHONSTARTUP`, `PYTHONUSERBASE`, `NODE_OPTIONS` and `NODE_PATH`:
 none of these services inherits those. The Ollama app is the exception: when the launcher
-starts it through `ollama list`, it inherits the whole environment of that window.
+starts it, it inherits the whole environment of that window.
 
 ## Signing in
 
@@ -357,7 +376,7 @@ ollama launch qwen --model local-chat --config --yes
 `config\defaults.psd1`, and those that `settings.psd1` sets instead. When something differs, it
 shows the plan and asks. Then it:
 
-1. stops the stack;
+1. stops the stack, but not Ollama, which it still needs;
 2. backs up Open WebUI's data to `%LOCALAPPDATA%\local-ai\backups` before it changes Open
    WebUI: `webui.db` with its `-wal` and `-shm` files, `.webui_secret_key`, `uploads`,
    `vector_db` and the old package versions;
@@ -367,12 +386,16 @@ shows the plan and asks. Then it:
 4. starts the stack and checks each service;
 5. rolls Open WebUI back when the new version fails the check: it reinstalls the old version
    with its saved package versions and restores the data from the backup;
-6. leaves the stack running only when it ran before;
-7. when the update did not fail, offers to remove each superseded alias that Ollama still
-   holds, with its own question.
+6. when the update did not fail, offers to remove each superseded alias that Ollama still
+   holds, with its own question;
+7. leaves the stack running only when it ran before.
 
 When everything already matches its pin, `update` changes nothing else but still makes that
 offer.
+
+`update` leaves Ollama as it found it. When Ollama did not answer at its start, `update` quits
+the Ollama app it started again at its end, also when it ends early, unless the stack runs then.
+An Ollama that answered at its start keeps running.
 
 A rollback moves the data the new version used to `backups\open-webui-failed-<time>`, which
 nothing deletes. `update` keeps the newest `Update.KeepBackups` (3) of its own backups, and
@@ -394,15 +417,17 @@ stops the stack and removes:
 - the files server, `files.key` and mcpo's configuration;
 - the Ollama model `local-chat`. The weights of `Model.Source` stay in Ollama.
 
-It keeps Ollama, uv, Git, Node.js and every other Ollama model, and prints the `winget
-uninstall` commands for them. Your data stays as well.
+Last it quits the Ollama app when the launcher started it, as `stop` does. It keeps Ollama, uv,
+Git, Node.js and every other Ollama model, and prints the `winget uninstall` commands for them.
+Your data stays as well.
 
 `local-ai uninstall -RemoveData` also deletes, after you type `delete`:
 
 - Open WebUI's data folder: accounts, chats, uploads, knowledge and its secret key;
 - the ComfyUI checkout, with its models and output, only when `install` cloned it;
 - `%LOCALAPPDATA%\local-ai`: `settings.psd1`, the state files, the logs and Open WebUI's
-  backups.
+  backups. When uninstall keeps an Ollama app the launcher started running, as `stop` would,
+  it says so: once `state.json` is gone, quit that app from its tray icon.
 
 It never deletes `Files.Root`, `OLLAMA_MODELS`, a ComfyUI checkout that `install` did not
 clone, your profile or other system folders, or this repository. `stop`, `status` and
@@ -446,8 +471,11 @@ Use the stack only on a single-user PC you trust.
 - Open WebUI, ComfyUI, the image gate and mcpo inherit only the environment variables on their
   allow-lists, so a secret in any other variable, such as `AWS_SECRET_ACCESS_KEY`, is not in
   their environment. Code inside them runs as your Windows user, so it can still read your user
-  variables in the registry. The Ollama app inherits the whole environment of the window that
-  starts it. See [Settings](#settings).
+  variables in the registry. When the launcher starts the Ollama app, the app and the Ollama
+  server it runs inherit the whole environment of that window until the app quits; `local-ai
+  stop` quits it unless it keeps it running for one of the reasons in
+  [What it runs](#what-it-runs). An app that already ran keeps the environment it started with.
+  See [Settings](#settings).
 
 [SECURITY.md](SECURITY.md) has the security policy, where secrets live and the known limits.
 
