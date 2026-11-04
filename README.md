@@ -132,8 +132,8 @@ By verb:
 
 `status` reads only. It never starts the Ollama app. Its sections are:
 
-- **Launcher**: the repository and state folder, another run in progress, settings that do not
-  load, and packaged-app redirection.
+- **Launcher**: the version that `VERSION` names, the repository and state folder, another run
+  in progress, settings that do not load, and packaged-app redirection.
 - **Ollama**: the version, whether the launcher started the Ollama app, so that `stop` quits
   it, whether it listens beyond loopback, the loaded models and their share of VRAM, whether
   `local-chat` exists, and superseded aliases it still holds.
@@ -470,6 +470,42 @@ of each (`Logs.Keep`). Each run also writes a transcript there. Those of `status
 `uninstall` go to `%TEMP%`. The newest 20 transcripts of each verb are kept, for at most 14
 days. When a verb stops on an error, it prints the path of its transcript.
 
+## Releases
+
+A release on the [Releases page](https://github.com/Ochsyp/local-ai-launcher/releases) holds two
+files:
+
+- `local-ai-launcher-X.Y.Z.zip`: the folder `local-ai-launcher-X.Y.Z` with `local-ai.cmd`, `src`,
+  `config`, `VERSION`, this README, the CHANGELOG, LICENSE and SECURITY.md, and the manifest
+  `local-ai-release.json`, which lists the SHA-256 of every other file. The tests, CI and the
+  other development files stay in the repository.
+- `SHA256SUMS`: the SHA-256 of the zip.
+
+GitHub Actions builds both from the commit that the tag `vX.Y.Z` names, and signs a build
+provenance attestation for the zip. A published release is immutable: its files and its tag
+cannot change. There is no release yet; until there is, clone the repository as
+[Quick start](#quick-start) describes.
+
+To check a download, compare its SHA-256 with the line in `SHA256SUMS`:
+
+```powershell
+(Get-FileHash -Algorithm SHA256 .\local-ai-launcher-X.Y.Z.zip).Hash.ToLowerInvariant()
+Get-Content .\SHA256SUMS
+```
+
+The GitHub CLI also checks where the zip came from, and that the release is the one GitHub
+attested:
+
+```text
+gh attestation verify local-ai-launcher-X.Y.Z.zip --repo Ochsyp/local-ai-launcher --signer-workflow Ochsyp/local-ai-launcher/.github/workflows/release.yml --source-ref refs/heads/main --deny-self-hosted-runners
+gh release verify vX.Y.Z --repo Ochsyp/local-ai-launcher
+gh release verify-asset vX.Y.Z local-ai-launcher-X.Y.Z.zip --repo Ochsyp/local-ai-launcher
+```
+
+`local-ai status` names the version as `Launcher X.Y.Z`.
+[CONTRIBUTING.md](https://github.com/Ochsyp/local-ai-launcher/blob/main/CONTRIBUTING.md), which
+the zip leaves out, describes how a release is made and what each one holds.
+
 ## Security notes
 
 Use the stack only on a single-user PC you trust.
@@ -513,10 +549,11 @@ The image gate tests need a Python 3.12 or newer that has the packages in
 <python> -I -B -m unittest discover -s tests -p "test_*.py"
 ```
 
-CI (`.github\workflows\ci.yml`) runs the same checks on `windows-latest`.
-[CHANGELOG.md](CHANGELOG.md) lists the changes.
+CI (`.github\workflows\ci.yml`) runs the same checks on `windows-latest`, and checks `VERSION`
+against `CHANGELOG.md`. [CHANGELOG.md](CHANGELOG.md) lists the changes.
 
-Every change reaches `main` through a reviewed pull request. [CONTRIBUTING.md](CONTRIBUTING.md)
+Every change reaches `main` through a reviewed pull request.
+[CONTRIBUTING.md](https://github.com/Ochsyp/local-ai-launcher/blob/main/CONTRIBUTING.md)
 describes the branches, the changelog entry and the git hooks that refuse commits and pushes to
 `main`. Turn the hooks on once per clone:
 
@@ -537,12 +574,15 @@ config\comfyui\                     the image workflow, its node mapping for Ope
 config\files-server\                package.json and lockfile of the files server
 tests\LocalAI.Tests.ps1             Pester tests for the module
 tests\Config.Tests.ps1              Pester checks on the tracked configuration
+tests\Release.Tests.ps1             Pester tests for the release scripts and the export-ignore rules
 tests\test_image_gate.py            unittest tests for the image gate
 tests\run-checks.ps1                runs PSScriptAnalyzer and the Pester tests
 tests\requirements.txt              Python packages the image gate tests need
 PSScriptAnalyzerSettings.psd1       PSScriptAnalyzer rules
 .githooks\                          refuse commits and pushes to main
 .github\                            CI, gitleaks secret scan, Dependabot and the pull request template
+.github\workflows\release.yml       builds, drafts and checks releases
+.github\scripts\                    the release scripts behind release.yml and the version check in CI
 .editorconfig, .gitattributes       editor settings and line endings
 .gitignore                          keeps secrets, weights and logs out of git
 SECURITY.md                         security policy

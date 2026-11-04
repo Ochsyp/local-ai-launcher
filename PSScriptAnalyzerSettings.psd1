@@ -3,7 +3,7 @@
 # -------------------------------------------------------
 #
 # Rules for PSScriptAnalyzer 1.25.0, whose -Path takes one folder per call:
-#   'src', 'config', 'tests' | ForEach-Object {
+#   'src', 'config', 'tests', '.github' | ForEach-Object {
 #       Invoke-ScriptAnalyzer -Path $_ -Recurse -Settings .\PSScriptAnalyzerSettings.psd1 }
 # The launcher targets Windows PowerShell 5.1.
 

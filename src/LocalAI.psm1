@@ -38,6 +38,29 @@ function Get-LocalAIPaths {
     }
 }
 
+# Return the launcher's version, such as '1.2.0', from the VERSION file in $RepoRoot, trimmed; $null when that file is missing, as in a git
+# checkout before the first release, cannot be read, or holds no version of the form X.Y.Z. Reads only.
+function Get-LocalAIVersion {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot
+    )
+    $path = $RepoRoot
+    try {
+        # Combine, unlike Join-Path, does not refuse a drive this PC does not have now.
+        $path = [IO.Path]::Combine($RepoRoot, 'VERSION')
+        if (-not [IO.File]::Exists($path)) { return $null }
+        $text = [IO.File]::ReadAllText($path).Trim()
+    } catch {
+        Write-Verbose "Cannot read $path`: $($_.Exception.Message)"
+        return $null
+    }
+    # [0-9], as \d also matches digits of other scripts.
+    if ($text -cmatch '\A[0-9]+\.[0-9]+\.[0-9]+\z') { return $text }
+    return $null
+}
+
 # Return the table in the PowerShell data file at $Path without running any code in it. The text
 # is read as UTF-8 unless a BOM names another encoding. Throws an error naming the file when it
 # is missing, not UTF-8, not valid syntax or holds anything but plain data.
@@ -5570,8 +5593,15 @@ function Get-LocalAIStatusReport {
     $add = { param([string]$Level, [string]$Text) $launcher.Lines.Add([ordered]@{ level = $Level; text = $Text }) }
     $launcher.Data.repository = $repoRoot
     $launcher.Data.root = $paths.Root
+    # A release names its version in VERSION; a git checkout before the first release has none.
+    $launcher.Data.version = Get-LocalAIVersion -RepoRoot $repoRoot
     $launcher.Data.settingsLoaded = $null -ne $settings
     $launcher.Data.settingsError = $Context.SettingsError
+    if ($launcher.Data.version) {
+        & $add 'fact' "Launcher $($launcher.Data.version)."
+    } else {
+        & $add 'info' "No VERSION file in $repoRoot names the launcher's version, as in a git checkout before the first release."
+    }
     & $add 'fact' "The launcher in $repoRoot keeps its state in $($paths.Root)."
     $launcher.Data.otherRunActive = [bool]$Context.LockHeld
     if ($Context.LockHeld) {
@@ -8270,6 +8300,7 @@ function Invoke-LocalAI {
 
 Export-ModuleMember -Function @(
     'Get-LocalAIPaths'
+    'Get-LocalAIVersion'
     'Get-LocalAISettings'
     'ConvertTo-LocalAIHashtable'
     'ConvertFrom-LocalAIJson'

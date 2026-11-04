@@ -1,0 +1,188 @@
+# Builds a release when a push to main changes VERSION, or when it is run by hand on main: the zip
+# local-ai-launcher-X.Y.Z.zip of that commit, SHA256SUMS and a build provenance attestation, then
+# the draft release vX.Y.Z of that commit while it is still the tip of main. The maintainer reviews
+# and publishes the draft, which creates the tag; this workflow never publishes a release or
+# creates a tag.
+# A pull request that changes the release tooling or VERSION gets a dry run of the build, with no
+# attestation and no draft. When a release is published, the verify job checks its assets and
+# attestations and changes nothing.
+# .github/scripts/LocalAIRelease.psm1 holds the logic, which tests/Release.Tests.ps1 tests, and
+# CONTRIBUTING.md describes the release steps and contract.
+# Actions are pinned to commit SHAs; Dependabot proposes updates.
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths: [VERSION]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - .github/scripts/**
+      - .gitattributes
+      - VERSION
+  release:
+    types: [published]
+
+# Each job asks for what it needs.
+permissions: {}
+
+# Builds run one at a time and are never cancelled, so two drafts never race. A pull request's dry
+# run and the check of a published release use groups of their own, so they never cancel a waiting
+# build; a newer push to a pull request cancels its older dry run.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('release-dry-run-{0}', github.ref) || github.event_name == 'release' && format('release-verify-{0}', github.run_id) || 'release' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  dry-run:
+    if: github.event_name == 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      # git writes the zip's times in local time.
+      TZ: UTC
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the release twice and check it
+        shell: powershell
+        run: |
+          Import-Module .\.github\scripts\LocalAIRelease.psm1 -Force
+          $null = Invoke-ReleaseBuild -RepositoryPath . -Commit $env:GITHUB_SHA -OutputDirectory (Join-Path $env:RUNNER_TEMP 'release') -DryRun
+
+  build:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # actions/attest signs with the job's OIDC token through Sigstore and stores the attestation.
+      # It needs artifact-metadata only for storage records of images it pushes to a registry.
+      id-token: write
+      attestations: write
+    env:
+      TZ: UTC
+    outputs:
+      version: ${{ steps.build.outputs.version }}
+      commit: ${{ steps.build.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the release
+        id: build
+        shell: powershell
+        run: |
+          # Only main is released, also when the workflow is run by hand on another branch.
+          if ($env:GITHUB_REF -cne 'refs/heads/main') { throw "A release is built from refs/heads/main only, not from $env:GITHUB_REF." }
+          Import-Module .\.github\scripts\LocalAIRelease.psm1 -Force
+          $release = Invoke-ReleaseBuild -RepositoryPath . -Commit $env:GITHUB_SHA -OutputDirectory release-build
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding Ascii -Value "version=$($release.Version)", "commit=$($release.Commit)"
+      - name: Attest the zip's build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release-build/assets/local-ai-launcher-${{ steps.build.outputs.version }}.zip
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: release-build/
+          if-no-files-found: error
+
+  draft:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # Creates, fills and deletes draft releases. This job checks out and runs no repository code.
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: release-build
+      - name: Replace the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+          COMMIT: ${{ needs.build.outputs.commit }}
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::The build named no version X.Y.Z: '$VERSION'."; exit 1; }
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::The build named no commit SHA: '$COMMIT'."; exit 1; }
+          tag="v$VERSION"
+          (cd release-build/assets && sha256sum --check --strict SHA256SUMS)
+          # Only the tip of main gets a draft. A re-run keeps the commit of its run, so re-running an
+          # older run would replace the draft of a newer build, such as one with a fix, with older files.
+          main=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)
+          if [ "$main" != "$COMMIT" ]; then
+            echo "::error::This run built $COMMIT, but main is at $main now. Run release.yml on main with Run workflow instead of re-running an older run."
+            exit 1
+          fi
+          # A published release never changes. Drafts of the tag, as from an earlier run, are replaced.
+          releases=$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$tag\") | [.id, .draft, (.target_commitish // \"\")] | @tsv")
+          drafts=()
+          while IFS=$'\t' read -r id draft target; do
+            [ -n "$id" ] || continue
+            if [ "$draft" != "true" ]; then
+              echo "::error::Release $tag is published, and a published release never changes. Raise VERSION for a new release."
+              exit 1
+            fi
+            echo "Release $id is a draft of $tag at $target."
+            drafts+=("$id")
+          done <<< "$releases"
+          for id in "${drafts[@]}"; do
+            # The maintainer may have published it since the listing, and a published release is never deleted.
+            state=$(gh api "repos/$GH_REPO/releases/$id" --jq .draft)
+            if [ "$state" != "true" ]; then
+              echo "::error::Release $id of $tag was published meanwhile, and a published release never changes."
+              exit 1
+            fi
+            echo "Deleting the earlier draft of $tag (release $id)."
+            gh api --method DELETE "repos/$GH_REPO/releases/$id"
+          done
+          gh release create "$tag" "release-build/assets/local-ai-launcher-$VERSION.zip" release-build/assets/SHA256SUMS \
+            --draft --target "$COMMIT" --title "$tag" --notes-file release-build/notes.md
+
+  verify:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # gh release verify and gh attestation verify read the attestations.
+      attestations: read
+    steps:
+      - name: Check the published release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::The tag '$TAG' is no release tag vX.Y.Z."; exit 1; }
+          version="${TAG#v}"
+          zip="local-ai-launcher-$version.zip"
+          commit=$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)
+          mkdir assets
+          gh release download "$TAG" --dir assets
+          cd assets
+          sha256sum --check --strict SHA256SUMS
+          for file in *; do
+            [ "$file" = SHA256SUMS ] && continue
+            awk -v name="$file" '$2 == name { found = 1 } END { exit !found }' SHA256SUMS || { echo "::error::SHA256SUMS does not list $file."; exit 1; }
+          done
+          unzip -p "$zip" "local-ai-launcher-$version/local-ai-release.json" |
+            jq -e --arg version "$version" --arg tag "$TAG" --arg commit "$commit" \
+              '.schema == 1 and .name == "local-ai-launcher" and .version == $version and .tag == $tag and .commit == $commit' > /dev/null ||
+            { echo "::error::The manifest in $zip does not name $TAG at $commit."; exit 1; }
+          cd ..
+          gh release verify "$TAG"
+          gh release verify-asset "$TAG" "assets/$zip"
+          gh attestation verify "assets/$zip" --repo "$GH_REPO" --signer-workflow "$GH_REPO/.github/workflows/release.yml" \
+            --source-ref refs/heads/main --source-digest "$commit" --deny-self-hosted-runners
