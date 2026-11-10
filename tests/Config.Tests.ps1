@@ -284,8 +284,8 @@ Describe 'config\files-server' {
         }
     }
 
-    It 'pins the version 2.0.1, the first with the 2026-10-25 path-check fixes' {
-        $settings.Files.ServerVersion | Should -BeExactly '2.0.1'
+    It 'pins the version 2.1.0, which keeps the 2026-10-25 path-check fixes that came with 2.0.1' {
+        $settings.Files.ServerVersion | Should -BeExactly '2.1.0'
     }
 
     It 'holds every override at an exact version, and the lockfile at those' {
@@ -326,7 +326,7 @@ Describe 'Files tool lists and mcpo pins' {
         foreach ($tool in 'write_file', 'edit_file', 'create_directory', 'move_file', 'read_file') {
             $files.DisabledTools | Should -Contain $tool
         }
-        # server-filesystem 2.0.1 serves these 14 tools.
+        # server-filesystem 2.1.0 serves these 14 tools, as 2.0.1 did.
         @(@($files.AllowedTools) + @($files.DisabledTools) | Sort-Object) | Should -Be @('create_directory', 'directory_tree', 'edit_file',
             'get_file_info', 'list_allowed_directories', 'list_directory', 'list_directory_with_sizes', 'move_file', 'read_file',
             'read_media_file', 'read_multiple_files', 'read_text_file', 'search_files', 'write_file')

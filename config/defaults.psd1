@@ -263,17 +263,21 @@
         # Passed with --with, since mcpo 0.0.20 sets no upper bounds: mcp 2.x removed
         # streamablehttp_client, which mcpo imports at startup (open-webui/mcpo#303), and FastAPI
         # 0.145.0 removed the **extra that mcpo's FastAPI(ssl_certfile=...) call needs. pydantic
-        # 2.14.1 works with server-filesystem 2.0.1, so it needs no cap.
+        # 2.14.1 works with server-filesystem 2.0.1, whose tool schemas 2.1.0 keeps, so it needs no cap.
         McpoWith             = @('mcp==1.30.0', 'fastapi<0.145')
         # Passed as --exclude-newer: mcpo's other dependencies resolve to their newest release
         # uploaded before this time (44 packages, tested with server-filesystem 2.0.1). Empty lifts
         # it, and the fastapi cap above still holds: on 2026-10-27 that resolved FastAPI 0.144.0 with
         # mcp 1.30.0 (44 packages), and mcpo started and served the tools.
         McpoExcludeNewer     = '2026-10-13T00:00:00Z'
-        # @modelcontextprotocol/server-filesystem, which needs node >= 24. 2.0.1 is the first release
+        # @modelcontextprotocol/server-filesystem, which needs node >= 24. 2.0.1 was the first release
         # with the 2026-10-25 path-check fixes (GHSA-7rgq-gccq-qphx, GHSA-4gxg-m5jx-9j57), which
-        # affect its read tools in 1.0.0 and 2.0.0; it was 2 days old when pinned. Must equal the
-        # version that ServerPackage\package.json pins; install runs npm ci on that folder's lockfile.
+        # affect its read tools in 1.0.0 and 2.0.0. 2.1.0 (2026-10-28) keeps them and serves the same
+        # 14 tools with the same schemas. It also serves a path that spells Root in another letter
+        # case, adds a hardLinks line to get_file_info, fixes read_text_file's head and tail, and
+        # stops a search_files that visits more than 100000 entries or waits 15 s on one filesystem
+        # call. It was 13 days old when Dependabot's bump reached main. Must equal the version that
+        # ServerPackage\package.json pins; install runs npm ci on that folder's lockfile.
         # Its overrides hold @modelcontextprotocol/server and core at 2.3.1 (2026-10-05), which
         # server-filesystem's ^2.3.1 accepts, since 2.4.0 was 4 days old. They also lift glob to
         # 14.0.3 and minimatch to 11.0.3, past the ^13.0.6 and ^10.0.1 that server-filesystem 2.0.1
@@ -284,7 +288,7 @@
         # days old when pinned; every other locked package was at least 14 days old. The server never
         # loads glob, and its search_files answered 295 test cases the same with minimatch 11.0.3 as
         # with 10.2.6.
-        ServerVersion        = '2.0.1'
+        ServerVersion        = '2.1.0'
         ServerPackage        = 'config\files-server'
         # The tools Open WebUI offers the model, as the server names them. Open WebUI sees them under
         # mcpo's operation ids, tool_<name>_post, and the model calls them by those names.
@@ -309,8 +313,8 @@
         # (58674545) and the mcpo.exe trampoline (47104).
         InstallBytes         = 119062513
         # Free space install wants, plus 10 percent, on the %LOCALAPPDATA% drive before npm ci: the
-        # server's node_modules and package files (21617057 bytes).
-        ServerInstallBytes   = 21617057
+        # server's node_modules and package files with install's marker, for 2.1.0 (21642382 bytes).
+        ServerInstallBytes   = 21642382
     }
 
     HfCli     = @{

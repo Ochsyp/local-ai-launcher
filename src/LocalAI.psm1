@@ -261,7 +261,7 @@ function Test-LocalAISetting {
         if ($allowed.Count -eq 0) { "Setting 'Files.AllowedTools' must name at least one tool." }
         $both = @($allowed | Where-Object { $disabled -contains $_ })
         if ($both.Count -gt 0) { "Settings Files.AllowedTools and Files.DisabledTools both name $($both -join ', '); a tool is either offered or hidden." }
-        # The tools of server-filesystem 2.0.1 that change files.
+        # The tools of server-filesystem 2.0.1 and 2.1.0 that change files.
         $open = @(foreach ($tool in 'write_file', 'edit_file', 'create_directory', 'move_file') { if ($disabled -notcontains $tool) { $tool } })
         if ($open.Count -gt 0) { "Setting 'Files.DisabledTools' must hide every write tool, but leaves out $($open -join ', ')." }
     }
@@ -3208,8 +3208,8 @@ function New-McpoConfig {
     )
     $server = @{
         command       = $NodePath
-        # One folder: a second would widen what the tools read, and with none the server exits. The server compares paths as text and lists
-        # a root given in another spelling twice, as given and as on disk, so it gets the on-disk one.
+        # One folder: a second would widen what the tools read, and with none the server exits. The server lists a root given in another
+        # spelling twice, as given and as on disk, so it gets the on-disk one. From 2.1.0 on, it also serves a path that spells it in another case.
         args          = @($ServerScript, (Resolve-OnDiskPath -Path $Settings.Files.Root).Path)
         disabledTools = @($Settings.Files.DisabledTools)
     }
