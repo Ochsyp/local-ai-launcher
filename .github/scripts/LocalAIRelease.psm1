@@ -27,6 +27,9 @@ $script:BinaryExtensions = @('.ico', '.lnk', '.gguf', '.safetensors')
 $script:InstallScriptPath = 'src/install.ps1'
 # Files every release holds, so an export-ignore line that reaches too far fails the check.
 $script:RequiredFiles = @('local-ai.cmd', 'src/local-ai.ps1', 'src/LocalAI.psm1', $script:InstallScriptPath, 'config/defaults.psd1', 'README.md', 'LICENSE')
+# The limits every installed launcher and install.ps1 apply to a release, in Test-LauncherRelease and Expand-LauncherArchive of src\LocalAI.psm1: the bytes of
+# the zip, its entries, and the bytes of its files once extracted.
+$script:ReleaseLimits = @{ ZipBytes = 64MB; Entries = 10000; ExtractedBytes = 256MB }
 
 # Return $Path as a full path without a trailing '\', a relative one taken from the current location, which .NET calls do not follow in
 # Windows PowerShell 5.1. Touches nothing.
@@ -419,8 +422,8 @@ function ConvertTo-ReleaseManifest {
     return $builder.ToString()
 }
 
-# Return every entry of the zip file $Path, in its order, as @{ Name; Bytes }: Bytes holds the content, or $null for a folder entry,
-# whose name ends with '/'. Reads only.
+# Return every entry of the zip file $Path, in its order, as @{ Name; Bytes; Length }: Bytes holds the content, or $null for a folder
+# entry, whose name ends with '/', and Length the size the zip states for it. Reads only.
 function Read-ReleaseZip {
     [CmdletBinding()]
     [OutputType([object[]])]
@@ -447,7 +450,7 @@ function Read-ReleaseZip {
                     $memory.Dispose()
                 }
             }
-            $entries.Add(@{ Name = $entry.FullName; Bytes = $bytes })
+            $entries.Add(@{ Name = $entry.FullName; Bytes = $bytes; Length = [long]$entry.Length })
         }
     } finally {
         $zip.Dispose()
@@ -522,9 +525,11 @@ function New-ReleaseZip {
 }
 
 # Check the release zip $Path of $Version built from $Commit against the release contract, and throw listing every breach: its name;
-# every entry inside local-ai-launcher-$Version/, without '..', '\' or a second entry of one name; no export-ignored path; the files every
-# release holds; CRLF line ends only in *.cmd, *.bat, *.ps1, *.psm1 and *.psd1, and no CR in any other file but binary ones; a manifest
-# equal to the one ConvertTo-ReleaseManifest writes for the other files; VERSION holding $Version, or with -NoVersionFile none. Reads only.
+# every entry inside local-ai-launcher-$Version/, without '..', '\' or a second entry of one name, with no name that Windows changes or
+# refuses, no file where another entry needs a folder, and the size the zip states for it; no export-ignored path; the files every release
+# holds; CRLF line ends only in *.cmd, *.bat, *.ps1, *.psm1 and *.psd1, and no CR in any other file but binary ones; a manifest equal to the
+# one ConvertTo-ReleaseManifest writes for the other files; VERSION holding $Version, or with -NoVersionFile none; and the limits of
+# $script:ReleaseLimits. Reads only.
 function Assert-ReleaseZip {
     [CmdletBinding()]
     param(
@@ -541,14 +546,33 @@ function Assert-ReleaseZip {
     $problems = New-Object System.Collections.Generic.List[string]
     $expectedName = "$script:ReleaseName-$Version.zip"
     if ([IO.Path]::GetFileName($zipPath) -cne $expectedName) { $problems.Add("The zip is named $([IO.Path]::GetFileName($zipPath)), not $expectedName.") }
+    $zipBytes = (New-Object IO.FileInfo -ArgumentList $zipPath).Length
+    if ($zipBytes -gt $script:ReleaseLimits.ZipBytes) {
+        $problems.Add("The zip has $zipBytes bytes, more than the $($script:ReleaseLimits.ZipBytes) bytes an installed launcher downloads.")
+    }
     $files = New-Object 'System.Collections.Generic.Dictionary[string,byte[]]' -ArgumentList ([StringComparer]::Ordinal)
-    # Windows extracts two names that differ only in case into one file.
+    # As Expand-LauncherArchive in src\LocalAI.psm1 counts them: Windows extracts two names that differ only in case, a folder entry's
+    # with or without its '/', into one, and no file may have the name of a folder that another entry needs.
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([StringComparer]::OrdinalIgnoreCase)
+    $folders = New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([StringComparer]::OrdinalIgnoreCase)
+    $fileNames = New-Object System.Collections.Generic.List[string]
+    $count = 0
+    $extracted = [long]0
     foreach ($entry in (Read-ReleaseZip -Path $zipPath)) {
+        $count++
+        # The sizes the zip states, which an installed launcher adds up and holds each entry to.
+        $extracted += [long]$entry.Length
         $name = [string]$entry.Name
-        if (-not $seen.Add($name)) {
+        $plain = $name.TrimEnd('/')
+        if (-not $seen.Add($plain)) {
             $problems.Add("The zip holds $name twice, or in two spellings that differ only in case.")
             continue
+        }
+        $parts = $plain.Split('/')
+        for ($i = 1; $i -lt $parts.Count; $i++) { $null = $folders.Add(($parts[0..($i - 1)] -join '/')) }
+        if ($name.EndsWith('/')) { $null = $folders.Add($plain) } else { $fileNames.Add($plain) }
+        if ($null -ne $entry.Bytes -and $entry.Bytes.Length -ne [long]$entry.Length) {
+            $problems.Add("$name holds $($entry.Bytes.Length) bytes, but the zip states $($entry.Length) for it.")
         }
         if (-not $name.StartsWith($prefix, [StringComparison]::Ordinal)) {
             $problems.Add("$name lies outside the folder $prefix.")
@@ -561,6 +585,14 @@ function Assert-ReleaseZip {
             $problems.Add("$name is no plain path inside $prefix.")
             continue
         }
+        # As Test-LauncherPathText in src\LocalAI.psm1 refuses them for every installed launcher.
+        $odd = @($segments | Where-Object {
+                $_ -match '[\x00-\x1f"*:<>?|]' -or $_.EndsWith('.') -or $_.EndsWith(' ') -or $_.Split('.')[0].Trim() -match '\A(?:CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])\z'
+            })
+        if ($odd.Count -gt 0) {
+            $problems.Add("$name holds a name that Windows changes or refuses: a device name such as NUL, a dot or a space at its end, or "" * : < > ? | or a control character.")
+            continue
+        }
         $dev = @($script:DevPaths | Where-Object {
                 if ($_.EndsWith('/')) { $relative.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) } else { $relative -eq $_ }
             })
@@ -569,6 +601,15 @@ function Assert-ReleaseZip {
             continue
         }
         if ($null -ne $entry.Bytes) { $files[$relative] = $entry.Bytes }
+    }
+    foreach ($fileName in $fileNames) {
+        if ($folders.Contains($fileName)) { $problems.Add("The zip holds $fileName both as a file and as a folder.") }
+    }
+    if ($count -gt $script:ReleaseLimits.Entries) {
+        $problems.Add("The zip holds $count entries, more than the $($script:ReleaseLimits.Entries) an installed launcher extracts.")
+    }
+    if ($extracted -gt $script:ReleaseLimits.ExtractedBytes) {
+        $problems.Add("The zip holds $extracted bytes once extracted, more than the $($script:ReleaseLimits.ExtractedBytes) bytes an installed launcher extracts.")
     }
     foreach ($required in $script:RequiredFiles) {
         if (-not $files.ContainsKey($required)) { $problems.Add("The zip lacks $prefix$required, which every release holds.") }

@@ -62,8 +62,8 @@ The launcher was redesigned. These entries compare it with the earlier set of sc
 - `update` first brings a release install to the latest release: it checks the release on
   GitHub, puts it into `versions` and hands over to it. The new version's plan starts with the
   line `Launcher: vOLD -> vNEW` and asks once. `update -Rollback` returns to the version before,
-  also without network. `start` checks for a newer release at most once a day and prints one line
-  when one is out. A git checkout never updates its own code.
+  which stays in `versions`. `start` checks for a newer release at most once a day and prints one
+  line when one is out. A git checkout never updates its own code.
 - `status` says how the launcher is installed and, for a release install, checks the active
   version against its manifest, names the version kept for a rollback and the latest release the
   last check found. `-Json` adds `launcher.kind`, `launcher.latest`, `launcher.checkedAt`,
@@ -212,7 +212,10 @@ service that an earlier start left running keeps the environment it started with
 - The launcher installs a release of itself only when it is tagged `vX.Y.Z`, is no draft or
   prerelease and is immutable, when its zip matches the digest GitHub lists, and when every file
   matches the manifest, which must name the commit of the tag. A failed check stops `update`
-  before it changes anything. SECURITY.md describes what this trusts, also for `Launcher.Repo`
-  and the one-liner.
+  before it changes anything. The extraction writes no more of an entry than the zip states for
+  it. The `local-ai.cmd` of a release install runs only from its own folder, so a quoted
+  `"local-ai"` that `cmd.exe` finds through the Path cannot run a version from the `versions`
+  folder of the working folder. SECURITY.md describes what this trusts, also for
+  `Launcher.Repo` and the one-liner.
 
 [Unreleased]: https://github.com/Ochsyp/local-ai-launcher/commits/main

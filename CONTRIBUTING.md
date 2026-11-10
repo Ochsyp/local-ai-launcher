@@ -129,15 +129,26 @@ one of them is a MAJOR change. An added asset is a MINOR change, since `update` 
   spaces and the file name, then a line feed, in ASCII.
 - A build provenance attestation covers the zip. `release.yml` signs it on `refs/heads/main`.
 - A release install lives in `%LOCALAPPDATA%\Programs\local-ai-launcher`: the shim
-  `local-ai.cmd`, which nothing rewrites once it exists, the file `current`, which holds the
-  active tag `vX.Y.Z` and CRLF, and one folder `versions\vX.Y.Z` per release, which never changes
-  once it is in place.
+  `local-ai.cmd`, which nothing rewrites once it exists and which runs only from that folder,
+  the file `current`, which holds the active tag `vX.Y.Z` and CRLF, and one folder
+  `versions\vX.Y.Z` per release, which never changes once it is in place.
 - Every release keeps `local-ai.cmd` at the top of its folder, as the shim of every release
   install runs `versions\vX.Y.Z\local-ai.cmd` with all of its arguments. Every release's
   `src\LocalAI.psm1` exports `Install-LocalAILauncher -Root <install folder> -Tag vX.Y.Z`, which
   checks that version's folder against its manifest, writes the shim when it is missing and
   points `current` at that version: every older `install.ps1` imports it from the release it
   installs and calls it.
+- Every release keeps the verb `shortcuts`, which `install.ps1 -Shortcuts` runs through the shim
+  on the release it has just installed, and which ends with 0 when done, 2 with warnings and any
+  other code on a failure. It also keeps the verb `install`, which `install.ps1` names as the
+  next step.
+- Every installed version and every `install.ps1` refuse a release whose zip is above 64 MB,
+  holds more than 10000 entries or more than 256 MB once extracted, or holds an entry with more
+  bytes than the zip states for it. They also refuse two entries whose names differ only in
+  case, a file where another entry needs a folder, and a path segment that is a device name such
+  as `AUX` or `NUL`, that ends in a dot or a space, or that holds `"`, `*`, `:`, `<`, `>`, `?`,
+  `|` or a control character. A release stays within these limits, which `Assert-ReleaseZip`
+  checks in the build.
 - `state.json` in `%LOCALAPPDATA%\local-ai` holds
   `Launcher = @{ Version; Previous; LastCheck = @{ CheckedAt; Latest; Digest; Error } }`: the
   tags `vX.Y.Z`, `CheckedAt` as a number of UTC ticks, the digest `sha256:<hex>` and the error
@@ -147,7 +158,8 @@ one of them is a MAJOR change. An added asset is a MINOR change, since `update` 
   `update [-Tools] -ActivateLauncher vX.Y.Z`, and `update -Rollback` hands over to the version
   before in the same way. Every later version must accept that call: it checks its settings,
   shows the plan with the line `Launcher: vOLD -> vNEW` when `current` names another version,
-  asks once, and on yes points `current` at vX.Y.Z before it changes any part. `-ActivateLauncher`
-  is hidden from help and is not for people.
+  asks once, and on yes points `current` at vX.Y.Z before it changes any part; when parts
+  change, it first stops what runs. `-ActivateLauncher` is hidden from help and is not for
+  people.
 - The same commit gives the same zip bytes with the same git version. `tests\Release.Tests.ps1`
   and the dry run on pull requests check that.

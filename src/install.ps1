@@ -268,7 +268,7 @@ function Test-LauncherRelease {
     if (-not (ConvertTo-LauncherVersion -Tag $tag)) { & $refuse "The release is tagged '$tag', but the launcher installs only a tag vX.Y.Z without a suffix." }
     if ($Release.draft -isnot [bool] -or $Release.draft) { & $refuse "The release $tag is a draft, which the launcher never installs." }
     if ($Release.prerelease -isnot [bool] -or $Release.prerelease) { & $refuse "The release $tag is a prerelease, which the launcher never installs." }
-    if ($RequireImmutable -and $Release.immutable -ne $true) {
+    if ($RequireImmutable -and ($Release.immutable -isnot [bool] -or -not $Release.immutable)) {
         & $refuse ("The release $tag is not immutable, so its tag and files could still change, and Launcher.RequireImmutable lets the launcher install " +
             'only immutable releases.')
     }
@@ -301,7 +301,8 @@ function Get-LauncherRelease {
         [bool]$RequireImmutable = $true,
         [string]$UserAgent = 'local-ai-launcher'
     )
-    if ($Repo -cnotmatch '\A[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}\z') { throw "'$Repo' is no GitHub repository <owner>/<name>." }
+    # No name that ends in a dot, which .NET drops from the address, so that it would ask about another repository.
+    if ($Repo -cnotmatch '\A[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{0,99}[A-Za-z0-9_-]\z') { throw "'$Repo' is no GitHub repository <owner>/<name>." }
     if ($Tag -and -not (ConvertTo-LauncherVersion -Tag $Tag)) { throw "'$Tag' is no launcher version vX.Y.Z." }
     $which = if ($Tag) { "tags/$Tag" } else { 'latest' }
     try {
@@ -473,7 +474,8 @@ function Test-LauncherFolder {
 
 # Extract the zip file $Path into the new folder $Destination after checking every entry: a plain relative path (Test-LauncherPathText; a folder entry ends in
 # '/'), no name twice in any case, no file where another entry needs a folder, and at most 10000 entries and 256 MB in all, so nothing lands outside it.
-# Throws a 'Refused' problem naming the first bad entry, or a file that is no zip, before it writes anything.
+# Throws a 'Refused' problem naming the first bad entry, or a file that is no zip, before it writes anything; and one for an entry that holds more bytes than
+# the zip states for it, before it writes more than that.
 function Expand-LauncherArchive {
     [CmdletBinding()]
     param(
@@ -525,7 +527,20 @@ function Expand-LauncherArchive {
             $source = $item.Entry.Open()
             try {
                 $file = New-Object IO.FileStream -ArgumentList $item.Full, ([IO.FileMode]::CreateNew), ([IO.FileAccess]::Write), ([IO.FileShare]::None)
-                try { $source.CopyTo($file) } finally { $file.Dispose() }
+                try {
+                    # No more than the size the zip states, which the total above counts and .NET does not check against what it inflates.
+                    $buffer = New-Object byte[] 81920
+                    $left = [long]$item.Entry.Length
+                    while ($true) {
+                        $read = $source.Read($buffer, 0, $buffer.Length)
+                        if ($read -le 0) { break }
+                        $left -= $read
+                        if ($left -lt 0) { & $refuse "The zip entry $($item.Relative) holds more bytes than its header says." }
+                        $file.Write($buffer, 0, $read)
+                    }
+                } finally {
+                    $file.Dispose()
+                }
             } finally {
                 $source.Dispose()
             }
@@ -538,8 +553,8 @@ function Expand-LauncherArchive {
 # Stage the release $Release (Get-LauncherRelease, with the Commit its tag names) in the install folder $InstallRoot as versions\<tag>: download its zip into
 # a new staging\<tag>-<random> folder, compare its SHA-256 with the digest, extract it (Expand-LauncherArchive), require exactly the folder
 # local-ai-launcher-X.Y.Z, matching its manifest (Test-LauncherFolder), unblock every file and rename that folder into place. A versions\<tag> that exists,
-# as after a declined update, is checked instead of downloaded. The staging folder goes in any case. Returns @{ Path; Downloaded }; throws an 'Unreachable'
-# problem when the download fails and a 'Refused' one when a check fails.
+# as after a declined update, is checked instead of downloaded. The staging folder goes in any case, and so do those older than a day that earlier runs left.
+# Returns @{ Path; Downloaded }; throws an 'Unreachable' problem when the download fails and a 'Refused' one when a check fails.
 function Save-LauncherRelease {
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -566,7 +581,20 @@ function Save-LauncherRelease {
         }
         return @{ Path = $target; Downloaded = $false }
     }
-    $staging = [IO.Path]::Combine($root, 'staging', ('{0}-{1}' -f $tag, [guid]::NewGuid().ToString('N').Substring(0, 8)))
+    # A run that was stopped, or whose window was closed, leaves its staging folder. Those older than a day go, so that a run in another window keeps its own.
+    $stagingRoot = [IO.Path]::Combine($root, 'staging')
+    if ([IO.Directory]::Exists($stagingRoot)) {
+        foreach ($old in (New-Object IO.DirectoryInfo -ArgumentList $stagingRoot).GetDirectories()) {
+            if (($old.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $old.Name -cnotmatch '\Av(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-[0-9a-f]{8}\z' -or
+                $old.LastWriteTimeUtc -gt [DateTime]::UtcNow.AddDays(-1)) { continue }
+            try {
+                [IO.Directory]::Delete($old.FullName, $true)
+            } catch {
+                Write-Warning "Could not delete the old staging folder $($old.FullName): $($_.Exception.Message)"
+            }
+        }
+    }
+    $staging = [IO.Path]::Combine($stagingRoot, ('{0}-{1}' -f $tag, [guid]::NewGuid().ToString('N').Substring(0, 8)))
     $null = [IO.Directory]::CreateDirectory($staging)
     try {
         $zip = [IO.Path]::Combine($staging, $name)

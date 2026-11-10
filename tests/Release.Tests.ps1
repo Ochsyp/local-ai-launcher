@@ -575,6 +575,18 @@ Describe 'New-ReleaseZip and Assert-ReleaseZip' {
             Message = '*local-ai-launcher-1.2.3/../evil.txt is no plain path inside local-ai-launcher-1.2.3/.*' }
         @{ Case = 'a second entry of one name'; Name = 'LICENSE'; Text = "MIT License`n"; Again = $true
             Message = '*The zip holds local-ai-launcher-1.2.3/LICENSE twice, or in two spellings that differ only in case.*' }
+        @{ Case = 'a device name'; Name = 'docs/aux.md'; Text = "x`n"; Again = $false
+            Message = '*local-ai-launcher-1.2.3/docs/aux.md holds a name that Windows changes or refuses: a device name such as NUL*' }
+        @{ Case = 'a name that ends in a dot'; Name = 'notes.'; Text = "x`n"; Again = $false
+            Message = '*local-ai-launcher-1.2.3/notes. holds a name that Windows changes or refuses*' }
+        @{ Case = 'a folder name that ends in a space'; Name = 'docs /a.md'; Text = "x`n"; Again = $false
+            Message = '*local-ai-launcher-1.2.3/docs /a.md holds a name that Windows changes or refuses*' }
+        @{ Case = 'a colon'; Name = 'src/a:b.txt'; Text = "x`n"; Again = $false
+            Message = '*local-ai-launcher-1.2.3/src/a:b.txt holds a name that Windows changes or refuses*' }
+        @{ Case = 'a file named as a folder entry is in another case'; Name = 'Config'; Text = "x`n"; Again = $false
+            Message = '*The zip holds local-ai-launcher-1.2.3/Config twice, or in two spellings that differ only in case.*' }
+        @{ Case = 'a folder that a file has the name of in another case'; Name = 'license/x.txt'; Text = "x`n"; Again = $false
+            Message = '*The zip holds local-ai-launcher-1.2.3/LICENSE both as a file and as a folder.*' }
     ) {
         $edited = Edit-TestZip -Source $build.Path -Change { param($zip) Write-TestZipEntry -Zip $zip -Name ($prefix + $Name) -Text $Text -Again:$Again }
         { Assert-ReleaseZip -Path $edited -Version '1.2.3' -Commit $commit } | Should -Throw -ExpectedMessage $Message
@@ -605,6 +617,36 @@ Describe 'New-ReleaseZip and Assert-ReleaseZip' {
     It 'refuses a zip with an entry outside its folder' {
         $edited = Edit-TestZip -Source $build.Path -Change { param($zip) Write-TestZipEntry -Zip $zip -Name 'evil.txt' -Text "x`n" }
         { Assert-ReleaseZip -Path $edited -Version '1.2.3' -Commit $commit } | Should -Throw -ExpectedMessage '*evil.txt lies outside the folder local-ai-launcher-1.2.3/.*'
+    }
+
+    It 'refuses a zip that states another size for an entry than the entry holds, as every installed launcher refuses it' {
+        $folder = Join-Path $TestDrive ('stated-' + [guid]::NewGuid().ToString('N'))
+        $null = New-Item -ItemType Directory -Path $folder
+        $copy = Join-Path $folder (Split-Path $build.Path -Leaf)
+        # The uncompressed size at offset 24 of LICENSE's central directory header, which starts 46 bytes before its name.
+        $bytes = [IO.File]::ReadAllBytes($build.Path)
+        $central = $latin1.GetString($bytes).LastIndexOf($prefix + 'LICENSE') - 46
+        $latin1.GetString($bytes, $central, 4) | Should -BeExactly ('PK' + [char]1 + [char]2)
+        [Array]::Copy([BitConverter]::GetBytes([uint32]10), 0, $bytes, $central + 24, 4)
+        [IO.File]::WriteAllBytes($copy, $bytes)
+        { Assert-ReleaseZip -Path $copy -Version '1.2.3' -Commit $commit } | Should -Throw -ExpectedMessage '*local-ai-launcher-1.2.3/LICENSE holds * bytes, but the zip states 10 for it.*'
+    }
+
+    It 'keeps the limits that every installed launcher applies to a release: 64 MB of zip, 10000 entries and 256 MB extracted' {
+        InModuleScope LocalAIRelease { $script:ReleaseLimits.Clone() } | ForEach-Object { $_.ZipBytes; $_.Entries; $_.ExtractedBytes } | Should -Be @(64MB, 10000, 256MB)
+    }
+
+    It 'refuses a zip beyond the limit of <Case> that every installed launcher applies' -ForEach @(
+        @{ Case = 'its bytes'; Key = 'ZipBytes'; Message = '*The zip has * bytes, more than the 10 bytes an installed launcher downloads.*' }
+        @{ Case = 'its entries'; Key = 'Entries'; Message = '*The zip holds * entries, more than the 10 an installed launcher extracts.*' }
+        @{ Case = 'its bytes once extracted'; Key = 'ExtractedBytes'; Message = '*The zip holds * bytes once extracted, more than the 10 bytes an installed launcher extracts.*' }
+    ) {
+        $saved = InModuleScope LocalAIRelease -Parameters @{ Key = $Key } { param($Key) $value = $script:ReleaseLimits[$Key]; $script:ReleaseLimits[$Key] = 10; $value }
+        try {
+            { Assert-ReleaseZip -Path $build.Path -Version '1.2.3' -Commit $commit } | Should -Throw -ExpectedMessage $Message
+        } finally {
+            InModuleScope LocalAIRelease -Parameters @{ Key = $Key; Value = $saved } { param($Key, $Value) $script:ReleaseLimits[$Key] = $Value }
+        }
     }
 }
 

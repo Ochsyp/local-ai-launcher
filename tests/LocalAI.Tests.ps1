@@ -13400,6 +13400,9 @@ Describe 'Launcher settings' {
         @{ Case = 'an owner of 40 characters'; Text = "@{ Launcher = @{ Repo = '$('a' * 40)/repo' } }"; Message = "*'Launcher.Repo'*must be <owner>/<repository>*" }
         @{ Case = "the repository '..'"; Text = "@{ Launcher = @{ Repo = 'owner/..' } }"; Message = "*'Launcher.Repo' = 'owner/..' must be*" }
         @{ Case = "the repository '.'"; Text = "@{ Launcher = @{ Repo = 'owner/.' } }"; Message = "*'Launcher.Repo' = 'owner/.' must be*" }
+        @{ Case = "the repository '...'"; Text = "@{ Launcher = @{ Repo = 'owner/...' } }"; Message = "*'Launcher.Repo' = 'owner/...' must be*" }
+        @{ Case = 'a repository name that ends in a dot, which .NET drops from the address'; Text = "@{ Launcher = @{ Repo = 'owner/repo.' } }"
+            Message = "*'Launcher.Repo' = 'owner/repo.' must be*" }
         @{ Case = 'a repository with a space'; Text = "@{ Launcher = @{ Repo = 'owner/my repo' } }"; Message = "*'Launcher.Repo'*must be <owner>/<repository>*" }
         @{ Case = 'no repository'; Text = "@{ Launcher = @{ Repo = '' } }"; Message = "*'Launcher.Repo' = '' must be*" }
         @{ Case = 'no hours between checks'; Text = '@{ Launcher = @{ CheckIntervalHours = 0 } }'; Message = "*'Launcher.CheckIntervalHours' = '0' must be a whole number from 1 to 168*" }
@@ -13482,6 +13485,10 @@ Describe 'Test-LauncherRelease' {
         @{ Case = 'a prerelease'; Fields = @{ prerelease = $true }; Message = 'The release v1.1.0 is a prerelease, which the launcher never installs.' }
         @{ Case = 'a release that is not immutable'; Fields = @{ immutable = $false }; Message = 'The release v1.1.0 is not immutable, so its tag and files could still change*Launcher.RequireImmutable*' }
         @{ Case = 'a release that does not say whether it is immutable'; Fields = @{ immutable = $null }; Message = 'The release v1.1.0 is not immutable*' }
+        @{ Case = 'an immutable that is the text true'; Fields = @{ immutable = 'true' }; Message = 'The release v1.1.0 is not immutable*' }
+        @{ Case = 'an immutable that is the number 1'; Fields = @{ immutable = 1 }; Message = 'The release v1.1.0 is not immutable*' }
+        @{ Case = 'an immutable that is a list holding false'; Fields = @{ immutable = @($false) }; Message = 'The release v1.1.0 is not immutable*' }
+        @{ Case = 'an immutable that is an empty list'; Fields = @{ immutable = @() }; Message = 'The release v1.1.0 is not immutable*' }
         @{ Case = 'a tag with a suffix'; Fields = @{ tag_name = 'v1.1.0-rc.1' }; Message = "The release is tagged 'v1.1.0-rc.1', but the launcher installs only a tag vX.Y.Z without a suffix." }
         @{ Case = 'a tag without the v'; Fields = @{ tag_name = '1.1.0' }; Message = "The release is tagged '1.1.0'*" }
         @{ Case = 'no tag'; Fields = @{ tag_name = $null }; Message = 'GitHub answered with no release.' }
@@ -13553,6 +13560,23 @@ Describe 'Get-LauncherRelease and Get-LauncherTagCommit' {
         { Invoke-ModuleFunction 'Get-LauncherRelease' @{ Repo = 'example-owner/launcher'; Tag = 'v1.0' } } | Should -Throw -ExpectedMessage "'v1.0' is no launcher version vX.Y.Z."
         { Invoke-ModuleFunction 'Get-LauncherRelease' @{ Repo = 'example-owner/launcher/x' } } | Should -Throw -ExpectedMessage "*is no GitHub repository <owner>/<name>."
         $seen.Count | Should -Be 1
+    }
+
+    It "refuses the repository '<Repo>' before it asks, as .NET drops the dots at the end of the name from the address" -ForEach @(
+        @{ Repo = 'example-owner/launcher.' }
+        @{ Repo = 'example-owner/...' }
+        @{ Repo = 'example-owner/..' }
+        @{ Repo = 'example-owner/.' }
+    ) {
+        { Invoke-ModuleFunction 'Get-LauncherRelease' @{ Repo = $Repo } } | Should -Throw -ExpectedMessage "'$Repo' is no GitHub repository <owner>/<name>."
+        $seen.Count | Should -Be 0
+    }
+
+    It 'takes a repository name that starts with a dot or holds one, as GitHub allows' {
+        $null = Invoke-ModuleFunction 'Get-LauncherRelease' @{ Repo = 'example-owner/.github' }
+        $null = Invoke-ModuleFunction 'Get-LauncherRelease' @{ Repo = 'example-owner/launcher.v2' }
+        @($seen | ForEach-Object { $_.Uri }) | Should -Be @('https://api.github.com/repos/example-owner/.github/releases/latest',
+            'https://api.github.com/repos/example-owner/launcher.v2/releases/latest')
     }
 
     It 'refuses the release of another tag than the one it asked for' {
@@ -13721,6 +13745,44 @@ Describe 'Expand-LauncherArchive' {
         { Invoke-ModuleFunction 'Expand-LauncherArchive' @{ Path = (Join-Path $work 'good.zip'); Destination = $target } } |
             Should -Throw -ExpectedMessage "$target exists already, but a zip is extracted into a new folder only."
     }
+
+    It 'refuses an entry that holds more bytes than the zip states for it, before it writes more than that' {
+        Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+        $zip = Join-Path $work 'lie.zip'
+        $archive = [IO.Compression.ZipFile]::Open($zip, [IO.Compression.ZipArchiveMode]::Create)
+        try {
+            $stream = $archive.CreateEntry('top/big.bin', [IO.Compression.CompressionLevel]::Optimal).Open()
+            try { $stream.Write((New-Object byte[] 1MB), 0, 1MB) } finally { $stream.Dispose() }
+        } finally {
+            $archive.Dispose()
+        }
+        # The uncompressed size becomes 10 bytes in place of 1 MB, at offset 24 of the central directory header and at offset 22 of the local header.
+        $bytes = [IO.File]::ReadAllBytes($zip)
+        $text = [Text.Encoding]::GetEncoding(28591).GetString($bytes)
+        foreach ($at in @(($text.LastIndexOf('PK' + [char]1 + [char]2) + 24), ($text.IndexOf('PK' + [char]3 + [char]4) + 22))) {
+            [Array]::Copy([BitConverter]::GetBytes([uint32]10), 0, $bytes, $at, 4)
+        }
+        [IO.File]::WriteAllBytes($zip, $bytes)
+        $problem = Get-TestExtractProblem -Path $zip -Destination $target
+        $problem.Message | Should -BeExactly 'The zip entry top/big.bin holds more bytes than its header says.'
+        $problem.Data['LauncherProblem'] | Should -Be 'Refused'
+        (Get-Item -LiteralPath (Join-Path $target 'top\big.bin')).Length | Should -BeLessOrEqual 10
+    }
+
+    It 'refuses a zip of more than 10000 entries before it writes anything' {
+        Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+        $zip = Join-Path $work 'many.zip'
+        $archive = [IO.Compression.ZipFile]::Open($zip, [IO.Compression.ZipArchiveMode]::Create)
+        try {
+            for ($i = 0; $i -le 10000; $i++) { $null = $archive.CreateEntry("top/$i.txt") }
+        } finally {
+            $archive.Dispose()
+        }
+        $problem = Get-TestExtractProblem -Path $zip -Destination $target
+        $problem.Message | Should -BeExactly 'The zip holds 10001 entries, more than the 10000 a release may hold.'
+        $problem.Data['LauncherProblem'] | Should -Be 'Refused'
+        Test-Path -LiteralPath $target | Should -BeFalse
+    }
 }
 
 Describe 'Test-LauncherFolder' {
@@ -13845,6 +13907,20 @@ Describe 'Save-LauncherRelease' {
         @($unblocked | Where-Object { -not $_.StartsWith($staging + '\') }) | Should -BeNullOrEmpty
         @(Get-ChildItem -LiteralPath $staging -Force) | Should -BeNullOrEmpty
         @(Get-ChildItem -LiteralPath $install.Versions | ForEach-Object { $_.Name } | Sort-Object) | Should -Be @('v1.0.0', 'v1.1.0')
+    }
+
+    It 'deletes the staging folders older than a day that earlier runs left, and keeps a newer one and any other folder' {
+        $old = Join-Path $staging 'v1.1.0-0badf00d'
+        $null = New-Item -ItemType Directory -Path (Join-Path $old 'tree')
+        [IO.File]::WriteAllText((Join-Path $old 'local-ai-launcher-1.1.0.zip'), 'part of a download')
+        (Get-Item -LiteralPath $old).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-2)
+        $recent = Join-Path $staging 'v1.1.0-12345678'
+        $null = New-Item -ItemType Directory -Path $recent
+        $other = Join-Path $staging 'notes'
+        $null = New-Item -ItemType Directory -Path $other
+        (Get-Item -LiteralPath $other).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-2)
+        (Invoke-TestStaging).Path | Should -Be $target
+        @(Get-ChildItem -LiteralPath $staging -Force | ForEach-Object { $_.Name } | Sort-Object) | Should -Be @('notes', 'v1.1.0-12345678')
     }
 
     It 'refuses a download whose SHA-256 is not the digest GitHub lists, and keeps nothing of it' {
@@ -14060,6 +14136,20 @@ Describe 'Install-LocalAILauncher and the shim' {
             return @{ Code = $LASTEXITCODE; Lines = $lines }
         }
 
+        # Run the command line $Line in cmd.exe with the working folder $Folder and $PathFirst first on PATH, and return @{ Code; Lines }.
+        function Invoke-TestCmdIn([string]$Folder, [string]$Line, [string]$PathFirst) {
+            $start = New-Object System.Diagnostics.ProcessStartInfo -ArgumentList (Join-Path $env:SystemRoot 'System32\cmd.exe')
+            $start.Arguments = '/d /s /c "' + $Line + '"'
+            $start.WorkingDirectory = $Folder
+            $start.UseShellExecute = $false
+            $start.RedirectStandardOutput = $true
+            $start.EnvironmentVariables['PATH'] = "$PathFirst;$env:PATH"
+            $process = [System.Diagnostics.Process]::Start($start)
+            $text = $process.StandardOutput.ReadToEnd()
+            $process.WaitForExit()
+            return @{ Code = $process.ExitCode; Lines = @($text -split "`r`n" | Where-Object { $_ }) }
+        }
+
         # Replace local-ai.cmd of the version $Tag in $Versions with a stand-in that prints its version and the arguments it got, and exits with
         # LOCALAI_TEST_CODE.
         function Write-TestVersionCmd([string]$Versions, [string]$Tag) {
@@ -14074,12 +14164,16 @@ Describe 'Install-LocalAILauncher and the shim' {
         $current = Join-Path $install.Root 'current'
         $savedCode = $env:LOCALAI_TEST_CODE
         $env:LOCALAI_TEST_CODE = '7'
+        # The shim runs only from %LOCALAPPDATA%\Programs\local-ai-launcher.
+        $savedLocalAppData = $env:LOCALAPPDATA
+        $env:LOCALAPPDATA = $install.LocalAppData
         # Arguments with spaces, quotes, an exclamation mark, an ampersand inside quotes and a percent sign.
         $arguments = 'status "a b" "c ""d"" e" !bang! "x&y" 50%% -Json'
     }
 
     AfterEach {
         $env:LOCALAI_TEST_CODE = $savedCode
+        $env:LOCALAPPDATA = $savedLocalAppData
     }
 
     It 'is exported, writes the shim with CRLF and no label or call, and points current at the tag' {
@@ -14149,6 +14243,55 @@ Describe 'Install-LocalAILauncher and the shim' {
         $run = Invoke-TestCmd (Write-TestFile ("shim-$([guid]::NewGuid().ToString('N')).cmd") "@`"$shim`" status`r`n")
         $run.Code | Should -Be 1
         $run.Lines | Should -Be @($Message)
+    }
+
+    It 'refuses <Call> from <Where>, where cmd.exe expands %~dp0 to that folder, and runs nothing from there' -ForEach @(
+        @{ Call = '"local-ai" status'; Where = 'another folder'; Make = { Join-Path $TestDrive ([guid]::NewGuid().ToString('N')) } }
+        @{ Call = '"local-ai.cmd" status'; Where = 'another folder'; Make = { Join-Path $TestDrive ([guid]::NewGuid().ToString('N')) } }
+        @{ Call = '"local-ai" status'; Where = 'the folder that LOCALAPPDATA and Programs\local-ai-launcher name without a backslash between them'
+            Make = { "$($install.LocalAppData)Programs\local-ai-launcher" } }
+    ) {
+        $null = Install-LocalAILauncher -Root $install.Root -Tag 'v1.0.0'
+        Write-TestVersionCmd -Versions $install.Versions -Tag 'v1.0.0'
+        # A folder laid out like the install folder, whose version is no release.
+        $planted = & $Make
+        $null = New-Item -ItemType Directory -Path (Join-Path $planted 'versions\v6.6.6')
+        [IO.File]::WriteAllText((Join-Path $planted 'current'), "v6.6.6`r`n")
+        [IO.File]::WriteAllText((Join-Path $planted 'versions\v6.6.6\local-ai.cmd'), "@echo off`r`necho PLANTED`r`nexit /b 9`r`n")
+        $quoted = Invoke-TestCmdIn -Folder $planted -Line $Call -PathFirst $install.Root
+        $quoted.Code | Should -Be 1
+        $quoted.Lines | Should -Be @('This local-ai.cmd runs only from %LOCALAPPDATA%\Programs\local-ai-launcher; run it by that path, or as local-ai without quotes.')
+        $plain = Invoke-TestCmdIn -Folder $planted -Line 'local-ai status' -PathFirst $install.Root
+        $plain.Code | Should -Be 7
+        $plain.Lines[0] | Should -BeExactly 'VERSION v1.0.0'
+    }
+
+    It 'runs from the install folder when LOCALAPPDATA is spelled <Case>' -ForEach @(
+        @{ Case = 'with a backslash at its end'; Make = { "$($install.LocalAppData)\" } }
+        @{ Case = 'with two backslashes at its end'; Make = { "$($install.LocalAppData)\\" } }
+        @{ Case = 'with a dot segment at its end'; Make = { "$($install.LocalAppData)\." } }
+        @{ Case = 'in capitals'; Make = { $install.LocalAppData.ToUpperInvariant() } }
+    ) {
+        $null = Install-LocalAILauncher -Root $install.Root -Tag 'v1.0.0'
+        Write-TestVersionCmd -Versions $install.Versions -Tag 'v1.0.0'
+        $viaShim = Write-TestFile ("shim-$([guid]::NewGuid().ToString('N')).cmd") "@`"$shim`" status`r`n"
+        $env:LOCALAPPDATA = & $Make
+        $run = Invoke-TestCmd $viaShim
+        $run.Code | Should -Be 7
+        $run.Lines[0] | Should -BeExactly 'VERSION v1.0.0'
+    }
+
+    It 'refuses to run, even by its full path, when LOCALAPPDATA <Case>' -ForEach @(
+        @{ Case = 'names another folder'; Make = { Join-Path $TestDrive 'another-LocalAppData' } }
+        @{ Case = 'is not set'; Make = { $null } }
+    ) {
+        $null = Install-LocalAILauncher -Root $install.Root -Tag 'v1.0.0'
+        Write-TestVersionCmd -Versions $install.Versions -Tag 'v1.0.0'
+        $viaShim = Write-TestFile ("shim-$([guid]::NewGuid().ToString('N')).cmd") "@`"$shim`" status`r`n"
+        $env:LOCALAPPDATA = & $Make
+        $run = Invoke-TestCmd $viaShim
+        $run.Code | Should -Be 1
+        $run.Lines | Should -Be @('This local-ai.cmd runs only from %LOCALAPPDATA%\Programs\local-ai-launcher; run it by that path, or as local-ai without quotes.')
     }
 }
 
@@ -14525,7 +14668,7 @@ Describe 'Update-LocalAI with -ActivateLauncher' {
         $run.Code | Should -Be @(0)
         $run.Printed | Should -BeLike "*Update plan:`n  Launcher: v1.0.0 -> v1.1.0 ($($settings.Launcher.Repo), $digest)`n  Model: weights a -> b*"
         $run.Printed | Should -BeLike '*The launcher is v1.1.0 now; the parts come next.*'
-        @($calls | Where-Object { $_ -notlike 'wait' -and $_ -ne 'start' }) | Should -Be @('ask Update these now? at v1.0.0', 'stop at v1.1.0', 'model at v1.1.0', 'stop at v1.1.0')
+        @($calls | Where-Object { $_ -notlike 'wait' -and $_ -ne 'start' }) | Should -Be @('ask Update these now? at v1.0.0', 'stop at v1.0.0', 'model at v1.1.0', 'stop at v1.1.0')
         [IO.File]::ReadAllText($currentFile) | Should -BeExactly "v1.1.0`r`n"
         $launcher = (Read-LocalAIState -Path $paths.State).Launcher
         $launcher.Version | Should -BeExactly 'v1.1.0'
@@ -14607,6 +14750,36 @@ Describe 'Update-LocalAI with -ActivateLauncher' {
         $run.Printed | Should -BeLike '*Nothing was changed, so the parts above still differ from their pins. The launcher stays at v1.1.0.*'
         [IO.File]::ReadAllText($currentFile) | Should -BeExactly "v1.1.0`r`n"
         (Read-LocalAIState -Path $paths.State).Launcher.ContainsKey('Version') | Should -BeFalse
+    }
+
+    It 'keeps current and state.json as they were when going back stops at <Case>, before any part changed' -ForEach @(
+        @{ Case = 'the stop'; Setup = { Mock Stop-LocalAI -ModuleName LocalAI -MockWith { 1 } } }
+        @{ Case = 'a busy program'; Setup = {
+                $world.Plan.Components = @(@{ Name = 'Files'; Display = 'File tools'; Changes = @('mcpo a -> b'); Problem = $null; Note = $null })
+                Mock Get-BusyProcess -ModuleName LocalAI -MockWith { [pscustomobject]@{ Name = 'mcpo'; Id = 77; Path = 'C:\uv\tools\mcpo\Scripts\mcpo.exe' } }
+            }
+        }
+    ) {
+        . $Setup
+        [IO.File]::WriteAllText($currentFile, "v1.1.0`r`n")
+        $context.RepoRoot = Join-Path $install.Versions 'v1.0.0'
+        $context.ActivateLauncher = 'v1.0.0'
+        $run = Invoke-UpdateVerb -Context $context
+        $run.Code | Should -Be @(1)
+        $run.Printed | Should -BeLike '*Update changed nothing*'
+        $run.Printed | Should -Not -BeLike '*The launcher is v1.0.0 now*'
+        [IO.File]::ReadAllText($currentFile) | Should -BeExactly "v1.1.0`r`n"
+        (Read-LocalAIState -Path $paths.State).Launcher.ContainsKey('Version') | Should -BeFalse
+        Should -Invoke Install-ChatModel -ModuleName LocalAI -Times 0 -Exactly
+    }
+
+    It 'starts again what ran before, and passes the error on, when current cannot be written after the stop' {
+        Mock Get-LocalAIRunningService -ModuleName LocalAI -MockWith { 'OpenWebUI' }
+        Mock Enable-LauncherVersion -ModuleName LocalAI -MockWith { throw 'Access to the path current is denied.' }
+        { Update-LocalAI -Context $context 6>$null } | Should -Throw -ExpectedMessage 'Access to the path current is denied.'
+        Should -Invoke Start-LocalAI -ModuleName LocalAI -Times 1 -Exactly
+        Should -Invoke Install-ChatModel -ModuleName LocalAI -Times 0 -Exactly
+        [IO.File]::ReadAllText($currentFile) | Should -BeExactly "v1.0.0`r`n"
     }
 
     It 'refuses, changing nothing, when this run is <Case>' -ForEach @(
@@ -14794,6 +14967,15 @@ Describe 'Enable-LauncherVersion' {
         Remove-Item -LiteralPath (Join-Path $install.Root 'current')
         ($null -eq (Invoke-ModuleFunction 'Enable-LauncherVersion' @{ InstallRoot = $install.Root; Tag = 'v1.1.0'; StatePath = $state })) | Should -BeTrue
         (Read-LocalAIState -Path $state).Launcher.ContainsKey('Previous') | Should -BeFalse
+    }
+
+    It 'points current back, and passes the error on, when state.json cannot be written' {
+        # Write-LocalAIState's own -State would hide $state in the filter.
+        $statePath = $state
+        Mock Write-LocalAIState -ModuleName LocalAI -ParameterFilter { $Path -eq $statePath } -MockWith { throw 'There is not enough space on the disk.' }
+        { Invoke-ModuleFunction 'Enable-LauncherVersion' @{ InstallRoot = $install.Root; Tag = 'v1.1.0'; StatePath = $state } } |
+            Should -Throw -ExpectedMessage 'There is not enough space on the disk.'
+        [IO.File]::ReadAllText((Join-Path $install.Root 'current')) | Should -BeExactly "v1.0.0`r`n"
     }
 }
 
@@ -15040,8 +15222,10 @@ Describe 'New-LauncherCleanupCommand and Start-LauncherCleanup' {
         $script | Should -BeLike '*AddMinutes(15)*WaitForExit*'
         # Square brackets would make a wildcard pattern, so the type names are left out. A current written after uninstall, as install.ps1 writes it when
         # it sets the folder up again, keeps the folder.
-        $script | Should -BeLike ("*ReparsePoint*Combine(`$root, 'current')*Combine(`$root, 'versions')*::GetLastWriteTimeUtc(*Combine(`$root, 'current')).Ticks -ne " +
-            "`$written*it was set up again after uninstall.*exit 0*::Move(`$root, `$aside)*::Delete(`$aside, `$true)*")
+        $script | Should -BeLike ("*ReparsePoint*Combine(`$root, 'current')*Combine(`$root, 'versions')*while (`$true)*::GetLastWriteTimeUtc(*Combine(`$root, " +
+            "'current')).Ticks -ne `$written*it was set up again after uninstall.*exit 0*::Move(`$root, `$aside)*::Delete(`$aside, `$true)*")
+        # Once the folder was moved aside, only that copy goes, and the log says so when the folder was set up again meanwhile.
+        $script | Should -BeLike '*::Delete($aside, $true)*::Exists($root)*was set up again meanwhile and stays.*Deleted $root.*'
         $tokens = $null
         $errors = $null
         $null = [System.Management.Automation.Language.Parser]::ParseInput($script, [ref]$tokens, [ref]$errors)
@@ -15064,6 +15248,34 @@ Describe 'New-LauncherCleanupCommand and Start-LauncherCleanup' {
         $strings = @($parsed.FindAll({ param($node) $node -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true) | ForEach-Object { $_.Value })
         $strings | Should -Contain $quoted
         $strings | Should -Contain $quotedLog
+    }
+
+    It 'keeps the folder when install.ps1 sets it up again while a window still works in it, so that the script retries the move' {
+        $currentFile = Join-Path $install.Root 'current'
+        $runLog = Join-Path $TestDrive 'held\local-ai-uninstall-cleanup.log'
+        $null = New-Item -ItemType Directory -Path (Split-Path $runLog -Parent)
+        $built = Invoke-ModuleFunction 'New-LauncherCleanupCommand' @{ InstallRoot = $install.Root; LogPath = $runLog; TempPath = $TestDrive
+            CurrentTicks = [IO.File]::GetLastWriteTimeUtc($currentFile).Ticks }
+        # A process whose working folder is the install folder keeps it from being moved, as a window that ran uninstall there does.
+        $holder = Start-Process -FilePath $built.FilePath -ArgumentList '-NoLogo -NoProfile -NonInteractive -Command Start-Sleep -Seconds 20' `
+            -WorkingDirectory $install.Root -WindowStyle Hidden -PassThru
+        $cleanup = $null
+        try {
+            $cleanup = Start-Process -FilePath $built.FilePath -ArgumentList $built.ArgumentList -WorkingDirectory $built.WorkingDirectory -WindowStyle Hidden -PassThru
+            # Read now, so the exit code stays readable once the process has exited.
+            $null = $cleanup.Handle
+            Start-Sleep -Seconds 2
+            # As install.ps1 writes current when it sets the folder up again.
+            [IO.File]::WriteAllText($currentFile, "v1.0.0`r`n")
+            [IO.File]::SetLastWriteTimeUtc($currentFile, [DateTime]::UtcNow.AddMinutes(1))
+            $cleanup.WaitForExit(40000) | Should -BeTrue
+            $cleanup.ExitCode | Should -Be 0
+        } finally {
+            if (-not $holder.HasExited) { $holder.Kill() }
+            if ($cleanup -and -not $cleanup.HasExited) { $cleanup.Kill() }
+        }
+        Test-Path -LiteralPath $currentFile | Should -BeTrue
+        [IO.File]::ReadAllText($runLog) | Should -BeLike "*Did not delete $($install.Root), as it was set up again after uninstall.*"
     }
 
     It "refuses any folder but the launcher's install folder, such as its data folder" {
@@ -15272,6 +15484,20 @@ Describe 'install.ps1' {
         $scoped | Should -BeNullOrEmpty
     }
 
+    It 'runs through the shim, and names as the next step, only verbs that the release contract in CONTRIBUTING.md keeps' {
+        $shimCalls = @($installAst.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and
+                    $node.CommandElements[0] -is [Management.Automation.Language.VariableExpressionAst] -and $node.CommandElements[0].VariablePath.UserPath -ceq 'shim' }, $true))
+        $verbs = @($shimCalls | ForEach-Object { $_.CommandElements[1].Value })
+        $verbs | Should -Be @('shortcuts')
+        $known = InModuleScope LocalAI { Get-LocalAIVerb }
+        $contributing = [IO.File]::ReadAllText((Join-Path (Split-Path $PSScriptRoot -Parent) 'CONTRIBUTING.md'))
+        $contract = $contributing.Substring($contributing.IndexOf('### Release contract'))
+        foreach ($verb in @($verbs) + @('install')) {
+            $known.ContainsKey($verb) | Should -BeTrue -Because "install.ps1 relies on the verb $verb"
+            $contract.Contains("``$verb``") | Should -BeTrue -Because "the release contract names the verb $verb"
+        }
+    }
+
     It 'takes -Tag, -AddToPath and -Shortcuts, and installs the releases of the repository that config\defaults.psd1 names' {
         $block = $installAst.EndBlock.Statements[0].PipelineElements[0].CommandElements[0].ScriptBlock
         @($block.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) | Should -Be @('Tag', 'AddToPath', 'Shortcuts')
@@ -15335,6 +15561,12 @@ Describe 'install.ps1' {
                 param([hashtable]$Arguments = @{})
                 Install-LauncherFromRelease @Arguments -LocalAppData $local -ShellLocalAppData $local 6>&1 | ForEach-Object { "$_" }
             }
+            # The shim runs only from %LOCALAPPDATA%\Programs\local-ai-launcher, so the tests that run it set LOCALAPPDATA to $local.
+            $savedLocalAppData = $env:LOCALAPPDATA
+        }
+
+        AfterEach {
+            $env:LOCALAPPDATA = $savedLocalAppData
         }
 
         It 'installs the latest release: checks and stages it, has that version set up the shim and current, and names the next step' {
@@ -15455,12 +15687,14 @@ Describe 'install.ps1' {
         }
 
         It '-Shortcuts runs local-ai shortcuts through the shim it set up' {
+            $env:LOCALAPPDATA = $local
             $releaseFiles = @{ 'local-ai.cmd' = "@echo off`r`necho %*> `"%~dp0arguments.txt`"`r`nexit /b 0`r`n" }
             $null = & $install @{ Shortcuts = $true }
             [IO.File]::ReadAllText((Join-Path $dest 'versions\v1.1.0\arguments.txt')).Trim() | Should -BeExactly 'shortcuts'
         }
 
         It '-Shortcuts only warns when local-ai shortcuts ends with warnings' {
+            $env:LOCALAPPDATA = $local
             $releaseFiles = @{ 'local-ai.cmd' = "@echo off`r`nexit /b 2`r`n" }
             $printed = @(& $install @{ Shortcuts = $true } 3>&1 | ForEach-Object { "$_" })
             $printed | Should -Contain "'local-ai shortcuts' finished with warnings, which it printed above."
@@ -15468,6 +15702,7 @@ Describe 'install.ps1' {
         }
 
         It '-Shortcuts fails, saying that the launcher is installed, when local-ai shortcuts fails' {
+            $env:LOCALAPPDATA = $local
             $releaseFiles = @{ 'local-ai.cmd' = "@echo off`r`nexit /b 1`r`n" }
             { & $install @{ Shortcuts = $true } } | Should -Throw -ExpectedMessage "The launcher v1.1.0 is installed in $dest, but 'local-ai shortcuts' failed with exit code 1;*"
             [IO.File]::ReadAllText((Join-Path $dest 'current')) | Should -BeExactly "v1.1.0`r`n"

@@ -141,7 +141,9 @@ control.
   (`Launcher.RequireImmutable`): once it is published, its tag and files cannot change.
 - The zip's SHA-256 must equal the digest that GitHub lists for it. The zip must hold one folder
   whose files match its manifest `local-ai-release.json`, with no file more, and the manifest
-  must name the commit that the tag names. No entry of the zip may land outside that folder.
+  must name the commit that the tag names. No entry of the zip may land outside that folder. The
+  zip may hold at most 10000 entries and 256 MB once extracted, and an entry that holds more
+  bytes than the zip states for it is refused before more than that is written.
 - Nothing is signed with Authenticode, and the launcher does not check the build provenance
   attestation; `gh attestation verify` checks it by hand. So the checks catch a damaged download
   or a changed release, but not someone who can publish releases in that repository: whoever
@@ -152,6 +154,13 @@ control.
 - An installed version never changes; `status` checks its files against its manifest.
   `local-ai.cmd` runs it with the execution policy `RemoteSigned`, after the check unblocked its
   files.
+- The `local-ai.cmd` in `%LOCALAPPDATA%\Programs\local-ai-launcher` runs only from that folder.
+  When `cmd.exe` finds it through the Path under a quoted name such as `"local-ai"`, it names the
+  working folder as the file's own; the file then refuses, so it never runs a version that
+  another folder holds. That does not cover a `local-ai.cmd` in the working folder itself:
+  unless `NoDefaultCurrentDirectoryInExePath` is set, `cmd.exe` runs that one before the one on
+  the Path, with or without quotes. In a folder you do not trust, run `local-ai` from
+  PowerShell, which runs no command from the working folder, or run it by its full path.
 - `install.ps1` checks a release with a copy of the same functions. Its one-liner,
   `irm ... | iex`, runs the script before anyone can check it, so it trusts GitHub and HTTPS
   alone. Downloading `install.ps1`, checking it against `SHA256SUMS` or with

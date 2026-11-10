@@ -81,8 +81,11 @@ uv then installs Open WebUI and mcpo as uv tools, and the Pythons they need.
 
 `local-ai` works in any window once the launcher's folder is on your Path, as `install.ps1
 -AddToPath` sets up, and in `cmd.exe` in the launcher's folder. Elsewhere run `local-ai.cmd` by
-its path. The launcher's own messages write commands as `local-ai`. `local-ai.cmd` without a
-verb runs `start`.
+its path. Write `local-ai` without quotes: found through the Path as `"local-ai"`, the release
+install's `local-ai.cmd` refuses to run, as `cmd.exe` then names it the wrong folder. In
+`cmd.exe`, a `local-ai.cmd` in the working folder runs before the one on the Path; PowerShell
+runs none from there. The launcher's own messages write commands as `local-ai`. `local-ai.cmd`
+without a verb runs `start`.
 
 `local-ai.cmd` sets the execution policy `RemoteSigned` for its own run only, so the PC's
 policy stays as it is. The window pauses after `status` and after any exit code other than 0,
@@ -476,9 +479,11 @@ lists and every file against the manifest, which must name the commit of the tag
 release into `versions\vX.Y.Z`. That needs no question, and changes nothing that runs. Then it
 hands over to the new version, whose `update` shows the plan and asks once. The plan starts with
 `Launcher: vOLD -> vNEW (<repository>, sha256:<digest>)`, then lists the parts against the new
-version's pins. On yes it points `current` at the new version before it changes any part, then
-updates the parts. On no nothing changes, the new version waits in `versions` for the next run,
-and `update` returns 2.
+version's pins. On yes it stops what runs, points `current` at the new version, then updates the
+parts. When only the launcher changes, it points `current` at once, and what runs keeps running
+until the next start. On no nothing changes, the new version waits in `versions` for the next
+run, and `update` returns 2. When not everything can be stopped, nothing changes either, and
+`update` returns 1.
 
 - `update` says when the launcher is at the latest release, and never installs an older one.
 - When the release or its zip fails a check, `update` stops with `Update changed nothing` and
@@ -490,13 +495,15 @@ and `update` returns 2.
   it or the one that runs, so the default of 2 keeps three.
 
 `local-ai update -Rollback` goes back to the version before, which `status` names, as long as
-that version is still in `versions` and matches its manifest. It needs no network. It shows the
-plan, warns, and asks you to type `rollback`. Then it runs that version's `update`, whose plan
-starts with `Launcher: vNEW -> vOLD` and asks once. Only its yes points `current` back and brings
-the parts back to that version's pins. On no, or when that version does not accept your
-`settings.psd1`, the launcher stays as it is, and `update -Rollback` can run again. After a
-rollback, Open WebUI may meet data that the newer version has already migrated; the backups in
-`%LOCALAPPDATA%\local-ai\backups` are the fallback.
+that version is still in `versions` and matches its manifest. It downloads no launcher. It shows
+the plan, warns, and asks you to type `rollback`. Then it runs that version's `update`, which
+checks the parts as every `update` does: Ollama must answer, and a ComfyUI that goes back to
+another tag needs the network for that check. Its plan starts with `Launcher: vNEW -> vOLD` and
+asks once. Only its yes points `current` back and brings the parts back to that version's pins.
+On no, when that version does not accept your `settings.psd1`, when a part cannot be checked, or
+when not everything can be stopped, the launcher stays as it is, and `update -Rollback` can run
+again. After a rollback, Open WebUI may meet data that the newer version has already migrated;
+the backups in `%LOCALAPPDATA%\local-ai\backups` are the fallback.
 
 `start` checks for a newer release too, at most once per `Launcher.CheckIntervalHours` (24) and
 for at most 5 s. When one is out, it prints one line that names `local-ai update`. It installs

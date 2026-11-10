@@ -216,9 +216,10 @@ function Test-LocalAISetting {
         # pattern such as HF_* or a %VAR% left unexpanded would match nothing.
         @{ Like = '*UI.InheritEnvironment'; Text = "must list variable names such as 'HTTPS_PROXY': letters, digits, '_', '.', '-' and parentheses"
             Test = { param($v) @($v | Where-Object { -not ($_ -is [string] -and $_ -cmatch '^[A-Za-z_][A-Za-z0-9_.()-]*\z') }).Count -eq 0 } }
-        # Part of the API address update asks; a GitHub owner has at most 39 characters, a repository at most 100.
+        # Part of the API address update asks; a GitHub owner has at most 39 characters, a repository at most 100. No name that ends in a dot, which .NET drops
+        # from the address, as Get-LauncherRelease checks too.
         @{ Like = 'Launcher.Repo'; Text = "must be <owner>/<repository> on GitHub, such as 'Ochsyp/local-ai-launcher'"
-            Test = { param($v) $v -is [string] -and $v -cmatch '\A[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}\z' -and @('.', '..') -notcontains $v.Split('/')[1] } }
+            Test = { param($v) $v -is [string] -and $v -cmatch '\A[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{0,99}[A-Za-z0-9_-]\z' } }
         @{ Like = 'Launcher.CheckIntervalHours'; Text = 'must be a whole number from 1 to 168'
             Test = { param($v) $v -is [int] -and $v -ge 1 -and $v -le 168 } }
         # At least the active version and the one update -Rollback goes back to.
@@ -7107,7 +7108,8 @@ function Write-LocalAIUpdatePlan {
 # superseded aliases while Ollama still answers, and leave the stack running only when it ran before. Ollama ends as update found it: the app its first wait
 # started, recorded as start records it, is quit again unless the stack runs, also after an early return or a throw. In the run another launcher version
 # handed over to (Context.ActivateLauncher, Get-LauncherActivation), the plan starts with the launcher's change, asked about with the parts, and a yes makes
-# this version active (Enable-LauncherVersion) before any part changes, without a stop when nothing else differs. Context.Warnings count as warnings.
+# this version active (Enable-LauncherVersion) once the stop and the check for busy programs passed, before any part changes, and without a stop when
+# nothing else differs. Context.Warnings count as warnings.
 # Returns 0; 2 when degraded or declined, or when that quit fails; 1 on a failure.
 function Update-LocalAI {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
@@ -7209,18 +7211,11 @@ function Update-LocalAI {
                 Write-Host "Nothing was changed, so the parts above still differ from their pins.$stays" -ForegroundColor Yellow
                 return 2
             }
-            # The launcher first, before any part changes, so that the parts follow the pins of the version that is active.
-            $nothing = 'Update changed nothing'
-            if ($activation) {
-                $null = Enable-LauncherVersion -InstallRoot $activation.InstallRoot -Tag $activation.To -StatePath $paths.State
-                Write-Host "The launcher is $($activation.To) now; the parts come next."
-                $nothing = "Update changed only the launcher, which is $($activation.To) now"
-            }
 
             $before = @(Get-LocalAIRunningService -Path $paths.State)
             # Ollama stays: the model step and the check need it.
             if ((Stop-LocalAI -Context $Context -KeepOllama) -ne 0) {
-                Write-Host ("$nothing, because not everything the launcher runs could be stopped; see above. Run 'local-ai stop', then " +
+                Write-Host ("Update changed nothing, because not everything the launcher runs could be stopped; see above. Run 'local-ai stop', then " +
                     'update again.') -ForegroundColor Red
                 return 1
             }
@@ -7240,10 +7235,25 @@ function Update-LocalAI {
             if ($folders.Count -gt 0) { $busy = @(Get-BusyProcess -Folder $folders.ToArray() -File $programs.ToArray()) }
             if ($busy.Count -gt 0) {
                 $what = @($busy | ForEach-Object { "$($_.Name) (PID $($_.Id), $($_.Path))" }) -join ', '
-                Write-Host ("${nothing}: $what still run from what it would replace, although 'local-ai stop' stopped what the launcher started; " +
+                Write-Host ("Update changed nothing: $what still run from what it would replace, although 'local-ai stop' stopped what the launcher started; " +
                     'another program may have started them. Close them, then run update again.') -ForegroundColor Red
                 if ($before.Count -gt 0) { $null = Start-LocalAI -Context $quiet }
                 return 1
+            }
+            # The launcher first, before any part changes, so that the parts follow the pins of the version that is active. Only once the stop and the
+            # check for busy programs passed, so that a refusal there leaves current as it was and update -Rollback can run again.
+            if ($activation) {
+                try {
+                    $null = Enable-LauncherVersion -InstallRoot $activation.InstallRoot -Tag $activation.To -StatePath $paths.State
+                } catch {
+                    $failed = $_
+                    # As when a program is busy: what ran before runs again, and the error stays this one.
+                    if ($before.Count -gt 0) {
+                        try { $null = Start-LocalAI -Context $quiet } catch { Write-Warning "Could not start the stack again: $($_.Exception.Message)" }
+                    }
+                    throw $failed
+                }
+                Write-Host "The launcher is $($activation.To) now; the parts come next."
             }
 
             $done = New-Object System.Collections.Generic.List[string]
@@ -8370,7 +8380,7 @@ function Test-LauncherRelease {
     if (-not (ConvertTo-LauncherVersion -Tag $tag)) { & $refuse "The release is tagged '$tag', but the launcher installs only a tag vX.Y.Z without a suffix." }
     if ($Release.draft -isnot [bool] -or $Release.draft) { & $refuse "The release $tag is a draft, which the launcher never installs." }
     if ($Release.prerelease -isnot [bool] -or $Release.prerelease) { & $refuse "The release $tag is a prerelease, which the launcher never installs." }
-    if ($RequireImmutable -and $Release.immutable -ne $true) {
+    if ($RequireImmutable -and ($Release.immutable -isnot [bool] -or -not $Release.immutable)) {
         & $refuse ("The release $tag is not immutable, so its tag and files could still change, and Launcher.RequireImmutable lets the launcher install " +
             'only immutable releases.')
     }
@@ -8403,7 +8413,8 @@ function Get-LauncherRelease {
         [bool]$RequireImmutable = $true,
         [string]$UserAgent = 'local-ai-launcher'
     )
-    if ($Repo -cnotmatch '\A[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}\z') { throw "'$Repo' is no GitHub repository <owner>/<name>." }
+    # No name that ends in a dot, which .NET drops from the address, so that it would ask about another repository.
+    if ($Repo -cnotmatch '\A[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{0,99}[A-Za-z0-9_-]\z') { throw "'$Repo' is no GitHub repository <owner>/<name>." }
     if ($Tag -and -not (ConvertTo-LauncherVersion -Tag $Tag)) { throw "'$Tag' is no launcher version vX.Y.Z." }
     $which = if ($Tag) { "tags/$Tag" } else { 'latest' }
     try {
@@ -8575,7 +8586,8 @@ function Test-LauncherFolder {
 
 # Extract the zip file $Path into the new folder $Destination after checking every entry: a plain relative path (Test-LauncherPathText; a folder entry ends in
 # '/'), no name twice in any case, no file where another entry needs a folder, and at most 10000 entries and 256 MB in all, so nothing lands outside it.
-# Throws a 'Refused' problem naming the first bad entry, or a file that is no zip, before it writes anything.
+# Throws a 'Refused' problem naming the first bad entry, or a file that is no zip, before it writes anything; and one for an entry that holds more bytes than
+# the zip states for it, before it writes more than that.
 function Expand-LauncherArchive {
     [CmdletBinding()]
     param(
@@ -8627,7 +8639,20 @@ function Expand-LauncherArchive {
             $source = $item.Entry.Open()
             try {
                 $file = New-Object IO.FileStream -ArgumentList $item.Full, ([IO.FileMode]::CreateNew), ([IO.FileAccess]::Write), ([IO.FileShare]::None)
-                try { $source.CopyTo($file) } finally { $file.Dispose() }
+                try {
+                    # No more than the size the zip states, which the total above counts and .NET does not check against what it inflates.
+                    $buffer = New-Object byte[] 81920
+                    $left = [long]$item.Entry.Length
+                    while ($true) {
+                        $read = $source.Read($buffer, 0, $buffer.Length)
+                        if ($read -le 0) { break }
+                        $left -= $read
+                        if ($left -lt 0) { & $refuse "The zip entry $($item.Relative) holds more bytes than its header says." }
+                        $file.Write($buffer, 0, $read)
+                    }
+                } finally {
+                    $file.Dispose()
+                }
             } finally {
                 $source.Dispose()
             }
@@ -8640,8 +8665,8 @@ function Expand-LauncherArchive {
 # Stage the release $Release (Get-LauncherRelease, with the Commit its tag names) in the install folder $InstallRoot as versions\<tag>: download its zip into
 # a new staging\<tag>-<random> folder, compare its SHA-256 with the digest, extract it (Expand-LauncherArchive), require exactly the folder
 # local-ai-launcher-X.Y.Z, matching its manifest (Test-LauncherFolder), unblock every file and rename that folder into place. A versions\<tag> that exists,
-# as after a declined update, is checked instead of downloaded. The staging folder goes in any case. Returns @{ Path; Downloaded }; throws an 'Unreachable'
-# problem when the download fails and a 'Refused' one when a check fails.
+# as after a declined update, is checked instead of downloaded. The staging folder goes in any case, and so do those older than a day that earlier runs left.
+# Returns @{ Path; Downloaded }; throws an 'Unreachable' problem when the download fails and a 'Refused' one when a check fails.
 function Save-LauncherRelease {
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -8668,7 +8693,20 @@ function Save-LauncherRelease {
         }
         return @{ Path = $target; Downloaded = $false }
     }
-    $staging = [IO.Path]::Combine($root, 'staging', ('{0}-{1}' -f $tag, [guid]::NewGuid().ToString('N').Substring(0, 8)))
+    # A run that was stopped, or whose window was closed, leaves its staging folder. Those older than a day go, so that a run in another window keeps its own.
+    $stagingRoot = [IO.Path]::Combine($root, 'staging')
+    if ([IO.Directory]::Exists($stagingRoot)) {
+        foreach ($old in (New-Object IO.DirectoryInfo -ArgumentList $stagingRoot).GetDirectories()) {
+            if (($old.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $old.Name -cnotmatch '\Av(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-[0-9a-f]{8}\z' -or
+                $old.LastWriteTimeUtc -gt [DateTime]::UtcNow.AddDays(-1)) { continue }
+            try {
+                [IO.Directory]::Delete($old.FullName, $true)
+            } catch {
+                Write-Warning "Could not delete the old staging folder $($old.FullName): $($_.Exception.Message)"
+            }
+        }
+    }
+    $staging = [IO.Path]::Combine($stagingRoot, ('{0}-{1}' -f $tag, [guid]::NewGuid().ToString('N').Substring(0, 8)))
     $null = [IO.Directory]::CreateDirectory($staging)
     try {
         $zip = [IO.Path]::Combine($staging, $name)
@@ -8917,17 +8955,24 @@ function Set-LauncherCurrent {
 
 # Return the text of the shim local-ai.cmd in the install folder, with CRLF line ends: it reads the tag in the file current beside it with set /p, checks that
 # it is a v with digits and dots and that versions\<tag>\local-ai.cmd exists, then runs that file with every argument and without call, so that its exit code
-# reaches the caller. No label, which cmd.exe misreads in a file with LF line ends, and delayed expansion only for the check, so a '!' in an argument stays. Pure.
+# reaches the caller. No label, which cmd.exe misreads in a file with LF line ends, and delayed expansion only for the check, so a '!' in an argument stays.
+# When cmd.exe found it through PATH under a quoted name such as "local-ai", %~dp0 is the working folder instead of its own, so it first refuses to run from
+# anywhere but %LOCALAPPDATA%\Programs\local-ai-launcher, which for's %~f spells in full as cmd.exe spells %~dp0, and when LOCALAPPDATA is not set. Pure.
 function Get-LauncherShimText {
     [CmdletBinding()]
     [OutputType([string])]
     param()
+    $refuse = '(echo This local-ai.cmd runs only from %%LOCALAPPDATA%%\Programs\local-ai-launcher; run it by that path, or as local-ai without quotes.& exit /b 1)'
     $lines = @(
         '@echo off'
         'rem Local AI launcher: runs local-ai.cmd of the version that the file current beside this one names, from versions, with every argument.'
         'rem install.ps1 writes this file once and nothing ever rewrites it, since cmd.exe reads a running batch file again after each command.'
         'rem Without call, so that local-ai.cmd takes over and its exit code reaches the caller. No label, which cmd.exe misreads in a file with LF line ends.'
         'setlocal DisableDelayedExpansion'
+        # Unset, the next line would name a folder on the current drive.
+        ('if not defined LOCALAPPDATA ' + $refuse)
+        'for %%i in ("%LOCALAPPDATA%\Programs\local-ai-launcher\.") do set "LOCALAI_HOME=%%~fi\"'
+        ('if /i not "%~dp0"=="%LOCALAI_HOME%" ' + $refuse)
         'set "LOCALAI_TAG="'
         'if exist "%~dp0current" set /p LOCALAI_TAG=<"%~dp0current"'
         'setlocal EnableDelayedExpansion'
@@ -9223,7 +9268,8 @@ function Get-LauncherActivation {
 
 # Make $Tag the active launcher version of the install folder $InstallRoot: write current (Set-LauncherCurrent), then record in state.json at $StatePath
 # Launcher.Version $Tag and Launcher.Previous, the version current named before, keeping Launcher.LastCheck. Reads state.json first, so a broken one stops it
-# before anything changes. Returns the version current named before.
+# before anything changes, and points current back when state.json cannot be written, so that it changes all or nothing. Returns the version current named
+# before.
 function Enable-LauncherVersion {
     [CmdletBinding()]
     [OutputType([string])]
@@ -9235,19 +9281,31 @@ function Enable-LauncherVersion {
     $state = Read-LocalAIState -Path $StatePath
     $before = Get-LauncherCurrent -InstallRoot $InstallRoot
     Set-LauncherCurrent -InstallRoot $InstallRoot -Tag $Tag
-    $record = if ($state['Launcher'] -is [hashtable]) { $state['Launcher'] } else { @{} }
-    $record['Version'] = $Tag
-    if ($before -and $before -cne $Tag) { $record['Previous'] = $before }
-    $state['Launcher'] = $record
-    Write-LocalAIState -Path $StatePath -State $state
+    try {
+        $record = if ($state['Launcher'] -is [hashtable]) { $state['Launcher'] } else { @{} }
+        $record['Version'] = $Tag
+        if ($before -and $before -cne $Tag) { $record['Previous'] = $before }
+        $state['Launcher'] = $record
+        Write-LocalAIState -Path $StatePath -State $state
+    } catch {
+        $failed = $_
+        if ($before -and $before -cne $Tag) {
+            try {
+                Set-LauncherCurrent -InstallRoot $InstallRoot -Tag $before
+            } catch {
+                Write-Warning "Could not point current back at $before`: $($_.Exception.Message)"
+            }
+        }
+        throw $failed
+    }
     return $before
 }
 
-# update -Rollback, which needs no network: go back to the launcher version state.json records as Launcher.Previous, when its folder in versions matches its
-# manifest. Warns that Open WebUI may meet data the newer version migrated, asks for the typed word rollback and hands over to its update (update
+# update -Rollback, which asks GitHub nothing itself: go back to the launcher version state.json records as Launcher.Previous, when its folder in versions
+# matches its manifest. Warns that Open WebUI may meet data the newer version migrated, asks for the typed word rollback and hands over to its update (update
 # -ActivateLauncher <tag>) while current still names this version. So that run's plan starts with 'Launcher: <this> -> <tag>', and only its yes, once its
-# settings loaded, points current back (Enable-LauncherVersion) and brings the parts back to its pins. Returns that run's exit code; 2 when declined; 1 when
-# this is no release install or there is no version to go back to.
+# settings loaded, the parts were checked and what runs was stopped, points current back (Enable-LauncherVersion) and brings the parts back to its pins.
+# Returns that run's exit code; 2 when declined; 1 when this is no release install or there is no version to go back to.
 function Invoke-LauncherRollback {
     [CmdletBinding()]
     [OutputType([int])]
@@ -9493,7 +9551,8 @@ function New-LauncherCleanupCommand {
     )
     $root = [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\')
     if ([IO.Path]::GetFileName($root) -cne 'local-ai-launcher') { throw "$root is no install folder of the launcher, so uninstall does not delete it." }
-    # A process whose PID and start time match is the one uninstall ran in; a PID used again since then is another process.
+    # A process whose PID and start time match is the one uninstall ran in; a PID used again since then is another process. The write time of current is
+    # checked before each try to move the folder aside, as a window still working in the folder can keep it for a while; once moved, only that copy goes.
     $template = @'
 $ErrorActionPreference = 'Stop'
 $root = @ROOT@
@@ -9527,16 +9586,22 @@ if (-not ([IO.File]::Exists([IO.Path]::Combine($root, 'current')) -and [IO.Direc
     Write-Note "Did not delete $root, as it does not hold current and versions as the launcher's install folder does."
     exit 1
 }
-if ([IO.File]::GetLastWriteTimeUtc([IO.Path]::Combine($root, 'current')).Ticks -ne $written) {
-    Write-Note "Did not delete $root, as it was set up again after uninstall."
-    exit 0
-}
 $aside = '{0}.local-ai-removing-{1:yyyyMMddHHmmss}' -f $root, (Get-Date)
 while ($true) {
     try {
-        if ([IO.Directory]::Exists($root)) { [IO.Directory]::Move($root, $aside) }
+        if (-not [IO.Directory]::Exists($aside) -and [IO.Directory]::Exists($root)) {
+            if ([IO.File]::GetLastWriteTimeUtc([IO.Path]::Combine($root, 'current')).Ticks -ne $written) {
+                Write-Note "Did not delete $root, as it was set up again after uninstall."
+                exit 0
+            }
+            [IO.Directory]::Move($root, $aside)
+        }
         [IO.Directory]::Delete($aside, $true)
-        Write-Note "Deleted $root."
+        if ([IO.Directory]::Exists($root)) {
+            Write-Note "Deleted $aside, where uninstall had moved $root. $root was set up again meanwhile and stays."
+        } else {
+            Write-Note "Deleted $root."
+        }
         exit 0
     } catch {
         if ([DateTime]::UtcNow -ge $deadline) {
