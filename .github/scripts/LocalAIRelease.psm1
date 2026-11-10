@@ -4,8 +4,9 @@
 #
 # Functions behind .github\workflows\release.yml and the version check in ci.yml: the rules for
 # VERSION and CHANGELOG.md, the release notes, the release zip with its manifest, the check of
-# that zip, and SHA256SUMS. CONTRIBUTING.md describes the release contract they keep, and
-# tests\Release.Tests.ps1 tests them. They run in Windows PowerShell 5.1 with git on PATH.
+# that zip, the asset install.ps1 taken from it, and SHA256SUMS. CONTRIBUTING.md describes the
+# release contract they keep, and tests\Release.Tests.ps1 tests them. They run in Windows
+# PowerShell 5.1 with git on PATH.
 # Every function takes its inputs as parameters, so importing the module runs nothing.
 
 # Errors stop the module's functions whatever preference the importing session has.
@@ -22,8 +23,13 @@ $script:DevPaths = @('.github/', '.githooks/', 'tests/', '.editorconfig', '.gita
 # The extensions .gitattributes gives CRLF and those it marks binary. Every other file of a release has LF line ends only.
 $script:CrlfExtensions = @('.ps1', '.psm1', '.psd1', '.cmd', '.bat')
 $script:BinaryExtensions = @('.ico', '.lnk', '.gguf', '.safetensors')
+# The bootstrap that installs a release, which every release also attaches on its own as the asset install.ps1.
+$script:InstallScriptPath = 'src/install.ps1'
 # Files every release holds, so an export-ignore line that reaches too far fails the check.
-$script:RequiredFiles = @('local-ai.cmd', 'src/local-ai.ps1', 'src/LocalAI.psm1', 'config/defaults.psd1', 'README.md', 'LICENSE')
+$script:RequiredFiles = @('local-ai.cmd', 'src/local-ai.ps1', 'src/LocalAI.psm1', $script:InstallScriptPath, 'config/defaults.psd1', 'README.md', 'LICENSE')
+# The limits every installed launcher and install.ps1 apply to a release, in Test-LauncherRelease and Expand-LauncherArchive of src\LocalAI.psm1: the bytes of
+# the zip, its entries, and the bytes of its files once extracted.
+$script:ReleaseLimits = @{ ZipBytes = 64MB; Entries = 10000; ExtractedBytes = 256MB }
 
 # Return $Path as a full path without a trailing '\', a relative one taken from the current location, which .NET calls do not follow in
 # Windows PowerShell 5.1. Touches nothing.
@@ -416,8 +422,8 @@ function ConvertTo-ReleaseManifest {
     return $builder.ToString()
 }
 
-# Return every entry of the zip file $Path, in its order, as @{ Name; Bytes }: Bytes holds the content, or $null for a folder entry,
-# whose name ends with '/'. Reads only.
+# Return every entry of the zip file $Path, in its order, as @{ Name; Bytes; Length }: Bytes holds the content, or $null for a folder
+# entry, whose name ends with '/', and Length the size the zip states for it. Reads only.
 function Read-ReleaseZip {
     [CmdletBinding()]
     [OutputType([object[]])]
@@ -444,7 +450,7 @@ function Read-ReleaseZip {
                     $memory.Dispose()
                 }
             }
-            $entries.Add(@{ Name = $entry.FullName; Bytes = $bytes })
+            $entries.Add(@{ Name = $entry.FullName; Bytes = $bytes; Length = [long]$entry.Length })
         }
     } finally {
         $zip.Dispose()
@@ -519,9 +525,11 @@ function New-ReleaseZip {
 }
 
 # Check the release zip $Path of $Version built from $Commit against the release contract, and throw listing every breach: its name;
-# every entry inside local-ai-launcher-$Version/, without '..', '\' or a second entry of one name; no export-ignored path; the files every
-# release holds; CRLF line ends only in *.cmd, *.bat, *.ps1, *.psm1 and *.psd1, and no CR in any other file but binary ones; a manifest
-# equal to the one ConvertTo-ReleaseManifest writes for the other files; VERSION holding $Version, or with -NoVersionFile none. Reads only.
+# every entry inside local-ai-launcher-$Version/, without '..', '\' or a second entry of one name, with no name that Windows changes or
+# refuses, no file where another entry needs a folder, and the size the zip states for it; no export-ignored path; the files every release
+# holds; CRLF line ends only in *.cmd, *.bat, *.ps1, *.psm1 and *.psd1, and no CR in any other file but binary ones; a manifest equal to the
+# one ConvertTo-ReleaseManifest writes for the other files; VERSION holding $Version, or with -NoVersionFile none; and the limits of
+# $script:ReleaseLimits. Reads only.
 function Assert-ReleaseZip {
     [CmdletBinding()]
     param(
@@ -538,14 +546,33 @@ function Assert-ReleaseZip {
     $problems = New-Object System.Collections.Generic.List[string]
     $expectedName = "$script:ReleaseName-$Version.zip"
     if ([IO.Path]::GetFileName($zipPath) -cne $expectedName) { $problems.Add("The zip is named $([IO.Path]::GetFileName($zipPath)), not $expectedName.") }
+    $zipBytes = (New-Object IO.FileInfo -ArgumentList $zipPath).Length
+    if ($zipBytes -gt $script:ReleaseLimits.ZipBytes) {
+        $problems.Add("The zip has $zipBytes bytes, more than the $($script:ReleaseLimits.ZipBytes) bytes an installed launcher downloads.")
+    }
     $files = New-Object 'System.Collections.Generic.Dictionary[string,byte[]]' -ArgumentList ([StringComparer]::Ordinal)
-    # Windows extracts two names that differ only in case into one file.
+    # As Expand-LauncherArchive in src\LocalAI.psm1 counts them: Windows extracts two names that differ only in case, a folder entry's
+    # with or without its '/', into one, and no file may have the name of a folder that another entry needs.
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([StringComparer]::OrdinalIgnoreCase)
+    $folders = New-Object 'System.Collections.Generic.HashSet[string]' -ArgumentList ([StringComparer]::OrdinalIgnoreCase)
+    $fileNames = New-Object System.Collections.Generic.List[string]
+    $count = 0
+    $extracted = [long]0
     foreach ($entry in (Read-ReleaseZip -Path $zipPath)) {
+        $count++
+        # The sizes the zip states, which an installed launcher adds up and holds each entry to.
+        $extracted += [long]$entry.Length
         $name = [string]$entry.Name
-        if (-not $seen.Add($name)) {
+        $plain = $name.TrimEnd('/')
+        if (-not $seen.Add($plain)) {
             $problems.Add("The zip holds $name twice, or in two spellings that differ only in case.")
             continue
+        }
+        $parts = $plain.Split('/')
+        for ($i = 1; $i -lt $parts.Count; $i++) { $null = $folders.Add(($parts[0..($i - 1)] -join '/')) }
+        if ($name.EndsWith('/')) { $null = $folders.Add($plain) } else { $fileNames.Add($plain) }
+        if ($null -ne $entry.Bytes -and $entry.Bytes.Length -ne [long]$entry.Length) {
+            $problems.Add("$name holds $($entry.Bytes.Length) bytes, but the zip states $($entry.Length) for it.")
         }
         if (-not $name.StartsWith($prefix, [StringComparison]::Ordinal)) {
             $problems.Add("$name lies outside the folder $prefix.")
@@ -558,6 +585,14 @@ function Assert-ReleaseZip {
             $problems.Add("$name is no plain path inside $prefix.")
             continue
         }
+        # As Test-LauncherPathText in src\LocalAI.psm1 refuses them for every installed launcher.
+        $odd = @($segments | Where-Object {
+                $_ -match '[\x00-\x1f"*:<>?|]' -or $_.EndsWith('.') -or $_.EndsWith(' ') -or $_.Split('.')[0].Trim() -match '\A(?:CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])\z'
+            })
+        if ($odd.Count -gt 0) {
+            $problems.Add("$name holds a name that Windows changes or refuses: a device name such as NUL, a dot or a space at its end, or "" * : < > ? | or a control character.")
+            continue
+        }
         $dev = @($script:DevPaths | Where-Object {
                 if ($_.EndsWith('/')) { $relative.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) } else { $relative -eq $_ }
             })
@@ -566,6 +601,15 @@ function Assert-ReleaseZip {
             continue
         }
         if ($null -ne $entry.Bytes) { $files[$relative] = $entry.Bytes }
+    }
+    foreach ($fileName in $fileNames) {
+        if ($folders.Contains($fileName)) { $problems.Add("The zip holds $fileName both as a file and as a folder.") }
+    }
+    if ($count -gt $script:ReleaseLimits.Entries) {
+        $problems.Add("The zip holds $count entries, more than the $($script:ReleaseLimits.Entries) an installed launcher extracts.")
+    }
+    if ($extracted -gt $script:ReleaseLimits.ExtractedBytes) {
+        $problems.Add("The zip holds $extracted bytes once extracted, more than the $($script:ReleaseLimits.ExtractedBytes) bytes an installed launcher extracts.")
     }
     foreach ($required in $script:RequiredFiles) {
         if (-not $files.ContainsKey($required)) { $problems.Add("The zip lacks $prefix$required, which every release holds.") }
@@ -622,6 +666,32 @@ function Assert-ReleaseZip {
         throw ("The release zip $zipPath breaks the release contract in CONTRIBUTING.md:`n  " + ($problems -join "`n  "))
     }
     Write-Host "The release zip $zipPath holds $($files.Count) files in $prefix and keeps the release contract."
+}
+
+# Write the asset install.ps1 into the folder $OutputDirectory: the bytes of local-ai-launcher-$Version/src/install.ps1 in the release zip $ZipPath,
+# so the asset is that file of the release, its CRLF line ends included. Throws when the zip lacks it. Returns the path it wrote.
+function Save-ReleaseInstallScript {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$ZipPath,
+        [Parameter(Mandatory)][string]$Version,
+        [Parameter(Mandatory)][string]$OutputDirectory
+    )
+    if (-not (Test-ReleaseVersionText -Version $Version)) { throw "'$Version' is no release version X.Y.Z." }
+    $zip = Resolve-ReleasePath -Path $ZipPath
+    $name = "$script:ReleaseName-$Version/$script:InstallScriptPath"
+    # Read-ReleaseZip returns its entries as one array, so foreach walks them, not a pipeline.
+    $found = New-Object System.Collections.Generic.List[byte[]]
+    foreach ($entry in (Read-ReleaseZip -Path $zip)) {
+        if ($entry.Name -ceq $name -and $null -ne $entry.Bytes) { $found.Add([byte[]]$entry.Bytes) }
+    }
+    if ($found.Count -ne 1) { throw "The release zip $zip holds no $name, which the asset install.ps1 is." }
+    $output = Resolve-ReleasePath -Path $OutputDirectory
+    $null = [IO.Directory]::CreateDirectory($output)
+    $path = Join-Path $output 'install.ps1'
+    [IO.File]::WriteAllBytes($path, $found[0])
+    return $path
 }
 
 # Write SHA256SUMS at $OutputPath for the asset files $Path: per file one line of its SHA-256 in lowercase hex, two spaces and its name,
@@ -770,9 +840,10 @@ function Invoke-ReleaseVersionCheck {
 }
 
 # Build the release of $Commit in the checkout $RepositoryPath into the new or empty folder $OutputDirectory: check VERSION and CHANGELOG.md,
-# require X.Y.Z above each tag on $Remote and an empty '## [Unreleased]', write notes.md, build and check assets\local-ai-launcher-X.Y.Z.zip
-# and write assets\SHA256SUMS. -DryRun, for pull requests, skips those two requirements, builds the version 0.0.0 without notes when there
-# is no VERSION, and builds the zip again into again\ to show the same bytes. Returns @{ Version; Tag; Commit; Zip; Sha256; Notes; DryRun }.
+# require X.Y.Z above each tag on $Remote and an empty '## [Unreleased]', write notes.md, build and check assets\local-ai-launcher-X.Y.Z.zip,
+# write its src/install.ps1 as assets\install.ps1 and write assets\SHA256SUMS of both. -DryRun, for pull requests, skips those two
+# requirements, builds the version 0.0.0 without notes when there is no VERSION, and builds the zip again into again\ to show the same bytes.
+# Returns @{ Version; Tag; Commit; Zip; Sha256; InstallScript; Notes; DryRun }.
 function Invoke-ReleaseBuild {
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -816,21 +887,23 @@ function Invoke-ReleaseBuild {
     $assets = Join-Path $output 'assets'
     $zip = New-ReleaseZip -RepositoryPath $root -Commit $Commit -Version $version -OutputDirectory $assets
     Assert-ReleaseZip -Path $zip.Path -Version $version -Commit $zip.Commit -NoVersionFile:$synthetic
+    $installScript = Save-ReleaseInstallScript -ZipPath $zip.Path -Version $version -OutputDirectory $assets
     if ($DryRun) {
         $again = New-ReleaseZip -RepositoryPath $root -Commit $Commit -Version $version -OutputDirectory (Join-Path $output 'again')
         if ($again.Sha256 -cne $zip.Sha256) { throw "Two builds of $($zip.Commit) differ: SHA-256 $($zip.Sha256) and $($again.Sha256)." }
     }
-    New-ReleaseChecksumFile -Path $zip.Path -OutputPath (Join-Path $assets 'SHA256SUMS')
+    New-ReleaseChecksumFile -Path @($zip.Path, $installScript) -OutputPath (Join-Path $assets 'SHA256SUMS')
     $git = @(Invoke-ReleaseGit -RepositoryPath $root -ArgumentList @('--version')) -join ' '
-    Write-Host "Built $($zip.Path) from $($zip.Commit) with $git`: $($zip.Files) files, SHA-256 $($zip.Sha256)."
+    Write-Host "Built $($zip.Path) from $($zip.Commit) with $git`: $($zip.Files) files, SHA-256 $($zip.Sha256), and $installScript from it."
     return [pscustomobject]@{
-        Version = $version
-        Tag     = "v$version"
-        Commit  = $zip.Commit
-        Zip     = $zip.Path
-        Sha256  = $zip.Sha256
-        Notes   = $notes
-        DryRun  = [bool]$DryRun
+        Version       = $version
+        Tag           = "v$version"
+        Commit        = $zip.Commit
+        Zip           = $zip.Path
+        Sha256        = $zip.Sha256
+        InstallScript = $installScript
+        Notes         = $notes
+        DryRun        = [bool]$DryRun
     }
 }
 
@@ -844,6 +917,7 @@ Export-ModuleMember -Function @(
     'ConvertTo-ReleaseManifest'
     'New-ReleaseZip'
     'Assert-ReleaseZip'
+    'Save-ReleaseInstallScript'
     'New-ReleaseChecksumFile'
     'Assert-ReleaseTagAbsent'
     'Assert-ReleaseVersionNewest'

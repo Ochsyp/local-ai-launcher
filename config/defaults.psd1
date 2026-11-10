@@ -356,4 +356,26 @@
         # letter.
         Folder = '%APPDATA%\Microsoft\Windows\Start Menu\Programs\Local AI'
     }
+
+    # The launcher's own releases. A release install, which install.ps1 sets up in
+    # %LOCALAPPDATA%\Programs\local-ai-launcher, updates itself as the first step of 'local-ai
+    # update'; a git checkout never does. The install folder itself is not a setting.
+    Launcher  = @{
+        # The GitHub repository, <owner>/<name>, whose releases update installs. Another one means
+        # running the code its owner publishes.
+        Repo               = 'Ochsyp/local-ai-launcher'
+        # Whether start looks for a newer release, at most once per CheckIntervalHours, and says
+        # when there is one. update always looks.
+        CheckForUpdates    = $true
+        # Hours between those checks (1 to 168). GitHub answers 60 requests an hour from one
+        # address without an account.
+        CheckIntervalHours = 24
+        # Release folders update keeps in versions once it has added one (2 to 5). It never
+        # deletes the new, the active or the previous one, which 'local-ai update -Rollback'
+        # goes back to, so 2 keeps three.
+        KeepVersions       = 2
+        # Install only a release that GitHub marks immutable, whose tag and files cannot change
+        # once it is published.
+        RequireImmutable   = $true
+    }
 }

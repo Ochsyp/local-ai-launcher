@@ -8,16 +8,23 @@
 
 #Requires -Version 5.1
 
-# An advanced script, so a mistyped switch or a stray argument fails instead of being ignored.
-[CmdletBinding()]
+# An advanced script, so a mistyped switch or a stray argument fails instead of being ignored. Only
+# the verb is positional, so a stray argument cannot reach -ActivateLauncher.
+[CmdletBinding(PositionalBinding = $false)]
 param(
+    [Parameter(Position = 0)]
     [ValidateSet('install', 'start', 'stop', 'status', 'update', 'uninstall', 'shortcuts')]
     [string]$Verb = 'start',
     [switch]$Json,
     [switch]$Tools,
     [switch]$Remove,
     [switch]$RemoveData,
-    [switch]$NoBrowser
+    [switch]$NoBrowser,
+    [switch]$Rollback,
+    # update passes the tag of the version it staged to that version's update, which every later
+    # version must accept: part of the release contract in CONTRIBUTING.md, and not for people.
+    [Parameter(DontShow)]
+    [string]$ActivateLauncher = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -25,5 +32,6 @@ $ErrorActionPreference = 'Stop'
 $PSDefaultParameterValues['Invoke-WebRequest:UseBasicParsing'] = $true
 
 Import-Module (Join-Path $PSScriptRoot 'LocalAI.psm1') -Force
-$code = Invoke-LocalAI -Verb $Verb -Json:$Json -Tools:$Tools -Remove:$Remove -RemoveData:$RemoveData -NoBrowser:$NoBrowser
+$code = Invoke-LocalAI -Verb $Verb -Json:$Json -Tools:$Tools -Remove:$Remove -RemoveData:$RemoveData -NoBrowser:$NoBrowser -Rollback:$Rollback `
+    -ActivateLauncher $ActivateLauncher
 exit $code

@@ -129,6 +129,43 @@ The check that refuses every verb but `status` inside a packaged app, such as th
 desktop app, keeps the launcher's files out of that app's private store. It is not a security
 control.
 
+## Launcher updates
+
+`local-ai update` and the check that `start` runs trust the releases of one GitHub repository,
+`Launcher.Repo` (`Ochsyp/local-ai-launcher` by default); `install.ps1` always installs those of
+`Ochsyp/local-ai-launcher`:
+
+- They ask GitHub's API at `api.github.com` and download the zip, both over HTTPS, and .NET
+  checks the server's certificate.
+- They install only a release tagged `vX.Y.Z` that is no draft or prerelease and is immutable
+  (`Launcher.RequireImmutable`): once it is published, its tag and files cannot change.
+- The zip's SHA-256 must equal the digest that GitHub lists for it. The zip must hold one folder
+  whose files match its manifest `local-ai-release.json`, with no file more, and the manifest
+  must name the commit that the tag names. No entry of the zip may land outside that folder. The
+  zip may hold at most 10000 entries and 256 MB once extracted, and an entry that holds more
+  bytes than the zip states for it is refused before more than that is written.
+- Nothing is signed with Authenticode, and the launcher does not check the build provenance
+  attestation; `gh attestation verify` checks it by hand. So the checks catch a damaged download
+  or a changed release, but not someone who can publish releases in that repository: whoever
+  controls it controls the code the launcher runs.
+- A `Launcher.Repo` in `settings.psd1` that names another repository trusts whoever publishes
+  its releases in the same way, and `status` points it out. Treat `settings.psd1` like the
+  launcher's code.
+- An installed version never changes; `status` checks its files against its manifest.
+  `local-ai.cmd` runs it with the execution policy `RemoteSigned`, after the check unblocked its
+  files.
+- The `local-ai.cmd` in `%LOCALAPPDATA%\Programs\local-ai-launcher` runs only from that folder.
+  When `cmd.exe` finds it through the Path under a quoted name such as `"local-ai"`, it names the
+  working folder as the file's own; the file then refuses, so it never runs a version that
+  another folder holds. That does not cover a `local-ai.cmd` in the working folder itself:
+  unless `NoDefaultCurrentDirectoryInExePath` is set, `cmd.exe` runs that one before the one on
+  the Path, with or without quotes. In a folder you do not trust, run `local-ai` from
+  PowerShell, which runs no command from the working folder, or run it by its full path.
+- `install.ps1` checks a release with a copy of the same functions. Its one-liner,
+  `irm ... | iex`, runs the script before anyone can check it, so it trusts GitHub and HTTPS
+  alone. Downloading `install.ps1`, checking it against `SHA256SUMS` or with
+  `gh release verify-asset`, and running it as a file avoids that.
+
 ## Releases
 
 - `.github/workflows/release.yml` builds each release on GitHub's hosted runners from a commit
@@ -140,9 +177,11 @@ control.
 - The zip carries a build provenance attestation, signed through Sigstore's public-good instance
   and recorded in its public transparency log. It ties the zip to `release.yml`, the commit and
   `refs/heads/main`. `gh attestation verify` checks it; the README shows the commands.
-- `SHA256SUMS` lists the SHA-256 of the zip, and the manifest `local-ai-release.json` in the zip
-  lists the SHA-256 of every file in it. Both come with the release itself, so they show a
-  damaged download but are no signature. The attestations show where the zip came from.
+- `SHA256SUMS` lists the SHA-256 of the zip and of `install.ps1`, and the manifest
+  `local-ai-release.json` in the zip lists the SHA-256 of every file in it. They come with the
+  release itself, so they show a damaged download but are no signature. The attestations show
+  where the zip came from. The asset `install.ps1` is the zip's `src/install.ps1`, which the
+  check of each published release compares byte for byte.
 
 ## Automated checks
 
@@ -152,6 +191,6 @@ control.
   unittest tests on `windows-latest`, and checks `VERSION` against `CHANGELOG.md`.
 - `.github/workflows/release.yml` builds the zip twice for a pull request that changes the
   release tooling or `VERSION`, and checks each published release: `SHA256SUMS`, the manifest,
-  and the release and build provenance attestations.
+  `install.ps1` against the zip, and the release and build provenance attestations.
 - Dependabot proposes weekly updates for the pinned GitHub Actions, the files server's npm
   lockfile (`config/files-server`) and the Python test requirements (`tests`).
