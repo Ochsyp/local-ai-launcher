@@ -3619,6 +3619,8 @@ Describe 'Install-FilesServerPackage' {
         $repoRoot = Split-Path $PSScriptRoot -Parent
         $trackedLock = Join-Path $repoRoot 'config\files-server\package-lock.json'
         $lockSha = (Get-FileHash -LiteralPath $trackedLock -Algorithm SHA256).Hash.ToLowerInvariant()
+        # The version the tracked package.json pins, which Files.ServerVersion in config\defaults.psd1 equals; the messages below name it as PINNED.
+        $pinned = (Get-LocalAISettings -DefaultsPath (Join-Path $repoRoot 'config\defaults.psd1')).Files.ServerVersion
     }
 
     BeforeEach {
@@ -3626,14 +3628,14 @@ Describe 'Install-FilesServerPackage' {
         $leaf = Split-Path $base -Leaf
         $paths = Get-LocalAIPaths -Root (Join-Path $base 'local-ai')
         $settings = @{
-            Files  = @{ ServerVersion = '2.0.1'; ServerPackage = 'config\files-server'; ServerInstallBytes = 21617057 }
+            Files  = @{ ServerVersion = $pinned; ServerPackage = 'config\files-server'; ServerInstallBytes = 21617057 }
             Winget = @{ Packages = @{ Node = @{ Id = 'OpenJS.NodeJS.LTS'; Command = 'node'; Scope = 'machine' } } }
         }
         $node = Write-TestFile "$leaf\nodejs\node.exe" 'program'
         $npm = Write-TestFile "$leaf\nodejs\node_modules\npm\bin\npm-cli.js" 'npm'
         $target = $paths.FilesServer
         $module = Join-Path $target 'node_modules\@modelcontextprotocol\server-filesystem'
-        $runs = @{ NodeVersion = 'v24.22.1'; Installs = '2.0.1'; Copied = @() }
+        $runs = @{ NodeVersion = 'v24.22.1'; Installs = $pinned; Copied = @() }
         Mock Invoke-Native -ModuleName LocalAI -ParameterFilter { $ArgumentList[0] -eq '--version' } -MockWith {
             $Capture.Add($runs.NodeVersion)
             0
@@ -3666,7 +3668,7 @@ Describe 'Install-FilesServerPackage' {
         $result.Node | Should -Be '24.22.1'
         $marker = Read-LocalAIState -Path (Join-Path $target 'local-ai-install.json')
         $marker.LockSha256 | Should -Be $lockSha
-        $marker.ServerVersion | Should -Be '2.0.1'
+        $marker.ServerVersion | Should -Be $pinned
         $marker.PackageSha256 | Should -Match '^[0-9a-f]{64}$'
     }
 
@@ -3676,7 +3678,7 @@ Describe 'Install-FilesServerPackage' {
                 Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$_" }) -join "`n"
         Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $ArgumentList[1] -eq 'ci' }
         Should -Invoke Test-FreeSpace -ModuleName LocalAI -Times 1 -Exactly
-        $printed | Should -BeLike '*The files server 2.0.1 in*matches the lockfile; nothing to install.*'
+        $printed | Should -BeLike "*The files server $pinned in*matches the lockfile; nothing to install.*"
     }
 
     It 'runs npm ci again when <Case>' -ForEach @(
@@ -3698,11 +3700,11 @@ Describe 'Install-FilesServerPackage' {
     }
 
     It 'throws before npm when <Case>' -ForEach @(
-        @{ Case = 'Files.ServerVersion differs from the package.json pin'; Change = 'setting'; Message = "*package.json pins @modelcontextprotocol/server-filesystem '2.0.1', but Files.ServerVersion is '2.0.0'. Make them agree*" }
-        @{ Case = 'node is older than the server needs'; Change = 'old node'; Message = '*Node.js 22.11.0 at *node.exe is older than the >=24 that @modelcontextprotocol/server-filesystem 2.0.1 needs*winget upgrade --id OpenJS.NodeJS.LTS -e*' }
+        @{ Case = 'Files.ServerVersion differs from the package.json pin'; Change = 'setting'; Message = "*package.json pins @modelcontextprotocol/server-filesystem 'PINNED', but Files.ServerVersion is '2.0.0'. Make them agree*" }
+        @{ Case = 'node is older than the server needs'; Change = 'old node'; Message = '*Node.js 22.11.0 at *node.exe is older than the >=24 that @modelcontextprotocol/server-filesystem PINNED needs*winget upgrade --id OpenJS.NodeJS.LTS -e*' }
         @{ Case = 'node prints no version'; Change = 'no version'; Message = "*--version' printed no version*" }
         @{ Case = 'there is no npm beside node'; Change = 'no npm'; Message = '*There is no npm beside*npm-cli.js is missing*' }
-        @{ Case = 'the lockfile locks another version'; Change = 'lock'; Message = '*package-lock.json does not lock @modelcontextprotocol/server-filesystem 2.0.1. Regenerate it*' }
+        @{ Case = 'the lockfile locks another version'; Change = 'lock'; Message = '*package-lock.json does not lock @modelcontextprotocol/server-filesystem PINNED. Regenerate it*' }
     ) {
         switch ($Change) {
             'setting' { $settings.Files.ServerVersion = '2.0.0' }
@@ -3711,11 +3713,11 @@ Describe 'Install-FilesServerPackage' {
             'no npm' { Remove-Item -LiteralPath $npm }
             'lock' {
                 $settings.Files.ServerPackage = Join-Path $base 'package'
-                $null = Write-TestFile "$leaf\package\package.json" '{"private": true, "dependencies": {"@modelcontextprotocol/server-filesystem": "2.0.1"}}'
+                $null = Write-TestFile "$leaf\package\package.json" "{`"private`": true, `"dependencies`": {`"@modelcontextprotocol/server-filesystem`": `"$pinned`"}}"
                 $null = Write-TestFile "$leaf\package\package-lock.json" '{"lockfileVersion": 3, "packages": {"node_modules/@modelcontextprotocol/server-filesystem": {"version": "2.0.0"}}}'
             }
         }
-        { Install-FilesServerPackage -Settings $settings -Paths $paths -RepoRoot $repoRoot -NodePath $node 6>$null } | Should -Throw -ExpectedMessage $Message
+        { Install-FilesServerPackage -Settings $settings -Paths $paths -RepoRoot $repoRoot -NodePath $node 6>$null } | Should -Throw -ExpectedMessage $Message.Replace('PINNED', $pinned)
         Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $ArgumentList[1] -eq 'ci' }
     }
 
@@ -3730,7 +3732,7 @@ Describe 'Install-FilesServerPackage' {
     It 'throws, writing no marker, when npm ci leaves another server version' {
         $runs.Installs = '2.0.0'
         { Install-FilesServerPackage -Settings $settings -Paths $paths -RepoRoot $repoRoot -NodePath $node 6>$null } |
-            Should -Throw -ExpectedMessage "*After npm ci, *server-filesystem holds @modelcontextprotocol/server-filesystem '2.0.0' instead of 2.0.1*"
+            Should -Throw -ExpectedMessage "*After npm ci, *server-filesystem holds @modelcontextprotocol/server-filesystem '2.0.0' instead of $pinned*"
         Test-Path -LiteralPath (Join-Path $target 'local-ai-install.json') | Should -BeFalse
     }
 }
@@ -3834,7 +3836,7 @@ Describe 'Install-FilesServer' {
         $entry.With | Should -Be @('mcp==1.30.0', 'fastapi<0.145')
         $entry.Mcp | Should -Be 'mcp==1.30.0'
         $entry.ExcludeNewer | Should -Be '2026-10-13T00:00:00Z'
-        $entry.ServerVersion | Should -Be '2.0.1'
+        $entry.ServerVersion | Should -Be $settings.Files.ServerVersion
         $entry.Root | Should -Be 'D:\AI-Folder'
         $entry.Script | Should -Be 'C:\x\dist\index.js'
         $entry.LockSha256 | Should -Be ('5' * 64)
@@ -5191,7 +5193,7 @@ Describe 'Get-FilesStartProblem' {
         $settings = Get-LocalAISettings -DefaultsPath (Join-Path $repoRoot 'config\defaults.psd1')
         $settings.Files.Root = 'D:\AI-Folder'
         $stamp = @{ Files = @{
-                McpoVersion = '0.0.20'; McpoPath = (Write-TestFile "$leaf\bin\mcpo.exe" 'program'); ServerVersion = '2.0.1'; LockSha256 = $lockSha
+                McpoVersion = '0.0.20'; McpoPath = (Write-TestFile "$leaf\bin\mcpo.exe" 'program'); ServerVersion = $settings.Files.ServerVersion; LockSha256 = $lockSha
                 Python = $settings.Files.Python; With = @($settings.Files.McpoWith); ExcludeNewer = $settings.Files.McpoExcludeNewer
                 Script = (Write-TestFile "$leaf\files-server\node_modules\@modelcontextprotocol\server-filesystem\dist\index.js" 'script')
                 Node = @{ Path = (Write-TestFile "$leaf\nodejs\node.exe" 'program'); Version = '24.22.1' }
@@ -5223,7 +5225,10 @@ Describe 'Get-FilesStartProblem' {
             'no mcpo' { Remove-Item -LiteralPath $stamp.Files.McpoPath }
             'no node' { $stamp.Files.Remove('Node') }
             'no script' { Remove-Item -LiteralPath $stamp.Files.Script }
-            'version' { $settings.Files.ServerVersion = '2.0.2' }
+            'version' {
+                $stamp.Files.ServerVersion = '2.0.1'
+                $settings.Files.ServerVersion = '2.0.2'
+            }
             'no key' { Remove-Item -LiteralPath $paths.FilesKey }
             'bad key' { [IO.File]::WriteAllText($paths.FilesKey, 'not-a-key') }
             'no tools' { $ollama.Capabilities = @('completion', 'thinking') }
@@ -5988,8 +5993,9 @@ Describe 'Get-LocalAIService' {
         It 'identifies mcpo through Get-FilesServerVersion with the key, the server version, the allowed tools and the root' {
             Mock Get-FilesServerVersion -ModuleName LocalAI -MockWith { '2.0.1' }
             & $mcpo.Identity $mcpo | Should -BeExactly 'server-filesystem 2.0.1'
+            $pinned = $settings.Files.ServerVersion
             Should -Invoke Get-FilesServerVersion -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter {
-                $Url -eq 'http://127.0.0.1:18189' -and $Key -eq $key -and $Version -eq '2.0.1' -and $Root -eq 'D:\AI-Folder' -and
+                $Url -eq 'http://127.0.0.1:18189' -and $Key -eq $key -and $Version -eq $pinned -and $Root -eq 'D:\AI-Folder' -and
                 ($Tools -join ',') -eq 'read_text_file,list_directory,search_files,get_file_info,list_allowed_directories'
             }
         }
@@ -6687,7 +6693,7 @@ Describe 'Start-LocalAI' {
             $lock = Join-Path $repoRoot 'config\files-server\package-lock.json'
             $Complete.Files = @{
                 McpoVersion = '0.0.20'; McpoPath = (Write-TestFile "$leaf\bin\mcpo.exe" 'program'); Python = '3.12'; With = @($Settings.Files.McpoWith)
-                ExcludeNewer = $Settings.Files.McpoExcludeNewer; ServerVersion = '2.0.1'
+                ExcludeNewer = $Settings.Files.McpoExcludeNewer; ServerVersion = $Settings.Files.ServerVersion
                 LockSha256 = (Get-FileHash -LiteralPath $lock -Algorithm SHA256).Hash.ToLowerInvariant()
                 Script = (Write-TestFile "$leaf\files-server\node_modules\@modelcontextprotocol\server-filesystem\dist\index.js" 'script')
                 Node = @{ Path = (Write-TestFile "$leaf\nodejs\node.exe" 'program'); Version = '24.22.1' }
@@ -7144,7 +7150,7 @@ Describe 'Start-LocalAI' {
             }
             Mock Wait-LocalAIService -ModuleName LocalAI -MockWith {
                 $events.Add("wait $($Service.Name)")
-                if ($Service.Name -eq 'Files') { $owners[18189] = $mcpoListener; return @{ Version = '2.0.1'; Listener = $mcpoListener } }
+                if ($Service.Name -eq 'Files') { $owners[18189] = $mcpoListener; return @{ Version = $settings.Files.ServerVersion; Listener = $mcpoListener } }
                 $owners[18431] = $python
                 @{ Version = '0.12.4'; Listener = $python }
             }
@@ -7272,13 +7278,14 @@ Describe 'Start-LocalAI' {
             Write-LocalAIState -Path $paths.State -State @{ Services = @{ Files = $record } }
             $owners[18189] = $mcpoListener
             Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith { if ($Record.Pid -eq 7950) { 'match' } else { 'other' } }
-            Mock Get-FilesServerVersion -ModuleName LocalAI -MockWith { '2.0.1' }
+            $pin = $settings.Files.ServerVersion
+            Mock Get-FilesServerVersion -ModuleName LocalAI -MockWith { $pin }
             $run = Invoke-StartVerb -Context $context
             $run.Code | Should -Be @(0)
-            $run.Printed | Should -BeLike '*File tools server-filesystem 2.0.1 is already running at http://127.0.0.1:18189; reusing it.*'
+            $run.Printed | Should -BeLike "*File tools server-filesystem $pin is already running at http://127.0.0.1:18189; reusing it.*"
             $events | Should -Be @('start OpenWebUI', 'wait OpenWebUI')
             Should -Invoke Get-FilesServerVersion -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter {
-                $Url -eq 'http://127.0.0.1:18189' -and $Key -eq $tool.Key -and $Root -eq $tool.Root -and $Version -eq '2.0.1'
+                $Url -eq 'http://127.0.0.1:18189' -and $Key -eq $tool.Key -and $Root -eq $tool.Root -and $Version -eq $pin
             }
             Should -Invoke Start-LocalAIService -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter {
                 $Service.Name -eq 'OpenWebUI' -and $Service.Environment['TOOL_SERVER_CONNECTIONS'] -like "*$($tool.Key)*"
@@ -7782,7 +7789,7 @@ Describe 'Start-LocalAI' {
                     $events.Add("wait $($Service.Name)")
                     if ($Service.Name -eq 'ImageGate') { throw 'Image gate exited with code 1 before it answered at http://127.0.0.1:18190.' }
                     if ($Service.Name -eq 'ComfyUI') { $owners[18188] = $comfyListener; return @{ Version = '0.42.5'; Listener = $comfyListener } }
-                    if ($Service.Name -eq 'Files') { $owners[18189] = $mcpoListener; return @{ Version = '2.0.1'; Listener = $mcpoListener } }
+                    if ($Service.Name -eq 'Files') { $owners[18189] = $mcpoListener; return @{ Version = $settings.Files.ServerVersion; Listener = $mcpoListener } }
                     $owners[18431] = $python
                     @{ Version = '0.12.4'; Listener = $python }
                 }
@@ -8816,7 +8823,7 @@ Describe 'Get-LocalAIStatus' {
             OpenWebUI = @{ Version = '0.12.4'; Path = 'C:\uv\bin\open-webui.exe'; Python = '3.12.16' }
             ComfyUI   = @{ Dir = $settings.ComfyUI.Dir; Commit = $settings.ComfyUI.Commit; Python = (Join-Path $settings.ComfyUI.Dir '.venv\Scripts\python.exe') }
             Files     = @{ McpoVersion = '0.0.20'; McpoPath = 'C:\uv\bin\mcpo.exe'; Python = '3.12'; With = @($settings.Files.McpoWith)
-                ExcludeNewer = $settings.Files.McpoExcludeNewer; ServerVersion = '2.0.1'; ToolDir = 'C:\uv\tools'
+                ExcludeNewer = $settings.Files.McpoExcludeNewer; ServerVersion = $settings.Files.ServerVersion; ToolDir = 'C:\uv\tools'
                 LockSha256 = (Get-TestHash (Join-Path $repoRoot 'config\files-server\package-lock.json')) }
         }
         Write-LocalAIState -Path $paths.InstallStamp -State $stamp
@@ -8841,7 +8848,7 @@ Describe 'Get-LocalAIStatus' {
             Live      = New-Object System.Collections.Generic.List[int]
             Listeners = @{ 11434 = @('127.0.0.1'); 18431 = @('127.0.0.1'); 18432 = @('127.0.0.1'); 18433 = @('127.0.0.1'); 18434 = @('127.0.0.1') }
             Owner     = $null
-            Versions  = @{ OpenWebUI = '0.12.4'; ComfyUI = '0.42.5'; ImageGate = '1.0'; Files = '2.0.1' }
+            Versions  = @{ OpenWebUI = '0.12.4'; ComfyUI = '0.42.5'; ImageGate = '1.0'; Files = $settings.Files.ServerVersion }
             Cuda      = $true
             Ollama    = '0.40.11'
             Loaded    = @([pscustomobject]@{ name = 'local-chat:latest'; size = 8040000000; size_vram = 8040000000; context_length = 32768
@@ -8926,7 +8933,8 @@ Describe 'Get-LocalAIStatus' {
             'the pinned version.*')
         $run.Printed | Should -BeLike "*ComfyUI: 0.42.5 runs at http://127.0.0.1:18432 (PID 4200, up 1 h 30 min), listening on 127.0.0.1; install recorded ComfyUI $($settings.ComfyUI.Commit), as ComfyUI.Commit pins.*"
         $run.Printed | Should -BeLike '*Image gate: 1.0 runs at http://127.0.0.1:18434 (PID 4300, up 1 h 30 min)*'
-        $run.Printed | Should -BeLike '*File tools: server-filesystem 2.0.1 runs at http://127.0.0.1:18433 (PID 4400, up 1 h 30 min), listening on 127.0.0.1; install recorded mcpo 0.0.20, as Files.McpoVersion pins.*'
+        $run.Printed | Should -BeLike ("*File tools: server-filesystem $($settings.Files.ServerVersion) runs at http://127.0.0.1:18433 (PID 4400, up 1 h 30 min), " +
+            'listening on 127.0.0.1; install recorded mcpo 0.0.20, as Files.McpoVersion pins.*')
         $run.Printed | Should -BeLike '*NVIDIA driver 555.85; 512 of 8192 MiB of VRAM in use.*'
         $run.Printed | Should -BeLike "*Files.Root $($settings.Files.Root) passes the checks start runs*"
         $run.Printed | Should -BeLike '*Everything install-stamp.json records matches its pin.*'
@@ -9213,7 +9221,7 @@ Describe 'Get-LocalAIStatus' {
         @{ Case = 'ComfyUI commit'; Part = 'ComfyUI'; Field = 'Commit'; Value = 'abcdef0123456789abcdef0123456789abcdef01'; Message = '*ComfyUI in * is at commit abcdef0123456789abcdef0123456789abcdef01, but ComfyUI.Commit pins 483dae4326356b81de05d27aca3f433dd323cc25 (v0.42.5). Run ''local-ai update''.*' }
         @{ Case = 'mcpo version'; Part = 'Files'; Field = 'McpoVersion'; Value = '0.0.19'; Message = "*mcpo was installed with Files.McpoVersion '0.0.19', but settings.psd1 pins '0.0.20'. Run 'local-ai update'.*" }
         @{ Case = 'mcpo requirement list'; Part = 'Files'; Field = 'With'; Value = @('mcp==1.29.0'); Message = "*mcpo was installed with Files.McpoWith 'mcp==1.29.0', but settings.psd1 pins 'mcp==1.30.0 fastapi<0.145'.*" }
-        @{ Case = 'files server version'; Part = 'Files'; Field = 'ServerVersion'; Value = '2.0.0'; Message = '*The files server 2.0.0 is installed, but Files.ServerVersion pins 2.0.1. Run ''local-ai update''.*' }
+        @{ Case = 'files server version'; Part = 'Files'; Field = 'ServerVersion'; Value = '2.0.0'; Message = '*The files server 2.0.0 is installed, but Files.ServerVersion pins PINNED. Run ''local-ai update''.*' }
         @{ Case = 'files server lockfile'; Part = 'Files'; Field = 'LockSha256'; Value = ('0' * 64); Message = '*The files server was installed from another package-lock.json than *package-lock.json. Run ''local-ai update''.*' }
         @{ Case = 'model alias'; Part = 'Model'; Field = 'Alias'; Value = 'old-chat'; Message = '*install created the alias old-chat, but Model.Alias is local-chat.*' }
         @{ Case = 'model weights'; Part = 'Model'; Field = 'BaseDigest'; Value = ('a' * 64); Message = "*The weights install used have SHA-256 $('a' * 64), but Model.Sha256 pins *" }
@@ -9225,7 +9233,8 @@ Describe 'Get-LocalAIStatus' {
         Write-LocalAIState -Path $paths.InstallStamp -State $stamp
         $run = Invoke-StatusVerb -Context $context
         $run.Code | Should -Be @(2)
-        $run.Warnings | Should -BeLike $Message
+        # PINNED stands for Files.ServerVersion of config\defaults.psd1.
+        $run.Warnings | Should -BeLike $Message.Replace('PINNED', $settings.Files.ServerVersion)
         $run.Printed | Should -Not -BeLike '*Everything install-stamp.json records matches its pin.*'
     }
 
@@ -10823,8 +10832,8 @@ Describe 'Get-FilesUpdatePlan' {
         $settings = Get-LocalAISettings -DefaultsPath (Join-Path $repoRoot 'config\defaults.psd1')
         $settings.Files.Root = 'C:\AI-Files'
         $lockSha = (Get-FileHash -LiteralPath (Join-Path $repoRoot 'config\files-server\package-lock.json') -Algorithm SHA256).Hash.ToLowerInvariant()
-        $stamp = @{ Files = @{ McpoVersion = '0.0.20'; Python = '3.12'; With = @('mcp==1.30.0', 'fastapi<0.145'); ExcludeNewer = '2026-10-13T00:00:00Z'; ServerVersion = '2.0.1'
-                LockSha256 = $lockSha } }
+        $stamp = @{ Files = @{ McpoVersion = '0.0.20'; Python = '3.12'; With = @('mcp==1.30.0', 'fastapi<0.145'); ExcludeNewer = '2026-10-13T00:00:00Z'
+                ServerVersion = $settings.Files.ServerVersion; LockSha256 = $lockSha } }
         $uv = @{ Tool = @{ Version = '0.0.20'; Python = '3.12.16'; Path = 'C:\uv\bin\mcpo.exe' } }
         Mock Invoke-Native -ModuleName LocalAI -MockWith { throw "Unexpected program $FilePath $($ArgumentList -join ' ')" }
         Mock Get-UvTool -ModuleName LocalAI -ParameterFilter { $Name -eq 'mcpo' } -MockWith { $uv.Tool }
@@ -10858,7 +10867,7 @@ Describe 'Get-FilesUpdatePlan' {
             'server' {
                 $stamp.Files.ServerVersion = '2.0.0'
                 $stamp.Files.LockSha256 = 'b' * 64
-                $expected = @('files server 2.0.0 -> 2.0.1', "files server lockfile $('b' * 64) -> $lockSha")
+                $expected = @("files server 2.0.0 -> $($settings.Files.ServerVersion)", "files server lockfile $('b' * 64) -> $lockSha")
             }
         }
         @((& $plan).Changes) | Should -Be $expected

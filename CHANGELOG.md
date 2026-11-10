@@ -16,7 +16,7 @@ The launcher was redesigned. These entries compare it with the earlier set of sc
   `%LOCALAPPDATA%\local-ai\settings.psd1` overrides it key by key. An unknown key or a value of
   the wrong kind is an error.
 - Version pins: Open WebUI 0.12.4 on Python 3.12, ComfyUI v0.42.5 at commit `483dae4`, mcpo
-  0.0.20 and `@modelcontextprotocol/server-filesystem` 2.0.1. The image checkpoint is pinned to
+  0.0.20 and `@modelcontextprotocol/server-filesystem` 2.1.0. The image checkpoint is pinned to
   a revision.
 - SHA-256 checks for the chat model, its vision projector and the image checkpoint.
 - The chat model `local-chat`, built from `config\local-chat.Modelfile` with a context of 32768
@@ -24,7 +24,8 @@ The launcher was redesigned. These entries compare it with the earlier set of sc
 - The image gate, `src\image_gate.py`. Before each image it unloads `local-chat` from Ollama, so
   the image does not share the GPU's memory with the chat model.
 - Optional read-only file tools: mcpo and the MCP files server let the model read one folder,
-  `Files.Root`. `start` checks the folder before each start.
+  `Files.Root`. `start` checks the folder before each start. The files server's `search_files`
+  stops with an error after visiting more than 100000 entries.
 - `update`, which shows a plan, backs up Open WebUI's data, brings each part to its pin, checks
   the stack and rolls Open WebUI back when the new version fails.
 - `uninstall`, which removes the shortcuts, the uv tools, ComfyUI's `.venv`, the files server
@@ -205,8 +206,8 @@ service that an earlier start left running keeps the environment it started with
   GHSA-3g3m-2fjr-6pw4 (an aborted glob walk kept reading folders) and GHSA-g3hv-75wg-m249 (a
   minimatch pattern could grow into enough parts to use a lot of CPU and memory). glob 14.0.2,
   which Dependabot names as the fix, still bundles minimatch code from before the second fix.
-  `@modelcontextprotocol/server-filesystem` 2.0.1 asks for glob 13 and minimatch 10, which have
-  no fix. It never loads glob, and it calls minimatch without the optimization level that the
+  `@modelcontextprotocol/server-filesystem` 2.1.0, as 2.0.1, asks for glob 13 and minimatch 10,
+  which have no fix. It never loads glob, and it calls minimatch without the optimization level that the
   flaw needs, so neither was reachable through the file tools. Where the file tools are set up,
   `local-ai update` runs npm ci again with the new lockfile.
 - The launcher installs a release of itself only when it is tagged `vX.Y.Z`, is no draft or
