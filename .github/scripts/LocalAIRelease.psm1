@@ -4,8 +4,9 @@
 #
 # Functions behind .github\workflows\release.yml and the version check in ci.yml: the rules for
 # VERSION and CHANGELOG.md, the release notes, the release zip with its manifest, the check of
-# that zip, and SHA256SUMS. CONTRIBUTING.md describes the release contract they keep, and
-# tests\Release.Tests.ps1 tests them. They run in Windows PowerShell 5.1 with git on PATH.
+# that zip, the asset install.ps1 taken from it, and SHA256SUMS. CONTRIBUTING.md describes the
+# release contract they keep, and tests\Release.Tests.ps1 tests them. They run in Windows
+# PowerShell 5.1 with git on PATH.
 # Every function takes its inputs as parameters, so importing the module runs nothing.
 
 # Errors stop the module's functions whatever preference the importing session has.
@@ -22,8 +23,10 @@ $script:DevPaths = @('.github/', '.githooks/', 'tests/', '.editorconfig', '.gita
 # The extensions .gitattributes gives CRLF and those it marks binary. Every other file of a release has LF line ends only.
 $script:CrlfExtensions = @('.ps1', '.psm1', '.psd1', '.cmd', '.bat')
 $script:BinaryExtensions = @('.ico', '.lnk', '.gguf', '.safetensors')
+# The bootstrap that installs a release, which every release also attaches on its own as the asset install.ps1.
+$script:InstallScriptPath = 'src/install.ps1'
 # Files every release holds, so an export-ignore line that reaches too far fails the check.
-$script:RequiredFiles = @('local-ai.cmd', 'src/local-ai.ps1', 'src/LocalAI.psm1', 'config/defaults.psd1', 'README.md', 'LICENSE')
+$script:RequiredFiles = @('local-ai.cmd', 'src/local-ai.ps1', 'src/LocalAI.psm1', $script:InstallScriptPath, 'config/defaults.psd1', 'README.md', 'LICENSE')
 
 # Return $Path as a full path without a trailing '\', a relative one taken from the current location, which .NET calls do not follow in
 # Windows PowerShell 5.1. Touches nothing.
@@ -624,6 +627,32 @@ function Assert-ReleaseZip {
     Write-Host "The release zip $zipPath holds $($files.Count) files in $prefix and keeps the release contract."
 }
 
+# Write the asset install.ps1 into the folder $OutputDirectory: the bytes of local-ai-launcher-$Version/src/install.ps1 in the release zip $ZipPath,
+# so the asset is that file of the release, its CRLF line ends included. Throws when the zip lacks it. Returns the path it wrote.
+function Save-ReleaseInstallScript {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$ZipPath,
+        [Parameter(Mandatory)][string]$Version,
+        [Parameter(Mandatory)][string]$OutputDirectory
+    )
+    if (-not (Test-ReleaseVersionText -Version $Version)) { throw "'$Version' is no release version X.Y.Z." }
+    $zip = Resolve-ReleasePath -Path $ZipPath
+    $name = "$script:ReleaseName-$Version/$script:InstallScriptPath"
+    # Read-ReleaseZip returns its entries as one array, so foreach walks them, not a pipeline.
+    $found = New-Object System.Collections.Generic.List[byte[]]
+    foreach ($entry in (Read-ReleaseZip -Path $zip)) {
+        if ($entry.Name -ceq $name -and $null -ne $entry.Bytes) { $found.Add([byte[]]$entry.Bytes) }
+    }
+    if ($found.Count -ne 1) { throw "The release zip $zip holds no $name, which the asset install.ps1 is." }
+    $output = Resolve-ReleasePath -Path $OutputDirectory
+    $null = [IO.Directory]::CreateDirectory($output)
+    $path = Join-Path $output 'install.ps1'
+    [IO.File]::WriteAllBytes($path, $found[0])
+    return $path
+}
+
 # Write SHA256SUMS at $OutputPath for the asset files $Path: per file one line of its SHA-256 in lowercase hex, two spaces and its name,
 # ending in LF, sorted by name in ordinal order, in ASCII through [IO.File]::WriteAllText. Throws on a name that is not plain ASCII without
 # spaces, on two files of one name, and on SHA256SUMS itself.
@@ -770,9 +799,10 @@ function Invoke-ReleaseVersionCheck {
 }
 
 # Build the release of $Commit in the checkout $RepositoryPath into the new or empty folder $OutputDirectory: check VERSION and CHANGELOG.md,
-# require X.Y.Z above each tag on $Remote and an empty '## [Unreleased]', write notes.md, build and check assets\local-ai-launcher-X.Y.Z.zip
-# and write assets\SHA256SUMS. -DryRun, for pull requests, skips those two requirements, builds the version 0.0.0 without notes when there
-# is no VERSION, and builds the zip again into again\ to show the same bytes. Returns @{ Version; Tag; Commit; Zip; Sha256; Notes; DryRun }.
+# require X.Y.Z above each tag on $Remote and an empty '## [Unreleased]', write notes.md, build and check assets\local-ai-launcher-X.Y.Z.zip,
+# write its src/install.ps1 as assets\install.ps1 and write assets\SHA256SUMS of both. -DryRun, for pull requests, skips those two
+# requirements, builds the version 0.0.0 without notes when there is no VERSION, and builds the zip again into again\ to show the same bytes.
+# Returns @{ Version; Tag; Commit; Zip; Sha256; InstallScript; Notes; DryRun }.
 function Invoke-ReleaseBuild {
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -816,21 +846,23 @@ function Invoke-ReleaseBuild {
     $assets = Join-Path $output 'assets'
     $zip = New-ReleaseZip -RepositoryPath $root -Commit $Commit -Version $version -OutputDirectory $assets
     Assert-ReleaseZip -Path $zip.Path -Version $version -Commit $zip.Commit -NoVersionFile:$synthetic
+    $installScript = Save-ReleaseInstallScript -ZipPath $zip.Path -Version $version -OutputDirectory $assets
     if ($DryRun) {
         $again = New-ReleaseZip -RepositoryPath $root -Commit $Commit -Version $version -OutputDirectory (Join-Path $output 'again')
         if ($again.Sha256 -cne $zip.Sha256) { throw "Two builds of $($zip.Commit) differ: SHA-256 $($zip.Sha256) and $($again.Sha256)." }
     }
-    New-ReleaseChecksumFile -Path $zip.Path -OutputPath (Join-Path $assets 'SHA256SUMS')
+    New-ReleaseChecksumFile -Path @($zip.Path, $installScript) -OutputPath (Join-Path $assets 'SHA256SUMS')
     $git = @(Invoke-ReleaseGit -RepositoryPath $root -ArgumentList @('--version')) -join ' '
-    Write-Host "Built $($zip.Path) from $($zip.Commit) with $git`: $($zip.Files) files, SHA-256 $($zip.Sha256)."
+    Write-Host "Built $($zip.Path) from $($zip.Commit) with $git`: $($zip.Files) files, SHA-256 $($zip.Sha256), and $installScript from it."
     return [pscustomobject]@{
-        Version = $version
-        Tag     = "v$version"
-        Commit  = $zip.Commit
-        Zip     = $zip.Path
-        Sha256  = $zip.Sha256
-        Notes   = $notes
-        DryRun  = [bool]$DryRun
+        Version       = $version
+        Tag           = "v$version"
+        Commit        = $zip.Commit
+        Zip           = $zip.Path
+        Sha256        = $zip.Sha256
+        InstallScript = $installScript
+        Notes         = $notes
+        DryRun        = [bool]$DryRun
     }
 }
 
@@ -844,6 +876,7 @@ Export-ModuleMember -Function @(
     'ConvertTo-ReleaseManifest'
     'New-ReleaseZip'
     'Assert-ReleaseZip'
+    'Save-ReleaseInstallScript'
     'New-ReleaseChecksumFile'
     'Assert-ReleaseTagAbsent'
     'Assert-ReleaseVersionNewest'

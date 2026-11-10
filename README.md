@@ -68,6 +68,91 @@ uv then installs Open WebUI and mcpo as uv tools, and the Pythons they need.
 
 ## Quick start
 
+1. Install the launcher from a release, as [Install from a release](#install-from-a-release)
+   describes, or clone the repository, as [Install from a git clone](#install-from-a-git-clone)
+   describes.
+2. Open a console window or Windows Terminal. Do not use a terminal inside a packaged app; see
+   [Where to run it](#where-to-run-it).
+3. Run `local-ai install`. The first install downloads several GB.
+4. Run `local-ai start`. The browser opens Open WebUI at `http://127.0.0.1:8080`.
+5. Create your account. On a fresh data folder the first account becomes the admin; see
+   [Signing in](#signing-in).
+6. Optionally run `local-ai shortcuts` for Start menu shortcuts.
+
+`local-ai` works in any window once the launcher's folder is on your Path, as `install.ps1
+-AddToPath` sets up, and in `cmd.exe` in the launcher's folder. Elsewhere run `local-ai.cmd` by
+its path. The launcher's own messages write commands as `local-ai`. `local-ai.cmd` without a
+verb runs `start`.
+
+`local-ai.cmd` sets the execution policy `RemoteSigned` for its own run only, so the PC's
+policy stays as it is. The window pauses after `status` and after any exit code other than 0,
+so a window that a shortcut opened stays readable. With `-Json` it never pauses.
+
+### Install from a release
+
+There is no release yet; until there is, use a [git clone](#install-from-a-git-clone).
+
+A release install lives in `%LOCALAPPDATA%\Programs\local-ai-launcher`, and `local-ai update`
+brings it to the latest release.
+
+1. On the [Releases page](https://github.com/Ochsyp/local-ai-launcher/releases), download
+   `install.ps1` and `SHA256SUMS` of the newest release into one folder.
+2. Check `install.ps1`: its SHA-256 must match its line in `SHA256SUMS`.
+
+   ```powershell
+   (Get-FileHash -Algorithm SHA256 .\install.ps1).Hash.ToLowerInvariant()
+   Get-Content .\SHA256SUMS
+   ```
+
+   With the GitHub CLI, `gh release verify-asset vX.Y.Z install.ps1 --repo
+   Ochsyp/local-ai-launcher` also checks that the file belongs to that published release.
+3. Open a console window or Windows Terminal in that folder, unblock the file and run it:
+
+   ```powershell
+   Unblock-File .\install.ps1
+   powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\install.ps1 -AddToPath
+   ```
+
+4. Open a new console window, then go on with `local-ai install`.
+
+`install.ps1` asks GitHub for the latest release and downloads its zip. It checks the zip's
+SHA-256 against the digest GitHub lists and every file against the manifest in the zip, then puts
+the release into `versions\vX.Y.Z`. That version's own module then writes `local-ai.cmd` and the
+file `current`, which names the active version. Its options:
+
+- `-Tag vX.Y.Z` installs that release instead of the latest one.
+- `-AddToPath` adds the folder to your user Path, so that `local-ai` works in the windows you
+  open from then on.
+- `-Shortcuts` runs `local-ai shortcuts`.
+
+It refuses a draft, a prerelease, a release that is not immutable and any failed check, and then
+changes nothing. It also refuses inside a packaged app, and while another version is installed
+and whole: `local-ai update` moves between versions. To set up the active version anew, for
+example after `local-ai.cmd` was deleted, run it again with `-Tag` and that version.
+
+`install.ps1` also runs straight from the release, in one line:
+
+```powershell
+irm https://github.com/Ochsyp/local-ai-launcher/releases/download/vX.Y.Z/install.ps1 | iex
+```
+
+To pass options, make a script block of it:
+
+```powershell
+& ([scriptblock]::Create((irm https://github.com/Ochsyp/local-ai-launcher/releases/download/vX.Y.Z/install.ps1))) -AddToPath -Shortcuts
+```
+
+The address names a release, so it always gets the same `install.ps1`, which that release can no
+longer change. That script still installs the latest release unless you pass `-Tag`.
+
+**Warning:** the one-liner runs the script as soon as it arrives, before you or anything else can
+check it. It trusts GitHub and the HTTPS connection alone. The steps above check the file first.
+
+### Install from a git clone
+
+For contributors. A git checkout never updates its own code; `local-ai update` leaves that to
+git.
+
 1. Clone the repository. If you downloaded it as a ZIP file, unblock the files first, since
    Windows refuses to run downloaded scripts:
 
@@ -75,20 +160,8 @@ uv then installs Open WebUI and mcpo as uv tools, and the Pythons they need.
    Get-ChildItem -LiteralPath 'C:\path\to\local-ai-launcher' -Recurse -File | Unblock-File
    ```
 
-2. Open a console window or Windows Terminal in the repository folder. Do not use a terminal
-   inside a packaged app; see [Where to run it](#where-to-run-it).
-3. Run `.\local-ai.cmd install`. The first install downloads several GB.
-4. Run `.\local-ai.cmd start`. The browser opens Open WebUI at `http://127.0.0.1:8080`.
-5. Create your account. On a fresh data folder the first account becomes the admin; see
-   [Signing in](#signing-in).
-6. Optionally run `.\local-ai.cmd shortcuts` for Start menu shortcuts.
-
-In `cmd.exe` in the repository folder, `local-ai start` works as well. The launcher's own
-messages write commands that way. `local-ai.cmd` without a verb runs `start`.
-
-`local-ai.cmd` sets the execution policy `RemoteSigned` for its own run only, so the PC's
-policy stays as it is. The window pauses after `status` and after any exit code other than 0,
-so a window that a shortcut opened stays readable. With `-Json` it never pauses.
+2. Open a console window or Windows Terminal in the repository folder, and run
+   `.\local-ai.cmd install` there. To update the launcher's code, run `git pull` on `main`.
 
 ## Commands
 
@@ -98,7 +171,7 @@ so a window that a shortcut opened stays readable. With `-Json` it never pauses.
 | `local-ai start [-NoBrowser]` | Runs `install` first when parts are missing. Starts ComfyUI, the image gate, the file tools and Open WebUI, then opens the browser unless `-NoBrowser` is given. It prints the web address and the endpoint for coding tools. |
 | `local-ai stop` | Stops what `start` started, unloads `local-chat` and quits the Ollama app when the launcher started it. An Ollama that already ran keeps running, and so does one that holds another program's model, still has another program connected, such as a coding tool on the `/v1` endpoint, or shows its window. |
 | `local-ai status [-Json]` | Reports what runs and what needs attention, and changes nothing. `-Json` prints one line of JSON and nothing else. |
-| `local-ai update [-Tools]` | Brings every part to the versions the settings pin (`config\defaults.psd1`, or `settings.psd1` where it sets a pin), after it shows the plan and you confirm. `-Tools` also upgrades the winget packages. |
+| `local-ai update [-Tools] [-Rollback]` | Brings a release install of the launcher to its latest release, and every part to the versions the settings pin (`config\defaults.psd1`, or `settings.psd1` where it sets a pin), after it shows the plan and you confirm. `-Tools` also upgrades the winget packages. `-Rollback` returns to the launcher version before; see [Updates and backups](#updates-and-backups). |
 | `local-ai uninstall [-RemoveData]` | Removes what `install` set up, after you confirm. `-RemoveData` also deletes the data folders. |
 | `local-ai shortcuts [-Remove]` | Creates the Start menu shortcuts, or with `-Remove` deletes them. |
 
@@ -122,7 +195,8 @@ By verb:
 - `start`: 2 when it started with warnings, for example with images or file tools off.
   1 when Open WebUI did not come up.
 - `stop`: 1 when something could not be stopped, such as an Ollama app the launcher started.
-- `update`: 2 when it finished with warnings or you declined the plan. 1 when it failed.
+- `update`: 2 when it finished with warnings, could not check for a newer launcher, or you
+  declined the plan. 1 when it failed, or a newer launcher failed a check.
 - `uninstall`: 0 also when you decline. 1 when something stays.
 - Every verb returns 1 on an error, for example a refused run inside a packaged app.
 
@@ -133,7 +207,14 @@ By verb:
 `status` reads only. It never starts the Ollama app. Its sections are:
 
 - **Launcher**: the version that `VERSION` names, the repository and state folder, another run
-  in progress, settings that do not load, and packaged-app redirection.
+  in progress, settings that do not load, and packaged-app redirection. Whether the launcher is a
+  release install, a git checkout or another folder. For a release install: its folder and the
+  version that `current` names, whether every file of that version matches its manifest
+  (degraded when not), whether the version before is kept for a rollback, and the latest release
+  that the last check found, with a line when a newer one is out and the date of a check older
+  than 7 days. It reads that from `state.json` and never asks GitHub. `-Json` adds
+  `launcher.kind`, `launcher.latest`, `launcher.checkedAt`, `launcher.updateAvailable` and
+  `launcher.checkError`.
 - **Ollama**: the version, whether the launcher started the Ollama app, so that `stop` quits
   it, whether it listens beyond loopback, the loaded models and their share of VRAM, whether
   `local-chat` exists, and superseded aliases it still holds.
@@ -157,8 +238,10 @@ By verb:
 - **Stop Local AI** runs `local-ai.cmd stop`.
 - **Status Local AI** runs `local-ai.cmd status`.
 
-They use the Ollama app's icon when it is installed. `install` creates no shortcuts. The
-shortcuts point at this repository, so run `local-ai shortcuts` again after you move it.
+They use the Ollama app's icon when it is installed. `install` creates no shortcuts. For a
+release install they run `local-ai.cmd` in `%LOCALAPPDATA%\Programs\local-ai-launcher`, which
+runs the active version, so they keep working after an update. For a git clone they point at the
+clone, so run `local-ai shortcuts` again after you move it.
 `local-ai shortcuts -Remove` deletes the three shortcuts, and the folder when it is then empty.
 `Shortcuts.Folder` sets another folder.
 
@@ -170,6 +253,7 @@ Do not run it from a terminal inside a packaged app, such as the Claude desktop 
 puts the folders that such an app's processes create in `%LOCALAPPDATA%` and `%APPDATA%` into
 the package's private store. Other windows never see them there. The launcher detects this.
 Every verb but `status` then refuses to run and changes nothing, and `status` reports it.
+`install.ps1` refuses as well.
 
 A private copy of `%LOCALAPPDATA%\local-ai` below `%LOCALAPPDATA%\Packages` also blocks every
 verb but `status`. Check whether the copy holds logs or state that the real folder lacks, then
@@ -214,6 +298,10 @@ Common keys:
 | `ComfyUI.Dir` | `'%USERPROFILE%\ComfyUI'` | The ComfyUI checkout, at most 133 characters. |
 | `ComfyUI.InheritEnvironment` | `@()` | More variable names that ComfyUI, not the image gate, inherits from the window that runs `start`. |
 | `Update.KeepBackups` | 3 | How many of its own Open WebUI backups `update` keeps. |
+| `Launcher.CheckForUpdates` | `$true` | `start` checks for a newer launcher release, at most once per `Launcher.CheckIntervalHours` (24, from 1 to 168). |
+| `Launcher.KeepVersions` | 2 | How many launcher versions `update` keeps once it has added one, from 2 to 5. It never deletes the new, the active or the previous version, so 2 keeps three. |
+| `Launcher.RequireImmutable` | `$true` | Install only immutable releases, whose files and tag cannot change. |
+| `Launcher.Repo` | `'Ochsyp/local-ai-launcher'` | The GitHub repository whose releases `update` installs. Another one runs whatever its owner publishes; see [SECURITY.md](SECURITY.md). |
 
 Open WebUI runs with `ENABLE_PERSISTENT_CONFIG` set to `False`. So `OpenWebUI.Env` wins over
 the database, and changes in *Admin Settings* revert at the next start. Put any lasting Open
@@ -378,6 +466,49 @@ ollama launch qwen --model local-chat --config --yes
 
 ## Updates and backups
 
+### The launcher
+
+For a release install, `local-ai update` first asks GitHub for the latest release of
+`Launcher.Repo`, and waits at most 15 s. It takes only a release tagged `vX.Y.Z` that is no
+draft or prerelease and is immutable. When that release is newer than the version that runs,
+`update` downloads its zip into `staging`, checks the zip's SHA-256 against the digest GitHub
+lists and every file against the manifest, which must name the commit of the tag, and moves the
+release into `versions\vX.Y.Z`. That needs no question, and changes nothing that runs. Then it
+hands over to the new version, whose `update` shows the plan and asks once. The plan starts with
+`Launcher: vOLD -> vNEW (<repository>, sha256:<digest>)`, then lists the parts against the new
+version's pins. On yes it points `current` at the new version before it changes any part, then
+updates the parts. On no nothing changes, the new version waits in `versions` for the next run,
+and `update` returns 2.
+
+- `update` says when the launcher is at the latest release, and never installs an older one.
+- When the release or its zip fails a check, `update` stops with `Update changed nothing` and
+  exit code 1, and updates no part either.
+- Without network, or when GitHub does not answer or limits the requests, it warns that it could
+  not check, keeps the launcher as it is, goes on with the parts and returns 2.
+- Once the new version is in `versions`, `update` deletes the oldest others beyond
+  `Launcher.KeepVersions` (2). It never deletes the new version, the active one, the one before
+  it or the one that runs, so the default of 2 keeps three.
+
+`local-ai update -Rollback` goes back to the version before, which `status` names, as long as
+that version is still in `versions` and matches its manifest. It needs no network. It shows the
+plan, warns, and asks you to type `rollback`. Then it runs that version's `update`, whose plan
+starts with `Launcher: vNEW -> vOLD` and asks once. Only its yes points `current` back and brings
+the parts back to that version's pins. On no, or when that version does not accept your
+`settings.psd1`, the launcher stays as it is, and `update -Rollback` can run again. After a
+rollback, Open WebUI may meet data that the newer version has already migrated; the backups in
+`%LOCALAPPDATA%\local-ai\backups` are the fallback.
+
+`start` checks for a newer release too, at most once per `Launcher.CheckIntervalHours` (24) and
+for at most 5 s. When one is out, it prints one line that names `local-ai update`. It installs
+nothing and never changes the exit code. `Launcher.CheckForUpdates = $false` turns that check
+off.
+
+A git checkout never updates its own code: `update` says so and goes on with the parts. Run `git
+pull` on `main` instead, or install a release. A release zip that you extracted by hand does not
+update itself either; `install.ps1` sets up a release install that does.
+
+### The parts
+
 `local-ai update` compares what is installed with the pins in the settings: those of
 `config\defaults.psd1`, and those that `settings.psd1` sets instead. When something differs, it
 shows the plan and asks. Then it:
@@ -436,6 +567,13 @@ Last it quits the Ollama app when the launcher started it, as `stop` does. It ke
 Git, Node.js and every other Ollama model, and prints the `winget uninstall` commands for them.
 Your data stays as well.
 
+For a release install, it then removes the entry of `%LOCALAPPDATA%\Programs\local-ai-launcher`
+from your user Path, and that folder goes once the window has closed. A hidden process waits for
+the window, then deletes that folder and nothing else. It keeps the folder when `install.ps1` set
+it up again in the meantime. After 15 minutes it gives up, and
+`%TEMP%\local-ai-uninstall-cleanup.log` says why; then delete the folder by hand. When an
+earlier step failed, uninstall keeps the launcher, so that you can run it again.
+
 `local-ai uninstall -RemoveData` also deletes, after you type `delete`:
 
 - Open WebUI's data folder: accounts, chats, uploads, knowledge and its secret key;
@@ -445,15 +583,17 @@ Your data stays as well.
   it says so: once `state.json` is gone, quit that app from its tray icon.
 
 It never deletes `Files.Root`, `OLLAMA_MODELS`, a ComfyUI checkout that `install` did not
-clone, your profile or other system folders, or this repository. `stop`, `status` and
-`uninstall` also work when `settings.psd1` does not load.
+clone, your profile or other system folders, or the launcher's own folder unless it is a release
+install in `%LOCALAPPDATA%\Programs\local-ai-launcher`. `stop`, `status` and `uninstall` also
+work when `settings.psd1` does not load.
 
 ## Where data lives
 
-Nothing is written inside this repository.
+Nothing is written inside this repository, or inside the folder of a release version.
 
 | Data | Location |
 |---|---|
+| A release install: `local-ai.cmd`, `current` and the versions in `versions` | `%LOCALAPPDATA%\Programs\local-ai-launcher` |
 | Launcher settings, `state.json`, `install-stamp.json`, logs, backups, `files.key`, the files server | `%LOCALAPPDATA%\local-ai` |
 | Open WebUI's database, uploads and secret key | `%LOCALAPPDATA%\open-webui` (`OpenWebUI.DataDir`) |
 | Open WebUI and mcpo | uv's tool folder (`uv tool dir`) |
@@ -472,19 +612,21 @@ days. When a verb stops on an error, it prints the path of its transcript.
 
 ## Releases
 
-A release on the [Releases page](https://github.com/Ochsyp/local-ai-launcher/releases) holds two
+A release on the [Releases page](https://github.com/Ochsyp/local-ai-launcher/releases) holds three
 files:
 
 - `local-ai-launcher-X.Y.Z.zip`: the folder `local-ai-launcher-X.Y.Z` with `local-ai.cmd`, `src`,
   `config`, `VERSION`, this README, the CHANGELOG, LICENSE and SECURITY.md, and the manifest
   `local-ai-release.json`, which lists the SHA-256 of every other file. The tests, CI and the
   other development files stay in the repository.
-- `SHA256SUMS`: the SHA-256 of the zip.
+- `install.ps1`: the zip's `src\install.ps1`, which installs a release; see
+  [Install from a release](#install-from-a-release).
+- `SHA256SUMS`: the SHA-256 of the zip and of `install.ps1`.
 
-GitHub Actions builds both from the commit that the tag `vX.Y.Z` names, and signs a build
+GitHub Actions builds them from the commit that the tag `vX.Y.Z` names, and signs a build
 provenance attestation for the zip. A published release is immutable: its files and its tag
 cannot change. There is no release yet; until there is, clone the repository as
-[Quick start](#quick-start) describes.
+[Install from a git clone](#install-from-a-git-clone) describes.
 
 To check a download, compare its SHA-256 with the line in `SHA256SUMS`:
 
@@ -515,6 +657,10 @@ Use the stack only on a single-user PC you trust.
   reach those ports. Ollama and ComfyUI have no sign-in. Never expose the ports beyond the
   machine.
 - Open WebUI asks for a sign-in, and its CORS setting allows only its own local address.
+- `update` installs only immutable releases of `Launcher.Repo`, and `install.ps1` those of
+  `Ochsyp/local-ai-launcher`, whose zip matches the digest GitHub lists and whose files match the
+  manifest. Nothing is signed with Authenticode; [SECURITY.md](SECURITY.md) describes what that
+  trusts.
 - The file tools' key is readable by other programs of the same user; see
   [File tools](#file-tools).
 - Open WebUI gets `NO_PROXY` with `127.0.0.1`, `localhost` and `::1` added, so no proxy sees
@@ -567,12 +713,13 @@ git config core.hooksPath .githooks
 local-ai.cmd                        entry point; runs src\local-ai.ps1 with Windows PowerShell 5.1
 src\local-ai.ps1                    parses the verb and switches, then calls Invoke-LocalAI
 src\LocalAI.psm1                    the launcher: settings, install, start, stop, status, update, uninstall, shortcuts
+src\install.ps1                     installs a release; holds a copy of the module's release functions
 src\image_gate.py                   the image gate in front of ComfyUI
 config\defaults.psd1                every default setting and version pin
 config\local-chat.Modelfile         builds the local-chat alias in Ollama
 config\comfyui\                     the image workflow, its node mapping for Open WebUI, and the torch pins
 config\files-server\                package.json and lockfile of the files server
-tests\LocalAI.Tests.ps1             Pester tests for the module
+tests\LocalAI.Tests.ps1             Pester tests for the module and install.ps1
 tests\Config.Tests.ps1              Pester checks on the tracked configuration
 tests\Release.Tests.ps1             Pester tests for the release scripts and the export-ignore rules
 tests\test_image_gate.py            unittest tests for the image gate

@@ -3,9 +3,10 @@
 # -------------------------------------------------------
 #
 # Pester 6 tests for .github\scripts\LocalAIRelease.psm1, which release.yml and ci.yml run: the
-# rules for VERSION and CHANGELOG.md, the release notes, the manifest and SHA256SUMS formats,
-# full builds in git repositories made in TestDrive:, and the export-ignore rules of this
-# repository's .gitattributes. git must be on PATH; every remote is a folder in TestDrive:.
+# rules for VERSION and CHANGELOG.md, the release notes, the manifest and SHA256SUMS formats, the
+# asset install.ps1, full builds in git repositories made in TestDrive:, and the export-ignore
+# rules of this repository's .gitattributes. git must be on PATH; every remote is a folder in
+# TestDrive:.
 
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', '',
     Justification = 'Pester shares BeforeAll and BeforeEach variables with the It blocks.')]
@@ -118,6 +119,7 @@ BeforeAll {
         'local-ai.cmd'                     = "@echo off`nexit /b 0`n"
         'src/local-ai.ps1'                 = "param()`r`nImport-Module LocalAI`r`n"
         'src/LocalAI.psm1'                 = "function Get-Test { 1 }`n"
+        'src/install.ps1'                  = "& { 'install' }`n"
         'src/image_gate.py'                = "print('gate')`r`n"
         'config/defaults.psd1'             = "@{ }`n"
         'config/local-chat.Modelfile'      = "FROM test`nPARAMETER num_ctx 32768`n"
@@ -141,6 +143,7 @@ BeforeAll {
         'local-ai.cmd'                     = "@echo off`r`nexit /b 0`r`n"
         'src/local-ai.ps1'                 = "param()`r`nImport-Module LocalAI`r`n"
         'src/LocalAI.psm1'                 = "function Get-Test { 1 }`r`n"
+        'src/install.ps1'                  = "& { 'install' }`r`n"
         'src/image_gate.py'                = "print('gate')`n"
         'config/defaults.psd1'             = "@{ }`r`n"
         'config/local-chat.Modelfile'      = "FROM test`nPARAMETER num_ctx 32768`n"
@@ -463,7 +466,7 @@ Describe 'New-ReleaseZip and Assert-ReleaseZip' {
         $build.Version | Should -BeExactly '1.2.3'
         $build.Commit | Should -BeExactly $commit
         $build.Sha256 | Should -BeExactly (Get-FileHash -LiteralPath $build.Path -Algorithm SHA256).Hash.ToLowerInvariant()
-        $build.Files | Should -Be 13
+        $build.Files | Should -Be 14
         @($entries.Keys | Where-Object { -not $_.StartsWith($prefix, [StringComparison]::Ordinal) }) | Should -BeNullOrEmpty
         $entries.Contains($prefix) | Should -BeTrue
     }
@@ -580,10 +583,23 @@ Describe 'New-ReleaseZip and Assert-ReleaseZip' {
     It 'refuses a zip <Case>' -ForEach @(
         @{ Case = 'without the manifest'; Name = 'local-ai-release.json'; Message = '*The zip lacks the manifest local-ai-launcher-1.2.3/local-ai-release.json.*' }
         @{ Case = 'without src/LocalAI.psm1'; Name = 'src/LocalAI.psm1'; Message = '*The zip lacks local-ai-launcher-1.2.3/src/LocalAI.psm1, which every release holds.*' }
+        @{ Case = 'without src/install.ps1'; Name = 'src/install.ps1'; Message = '*The zip lacks local-ai-launcher-1.2.3/src/install.ps1, which every release holds.*' }
         @{ Case = 'without VERSION'; Name = 'VERSION'; Message = '*The zip lacks local-ai-launcher-1.2.3/VERSION.*' }
     ) {
         $edited = Edit-TestZip -Source $build.Path -Change { param($zip) $zip.GetEntry($prefix + $Name).Delete() }
         { Assert-ReleaseZip -Path $edited -Version '1.2.3' -Commit $commit } | Should -Throw -ExpectedMessage $Message
+    }
+
+    It 'writes the zip''s src/install.ps1 as the asset install.ps1, byte for byte, and refuses a zip without it' {
+        $out = Join-Path $base 'install-asset'
+        $path = Save-ReleaseInstallScript -ZipPath $build.Path -Version '1.2.3' -OutputDirectory $out
+        $path | Should -Be (Join-Path $out 'install.ps1')
+        $latin1.GetString([IO.File]::ReadAllBytes($path)) | Should -BeExactly $zippedFiles['src/install.ps1']
+        $edited = Edit-TestZip -Source $build.Path -Change { param($zip) $zip.GetEntry($prefix + 'src/install.ps1').Delete() }
+        { Save-ReleaseInstallScript -ZipPath $edited -Version '1.2.3' -OutputDirectory (Join-Path $base 'no-asset') } |
+            Should -Throw -ExpectedMessage "The release zip $edited holds no local-ai-launcher-1.2.3/src/install.ps1, which the asset install.ps1 is."
+        Test-Path -LiteralPath (Join-Path $base 'no-asset') | Should -BeFalse
+        { Save-ReleaseInstallScript -ZipPath $build.Path -Version '1.2' -OutputDirectory $out } | Should -Throw -ExpectedMessage "'1.2' is no release version X.Y.Z."
     }
 
     It 'refuses a zip with an entry outside its folder' {
@@ -733,7 +749,7 @@ Describe 'Invoke-ReleaseBuild' {
         }
     }
 
-    It 'builds the zip, SHA256SUMS and notes.md of the version VERSION names, once its tag is missing' {
+    It 'builds the zip, install.ps1, SHA256SUMS and notes.md of the version VERSION names, once its tag is missing' {
         $checkout = Initialize-BuildCheckout -Name 'release' -Version '1.2.4'
         $out = Join-Path $base 'release-out'
         $release = Invoke-ReleaseBuild -RepositoryPath $checkout -Commit 'HEAD' -OutputDirectory $out 6>$null
@@ -742,8 +758,12 @@ Describe 'Invoke-ReleaseBuild' {
         $release.Commit | Should -BeExactly @(Invoke-TestGit @('-C', $checkout, 'rev-parse', 'HEAD'))[-1]
         $release.DryRun | Should -BeFalse
         $release.Zip | Should -Be (Join-Path $out 'assets\local-ai-launcher-1.2.4.zip')
-        @(Get-ChildItem -LiteralPath (Join-Path $out 'assets') | ForEach-Object { $_.Name } | Sort-Object) | Should -Be @('local-ai-launcher-1.2.4.zip', 'SHA256SUMS')
-        $latin1.GetString([IO.File]::ReadAllBytes((Join-Path $out 'assets\SHA256SUMS'))) | Should -BeExactly "$($release.Sha256)  local-ai-launcher-1.2.4.zip`n"
+        @(Get-ChildItem -LiteralPath (Join-Path $out 'assets') | ForEach-Object { $_.Name } | Sort-Object) | Should -Be @('install.ps1', 'local-ai-launcher-1.2.4.zip', 'SHA256SUMS')
+        # install.ps1 is the zip's src/install.ps1, CRLF and all, and SHA256SUMS lists both assets in ordinal order.
+        $release.InstallScript | Should -Be (Join-Path $out 'assets\install.ps1')
+        $latin1.GetString([IO.File]::ReadAllBytes($release.InstallScript)) | Should -BeExactly $zippedFiles['src/install.ps1']
+        $latin1.GetString([IO.File]::ReadAllBytes((Join-Path $out 'assets\SHA256SUMS'))) |
+            Should -BeExactly "$(Get-TestHash $zippedFiles['src/install.ps1'])  install.ps1`n$($release.Sha256)  local-ai-launcher-1.2.4.zip`n"
         $release.Notes | Should -Be (Join-Path $out 'notes.md')
         $latin1.GetString([IO.File]::ReadAllBytes($release.Notes)) | Should -BeExactly ((@('## [1.2.4] - 2026-05-04', '', '### Added', '', '- A release check.', '',
                     '### Fixed', '', '- A typo.') -join "`n") + "`n")
@@ -796,6 +816,7 @@ Describe 'Invoke-ReleaseBuild' {
         Test-Path -LiteralPath (Join-Path $out 'notes.md') | Should -BeFalse
         (Read-TestZip $release.Zip).Contains('local-ai-launcher-0.0.0/VERSION') | Should -BeFalse
         (Get-FileHash -LiteralPath (Join-Path $out 'again\local-ai-launcher-0.0.0.zip') -Algorithm SHA256).Hash.ToLowerInvariant() | Should -BeExactly $release.Sha256
+        $latin1.GetString([IO.File]::ReadAllBytes((Join-Path $out 'assets\install.ps1'))) | Should -BeExactly $zippedFiles['src/install.ps1']
     }
 
     It 'dry-runs the version VERSION names, also when its tag exists' {

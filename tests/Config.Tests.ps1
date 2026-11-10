@@ -7,7 +7,8 @@
 # it must list no superseded alias and no further variable for a service to inherit, the
 # tracked Modelfile must match Model.Source, the ComfyUI workflow, node mapping and constraints
 # must have the shape the image path needs, the files server's package.json and lockfile must
-# pin Files.ServerVersion and the overridden MCP packages, and source files must stay ASCII.
+# pin Files.ServerVersion and the overridden MCP packages, the launcher's own releases come from
+# its repository, and source files must stay ASCII.
 
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', '',
     Justification = 'Pester shares BeforeDiscovery and BeforeAll variables with the It blocks.')]
@@ -108,6 +109,17 @@ Describe 'config\defaults.psd1' {
 
     It 'keeps the 3 newest Open WebUI backups that update makes' {
         (Get-LocalAISettings -DefaultsPath $defaultsPath).Update.KeepBackups | Should -Be 3
+    }
+
+    # The rules for each Launcher value are tested with Get-LocalAISettings in LocalAI.Tests.ps1.
+    It "takes the launcher's own releases from Ochsyp/local-ai-launcher, immutable ones only, looks once a day and keeps two versions" {
+        $launcher = (Get-LocalAISettings -DefaultsPath $defaultsPath).Launcher
+        @($launcher.Keys | Sort-Object) | Should -Be @('CheckForUpdates', 'CheckIntervalHours', 'KeepVersions', 'Repo', 'RequireImmutable')
+        $launcher.Repo | Should -BeExactly 'Ochsyp/local-ai-launcher'
+        $launcher.CheckForUpdates | Should -BeTrue
+        $launcher.CheckIntervalHours | Should -Be 24
+        $launcher.KeepVersions | Should -Be 2
+        $launcher.RequireImmutable | Should -BeTrue
     }
 
     It 'gives every winget package an Id, a Command and a Scope' {

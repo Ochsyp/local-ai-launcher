@@ -1,8 +1,8 @@
 # Builds a release when a push to main changes VERSION, or when it is run by hand on main: the zip
-# local-ai-launcher-X.Y.Z.zip of that commit, SHA256SUMS and a build provenance attestation, then
-# the draft release vX.Y.Z of that commit while it is still the tip of main. The maintainer reviews
-# and publishes the draft, which creates the tag; this workflow never publishes a release or
-# creates a tag.
+# local-ai-launcher-X.Y.Z.zip of that commit, install.ps1 (its src/install.ps1), SHA256SUMS of both
+# and a build provenance attestation of the zip, then the draft release vX.Y.Z of that commit while
+# it is still the tip of main. The maintainer reviews and publishes the draft, which creates the
+# tag; this workflow never publishes a release or creates a tag.
 # A pull request that changes the release tooling or VERSION gets a dry run of the build, with no
 # attestation and no draft. When a release is published, the verify job checks its assets and
 # attestations and changes nothing.
@@ -146,7 +146,7 @@ jobs:
             echo "Deleting the earlier draft of $tag (release $id)."
             gh api --method DELETE "repos/$GH_REPO/releases/$id"
           done
-          gh release create "$tag" "release-build/assets/local-ai-launcher-$VERSION.zip" release-build/assets/SHA256SUMS \
+          gh release create "$tag" "release-build/assets/local-ai-launcher-$VERSION.zip" release-build/assets/install.ps1 release-build/assets/SHA256SUMS \
             --draft --target "$COMMIT" --title "$tag" --notes-file release-build/notes.md
 
   verify:
@@ -177,12 +177,19 @@ jobs:
             [ "$file" = SHA256SUMS ] && continue
             awk -v name="$file" '$2 == name { found = 1 } END { exit !found }' SHA256SUMS || { echo "::error::SHA256SUMS does not list $file."; exit 1; }
           done
+          for file in "$zip" install.ps1; do
+            [ -f "$file" ] || { echo "::error::The release has no asset $file."; exit 1; }
+          done
           unzip -p "$zip" "local-ai-launcher-$version/local-ai-release.json" |
             jq -e --arg version "$version" --arg tag "$TAG" --arg commit "$commit" \
               '.schema == 1 and .name == "local-ai-launcher" and .version == $version and .tag == $tag and .commit == $commit' > /dev/null ||
             { echo "::error::The manifest in $zip does not name $TAG at $commit."; exit 1; }
+          # The asset install.ps1 is the zip's src/install.ps1, byte for byte; the manifest lists that file's SHA-256.
+          unzip -p "$zip" "local-ai-launcher-$version/src/install.ps1" | cmp -s - install.ps1 ||
+            { echo "::error::The asset install.ps1 differs from local-ai-launcher-$version/src/install.ps1 in $zip."; exit 1; }
           cd ..
           gh release verify "$TAG"
           gh release verify-asset "$TAG" "assets/$zip"
+          gh release verify-asset "$TAG" assets/install.ps1
           gh attestation verify "assets/$zip" --repo "$GH_REPO" --signer-workflow "$GH_REPO/.github/workflows/release.yml" \
             --source-ref refs/heads/main --source-digest "$commit" --deny-self-hosted-runners
