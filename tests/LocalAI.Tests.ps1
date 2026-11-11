@@ -992,6 +992,31 @@ public static class LocalAITestProgram {
     It 'returns the exit code of a program that ends within -TimeoutSeconds' {
         Invoke-Native -FilePath 'cmd.exe' -ArgumentList '/c', 'exit 3' -SuccessCode 3 -Console -TimeoutSeconds 30 | Should -Be 3
     }
+
+    It 'keeps the exit code of a program that ends at once with -Console, as it holds the handle from the start and runs no Start-Process' {
+        Mock Start-Process -ModuleName LocalAI -MockWith { throw 'Start-Process can lose the exit code of a program that ends before its handle opens.' }
+        foreach ($attempt in 1..25) {
+            Invoke-Native -FilePath 'cmd.exe' -ArgumentList '/c', 'exit 3' -SuccessCode 0, 3 -Console | Should -Be 3
+        }
+        Should -Invoke Start-Process -ModuleName LocalAI -Times 0 -Exactly
+    }
+
+    It 'runs the program in the current location with -Console, as Start-Process did' {
+        $folder = Join-Path $TestDrive 'native\here'
+        $null = New-Item -ItemType Directory -Force -Path $folder
+        [IO.File]::WriteAllText((Join-Path $folder 'marker.txt'), 'x')
+        Push-Location -LiteralPath $folder
+        try {
+            Invoke-Native -FilePath 'cmd.exe' -ArgumentList '/c', 'if exist marker.txt (exit 5) else (exit 6)' -SuccessCode 5, 6 -Console | Should -Be 5
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'throws naming the program when Windows cannot start it with -Console' {
+        $broken = Write-TestFile 'native\broken.exe' 'not a program'
+        { Invoke-Native -FilePath $broken -ArgumentList '/x' -Console } | Should -Throw -ExpectedMessage "Cannot start '$broken /x': *"
+    }
 }
 
 Describe 'Update-SessionPath' {
