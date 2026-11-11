@@ -93,8 +93,6 @@ so a window that a shortcut opened stays readable. With `-Json` it never pauses.
 
 ### Install from a release
 
-There is no release yet; until there is, use a [git clone](#install-from-a-git-clone).
-
 A release install lives in `%LOCALAPPDATA%\Programs\local-ai-launcher`, and `local-ai update`
 brings it to the latest release.
 
@@ -136,13 +134,13 @@ example after `local-ai.cmd` was deleted, run it again with `-Tag` and that vers
 `install.ps1` also runs straight from the release, in one line:
 
 ```powershell
-irm https://github.com/Ochsyp/local-ai-launcher/releases/download/vX.Y.Z/install.ps1 | iex
+irm https://github.com/Ochsyp/local-ai-launcher/releases/download/v1.0.0/install.ps1 | iex
 ```
 
 To pass options, make a script block of it:
 
 ```powershell
-& ([scriptblock]::Create((irm https://github.com/Ochsyp/local-ai-launcher/releases/download/vX.Y.Z/install.ps1))) -AddToPath -Shortcuts
+& ([scriptblock]::Create((irm https://github.com/Ochsyp/local-ai-launcher/releases/download/v1.0.0/install.ps1))) -AddToPath -Shortcuts
 ```
 
 The address names a release, so it always gets the same `install.ps1`, which that release can no
@@ -635,8 +633,7 @@ files:
 
 GitHub Actions builds them from the commit that the tag `vX.Y.Z` names, and signs a build
 provenance attestation for the zip. A published release is immutable: its files and its tag
-cannot change. There is no release yet; until there is, clone the repository as
-[Install from a git clone](#install-from-a-git-clone) describes.
+cannot change.
 
 To check a download, compare its SHA-256 with the line in `SHA256SUMS`:
 

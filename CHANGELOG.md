@@ -1,9 +1,11 @@
 # Changelog
 
 All notable changes to this project are listed here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). There are no releases yet.
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+
+## [1.0.0] - 2026-11-11
 
 The launcher was redesigned. These entries compare it with the earlier set of scripts.
 
@@ -219,4 +221,5 @@ service that an earlier start left running keeps the environment it started with
   folder of the working folder. SECURITY.md describes what this trusts, also for
   `Launcher.Repo` and the one-liner.
 
-[Unreleased]: https://github.com/Ochsyp/local-ai-launcher/commits/main
+[Unreleased]: https://github.com/Ochsyp/local-ai-launcher/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Ochsyp/local-ai-launcher/releases/tag/v1.0.0
