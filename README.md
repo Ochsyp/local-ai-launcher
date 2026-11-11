@@ -137,13 +137,13 @@ example after `local-ai.cmd` was deleted, run it again with `-Tag` and that vers
 `install.ps1` also runs straight from the release, in one line:
 
 ```powershell
-irm https://github.com/Ochsyp/local-ai-launcher/releases/download/v1.0.0/install.ps1 | iex
+irm https://github.com/Ochsyp/local-ai-launcher/releases/download/v1.0.1/install.ps1 | iex
 ```
 
 To pass options, make a script block of it:
 
 ```powershell
-& ([scriptblock]::Create((irm https://github.com/Ochsyp/local-ai-launcher/releases/download/v1.0.0/install.ps1))) -AddToPath -Shortcuts
+& ([scriptblock]::Create((irm https://github.com/Ochsyp/local-ai-launcher/releases/download/v1.0.1/install.ps1))) -AddToPath -Shortcuts
 ```
 
 The address names a release, so it always gets the same `install.ps1`, which that release can no
