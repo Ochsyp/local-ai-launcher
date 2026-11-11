@@ -77,7 +77,8 @@ uv then installs Open WebUI and mcpo as uv tools, and the Pythons they need.
 4. Run `local-ai start`. The browser opens Open WebUI at `http://127.0.0.1:8080`.
 5. Create your account. On a fresh data folder the first account becomes the admin; see
    [Signing in](#signing-in).
-6. Optionally run `local-ai shortcuts` for Start menu shortcuts.
+6. Optionally run `local-ai shortcuts` for the Start menu shortcuts Start, Stop, Status and
+   Update Local AI; see [Start menu shortcuts](#start-menu-shortcuts).
 
 `local-ai` works in any window once the launcher's folder is on your Path, as `install.ps1
 -AddToPath` sets up, and in `cmd.exe` in the launcher's folder. Elsewhere run `local-ai.cmd` by
@@ -88,8 +89,10 @@ runs none from there. The launcher's own messages write commands as `local-ai`. 
 without a verb runs `start`.
 
 `local-ai.cmd` sets the execution policy `RemoteSigned` for its own run only, so the PC's
-policy stays as it is. The window pauses after `status` and after any exit code other than 0,
-so a window that a shortcut opened stays readable. With `-Json` it never pauses.
+policy stays as it is. The window pauses after `status`, after `update` and after any exit code
+other than 0, so a window that a shortcut opened stays readable. With `-Json` it never pauses.
+`start` waits for a key only after it said that a newer launcher is out; see
+[The launcher](#the-launcher).
 
 ### Install from a release
 
@@ -235,19 +238,29 @@ By verb:
 
 ## Start menu shortcuts
 
-`local-ai shortcuts` creates three shortcuts in
+`local-ai shortcuts` creates four shortcuts in
 `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Local AI`:
 
 - **Start Local AI** runs `local-ai.cmd start`.
 - **Stop Local AI** runs `local-ai.cmd stop`.
 - **Status Local AI** runs `local-ai.cmd status`.
+- **Update Local AI** runs `local-ai.cmd update`. It shows the plan and asks before it changes
+  anything, and its window stays open until you press a key.
 
 They use the Ollama app's icon when it is installed. `install` creates no shortcuts. For a
 release install they run `local-ai.cmd` in `%LOCALAPPDATA%\Programs\local-ai-launcher`, which
 runs the active version, so they keep working after an update. For a git clone they point at the
 clone, so run `local-ai shortcuts` again after you move it.
-`local-ai shortcuts -Remove` deletes the three shortcuts, and the folder when it is then empty.
+`local-ai shortcuts -Remove` deletes the four shortcuts, and the folder when it is then empty.
 `Shortcuts.Folder` sets another folder.
+
+When `update` makes another launcher version active and the folder holds the **Start Local AI**
+of this install, which runs `local-ai.cmd` in `%LOCALAPPDATA%\Programs\local-ai-launcher`, it
+brings the shortcuts up to date as `local-ai shortcuts` does. So an install whose shortcuts an
+earlier version created gets **Update Local AI** with its next update. When that fails, `update`
+warns and returns 2, and `local-ai shortcuts` tries again. Shortcuts that point at a git clone
+or another folder stay as they are. A git clone never changes versions this way, so run
+`local-ai shortcuts` there after a `git pull` that adds a shortcut.
 
 ## Where to run it
 
@@ -475,19 +488,20 @@ ollama launch qwen --model local-chat --config --yes
 
 ### The launcher
 
-For a release install, `local-ai update` first asks GitHub for the latest release of
-`Launcher.Repo`, and waits at most 15 s. It takes only a release tagged `vX.Y.Z` that is no
-draft or prerelease and is immutable. When that release is newer than the version that runs,
-`update` downloads its zip into `staging`, checks the zip's SHA-256 against the digest GitHub
-lists and every file against the manifest, which must name the commit of the tag, and moves the
-release into `versions\vX.Y.Z`. That needs no question, and changes nothing that runs. Then it
-hands over to the new version, whose `update` shows the plan and asks once. The plan starts with
-`Launcher: vOLD -> vNEW (<repository>, sha256:<digest>)`, then lists the parts against the new
-version's pins. On yes it stops what runs, points `current` at the new version, then updates the
-parts. When only the launcher changes, it points `current` at once, and what runs keeps running
-until the next start. On no nothing changes, the new version waits in `versions` for the next
-run, and `update` returns 2. When not everything can be stopped, nothing changes either, and
-`update` returns 1.
+For a release install, `local-ai update`, or the Start menu shortcut **Update Local AI**, first
+asks GitHub for the latest release of `Launcher.Repo`, and waits at most 15 s. It takes only a
+release tagged `vX.Y.Z` that is no draft or prerelease and is immutable. When that release is
+newer than the version that runs, `update` downloads its zip into `staging`, checks the zip's
+SHA-256 against the digest GitHub lists and every file against the manifest, which must name
+the commit of the tag, and moves the release into `versions\vX.Y.Z`. That needs no question, and
+changes nothing that runs. Then it hands over to the new version, whose `update` shows the plan
+and asks once. The plan starts with `Launcher: vOLD -> vNEW (<repository>, sha256:<digest>)`,
+then lists the parts against the new version's pins. On yes it stops what runs, points `current`
+at the new version, brings the Start menu shortcuts up to date when there are any (see
+[Start menu shortcuts](#start-menu-shortcuts)), then updates the parts. When only the launcher
+changes, it points `current` at once, and what runs keeps running until the next start. On no
+nothing changes, the new version waits in `versions` for the next run, and `update` returns 2.
+When not everything can be stopped, nothing changes either, and `update` returns 1.
 
 - `update` says when the launcher is at the latest release, and never installs an older one.
 - When the release or its zip fails a check, `update` stops with `Update changed nothing` and
@@ -510,9 +524,18 @@ again. After a rollback, Open WebUI may meet data that the newer version has alr
 the backups in `%LOCALAPPDATA%\local-ai\backups` are the fallback.
 
 `start` checks for a newer release too, at most once per `Launcher.CheckIntervalHours` (24) and
-for at most 5 s. When one is out, it prints one line that names `local-ai update`. It installs
-nothing and never changes the exit code. `Launcher.CheckForUpdates = $false` turns that check
-off.
+for at most 5 s. When one is out, it prints one line that names `local-ai update` and the Start
+menu shortcut **Update Local AI**. Only a start that runs the check prints it, so the line shows
+at most once per interval, not at every start while a newer release is out; `status` shows what
+the last check found at any time. When `start` printed the line and ends with exit code 0, it
+waits for a key before it returns, so that a window a shortcut opened stays open to read it. It
+waits only in a console window that reads the keyboard and shows the output, never when its
+input or output is redirected, as when a program runs it or reads what it prints. Nor does it
+wait when the `powershell.exe` that runs `src\local-ai.ps1` has `-NonInteractive`, but
+`local-ai.cmd` starts its PowerShell without it. So a scheduled task that runs `local-ai start`
+where nobody can press a key redirects its input, as `cmd /c "local-ai start < NUL"` does. The
+check installs nothing and never changes the exit code.
+`Launcher.CheckForUpdates = $false` turns that check off.
 
 A git checkout never updates its own code: `update` says so and goes on with the parts. Run `git
 pull` on `main` instead, or install a release. A release zip that you extracted by hand does not

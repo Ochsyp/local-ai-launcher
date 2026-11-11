@@ -5637,7 +5637,7 @@ function Get-LocalAIStatusReport {
         $launcher.Data.appDataRedirection = [ordered]@{ package = [string]$redirection.Package; store = [string]$redirection.Store }
         & $add 'degraded' ("$(Format-AppDataRedirection -Redirection $redirection), where other windows never see them. status runs here, but every other " +
             "verb refuses to, so that the launcher's files never land there. Run those, such as 'local-ai start', from a console window or Windows Terminal; " +
-            "the Start menu shortcuts 'Start Local AI' and 'Stop Local AI' work too.")
+            "the Start menu shortcuts 'Start Local AI', 'Stop Local AI' and 'Update Local AI' work too.")
     }
     $folders = @($paths.Root)
     if ($settings) { $folders += [string]$settings.OpenWebUI.DataDir }
@@ -5757,8 +5757,8 @@ function Get-LocalAIStatus {
     return $report.ExitCode
 }
 
-# Return the launcher's three Start menu shortcuts as @{ Name; Arguments; Description } in the order Start, Stop, Status; the descriptions name the services
-# Get-LocalAIServicePlan lists for $Settings and the stamp in $Paths, Open WebUI first.
+# Return the launcher's four Start menu shortcuts as @{ Name; Arguments; Description } in the order Start, Stop, Status, Update; the descriptions of the
+# first three name the services Get-LocalAIServicePlan lists for $Settings and the stamp in $Paths, Open WebUI first.
 function Get-LocalAIShortcutSpec {
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -5784,12 +5784,14 @@ function Get-LocalAIShortcutSpec {
     @{ Name = 'Start Local AI.lnk'; Arguments = 'start'; Description = "Start $(& $join $names), with $alias in Ollama" }
     @{ Name = 'Stop Local AI.lnk'; Arguments = 'stop'; Description = "Stop $(& $join $names), unload $alias from Ollama, and quit the Ollama app when local-ai started it" }
     @{ Name = 'Status Local AI.lnk'; Arguments = 'status'; Description = "Show whether $(& $join (@('Ollama') + $names)) run, and what needs attention" }
+    @{ Name = 'Update Local AI.lnk'; Arguments = 'update'; Description = ('Bring a release install of the launcher to its latest release and every part to ' +
+            'its pin, after showing the plan and asking') }
 }
 
-# The shortcuts verb: create or replace Start, Stop and Status Local AI.lnk in Shortcuts.Folder, each running this repository's local-ai.cmd with its verb in
-# a normal window, with the Ollama app's icon when there is one; a shortcut that already matches is left alone. For a release install they run the shim
-# local-ai.cmd in the install folder, which is also their working folder, never a version folder, which update may delete. With -Remove it deletes those
-# three names only, and the folder when that leaves it empty. Returns 0; throws when local-ai.cmd is missing or a shortcut cannot be saved or removed.
+# The shortcuts verb: create or replace Start, Stop, Status and Update Local AI.lnk in Shortcuts.Folder, each running this repository's local-ai.cmd with its
+# verb in a normal window, with the Ollama app's icon when there is one; a shortcut that already matches is left alone. For a release install they run the
+# shim local-ai.cmd in the install folder, which is also their working folder, never a version folder, which update may delete. With -Remove it deletes
+# those four names only, and the folder when that leaves it empty. Returns 0; throws when local-ai.cmd is missing or a shortcut cannot be saved or removed.
 function Set-LocalAIShortcut {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'A launcher verb, which offers no -WhatIf.')]
@@ -5841,7 +5843,7 @@ function Set-LocalAIShortcut {
         $existed = Test-Path -LiteralPath $path -PathType Leaf
         # CreateShortcut loads an existing file and writes nothing until Save.
         $link = $shell.CreateShortcut($path)
-        # WindowStyle 1 is a normal window, which stays open for the pause local-ai.cmd makes after status or an error.
+        # WindowStyle 1 is a normal window, which stays open for the pause local-ai.cmd makes after status, update or an error.
         $wanted = [ordered]@{
             TargetPath = $target; Arguments = $spec.Arguments; WorkingDirectory = $workFolder; WindowStyle = 1
             IconLocation = $iconLocation; Description = $spec.Description
@@ -5862,8 +5864,41 @@ function Set-LocalAIShortcut {
             Write-Host "Updated $path."
         }
     }
-    Write-Host "The Start menu folder $folder holds Start, Stop and Status Local AI." -ForegroundColor Green
+    Write-Host "The Start menu folder $folder holds Start, Stop, Status and Update Local AI." -ForegroundColor Green
     return 0
+}
+
+# For update, once it made another launcher version active: when Shortcuts.Folder holds this install's Start Local AI.lnk, the one that runs the shim
+# local-ai.cmd in the install folder, rewrite the launcher's shortcuts there (Set-LocalAIShortcut) for the launcher Context.RepoRoot and Context.InstallRoot
+# name, so that they match that version, as one that adds Update Local AI. A folder without that shortcut gets none, and one whose Start Local AI runs another
+# local-ai.cmd, such as a git clone's, stays as it is. Returns the text of its warning when reading that shortcut or writing the shortcuts fails, else nothing.
+# update counts that text instead of a -WarningVariable, which would also collect the warnings Get-LocalAIShortcutSpec silences, such as one for ComfyUI.Args.
+function Update-LocalAIShortcut {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Called by the update verb, which asks before it changes anything.')]
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][hashtable]$Context
+    )
+    try {
+        $folder = Resolve-FolderPath -Path $Context.Settings.Shortcuts.Folder
+        $start = [IO.Path]::Combine($folder, 'Start Local AI.lnk')
+        if (-not [IO.File]::Exists($start)) { return }
+        # The target Set-LocalAIShortcut gives the shortcuts of a release install.
+        $installRoot = if ($Context.InstallRoot) { [string]$Context.InstallRoot } else { Get-LauncherInstallRoot -LocalAppData $env:LOCALAPPDATA }
+        $shim = [IO.Path]::Combine([IO.Path]::GetFullPath($installRoot).TrimEnd('\'), 'local-ai.cmd')
+        # CreateShortcut loads an existing file and writes nothing until Save.
+        $ran = [string](Get-WScriptShell).CreateShortcut($start).TargetPath
+        if (-not [string]::Equals($ran, $shim, [StringComparison]::OrdinalIgnoreCase)) { return }
+        Write-Host "Bringing the launcher's Start menu shortcuts up to date..."
+        $shortcuts = @{ Settings = $Context.Settings; Paths = $Context.Paths; RepoRoot = $Context.RepoRoot; InstallRoot = $Context.InstallRoot; Remove = $false }
+        $null = Set-LocalAIShortcut -Context $shortcuts
+    } catch {
+        $text = "Could not bring the Start menu shortcuts up to date: $($_.Exception.Message) Run 'local-ai shortcuts' to try again."
+        Write-Warning $text
+        return $text
+    }
 }
 
 # Return the Python minor version, such as '3.12', that $Version, such as '3.12.16', starts with; $Version itself when it names none. Pure.
@@ -5887,6 +5922,30 @@ function Test-LocalAIConsoleInput {
     return [Environment]::UserInteractive -and -not $redirected
 }
 
+# Return $true when what this process prints shows in its console window: its output goes to no file or pipe, as when a program reads it. Reads only.
+function Test-LocalAIConsoleOutput {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param()
+    $redirected = $true
+    try { $redirected = [Console]::IsOutputRedirected } catch { $redirected = $true }
+    return -not $redirected
+}
+
+# Return $true when PowerShell runs with -NonInteractive, as a scheduled task may start it, where nobody can answer: when an argument after the program in
+# $CommandLine, by default this process's command line, starts with -noni, as -NonInteractive and each shorter form powershell.exe takes do, in any case and
+# also with / or a typographic dash for the -. local-ai.ps1 refuses any argument that starts so. Reads only.
+function Test-LocalAINonInteractive {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [string[]]$CommandLine = [Environment]::GetCommandLineArgs()
+    )
+    # powershell.exe reads a switch after an en dash, an em dash or a horizontal bar too.
+    $pattern = '^[-/' + [char]0x2013 + [char]0x2014 + [char]0x2015 + ']noni'
+    return @($CommandLine | Select-Object -Skip 1 | Where-Object { $_ -match $pattern }).Count -gt 0
+}
+
 # Drop the keys typed into this console that no program has read yet, so a key pressed while the launcher was busy cannot answer the next question.
 # Returns nothing; a host without a console buffer, such as the ISE, is left alone.
 function Clear-LocalAIConsoleInput {
@@ -5897,6 +5956,37 @@ function Clear-LocalAIConsoleInput {
     } catch {
         Write-Verbose "This host keeps no console input to drop: $($_.Exception.Message)"
     }
+}
+
+# Wait until the person at the console presses a key down, Ctrl+C included, and return its virtual key code. Throws when this host reads no keys, as one
+# without a console.
+function Read-LocalAIConsoleKey {
+    [CmdletBinding()]
+    [OutputType([int])]
+    param()
+    # AllowCtrlC reads Ctrl+C as a key, so that it cannot stop the run that waits and change its exit code.
+    return [int]$Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown,AllowCtrlC').VirtualKeyCode
+}
+
+# Keep this console window open until the person at it presses a key, as the pause of local-ai.cmd does, so that the last lines stay readable in a window a
+# Start menu shortcut opened. Waits only when this window can ask (Test-LocalAIConsoleInput), shows what this run prints (Test-LocalAIConsoleOutput), and
+# PowerShell runs without -NonInteractive (Test-LocalAINonInteractive), whose ReadKey would still wait. So a program or a test that redirects the input or
+# reads the output never waits, nor does a powershell.exe -NonInteractive that runs local-ai.ps1 itself; local-ai.cmd starts its PowerShell without
+# -NonInteractive. Keys typed before are dropped first. Returns nothing and never throws.
+function Wait-LocalAIConsoleKey {
+    [CmdletBinding()]
+    param()
+    if (-not (Test-LocalAIConsoleInput) -or -not (Test-LocalAIConsoleOutput) -or (Test-LocalAINonInteractive)) { return }
+    Clear-LocalAIConsoleInput
+    Write-Host 'Press any key to continue . . .' -NoNewline
+    # Shift, Ctrl, Alt, the Windows keys and the lock keys alone end no wait, as with pause, so that switching windows with Alt+Tab keeps this one open.
+    $alone = @(16, 17, 18, 20, 91, 92, 144, 145)
+    try {
+        do { $key = Read-LocalAIConsoleKey } while ($alone -contains $key)
+    } catch {
+        Write-Verbose "This host reads no keys: $($_.Exception.Message)"
+    }
+    Write-Host ''
 }
 
 # Return $true only when the person at the console answers y or yes to $Question, or with $Word exactly that word in any case; any other answer, an empty one
@@ -7122,7 +7212,7 @@ function Write-LocalAIUpdatePlan {
 # started, recorded as start records it, is quit again unless the stack runs, also after an early return or a throw. In the run another launcher version
 # handed over to (Context.ActivateLauncher, Get-LauncherActivation), the plan starts with the launcher's change, asked about with the parts, and a yes makes
 # this version active (Enable-LauncherVersion) once the stop and the check for busy programs passed, before any part changes, and without a stop when
-# nothing else differs. Context.Warnings count as warnings.
+# nothing else differs; the launcher's Start menu shortcuts then follow it (Update-LocalAIShortcut). Context.Warnings count as warnings.
 # Returns 0; 2 when degraded or declined, or when that quit fails; 1 on a failure.
 function Update-LocalAI {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
@@ -7176,7 +7266,9 @@ function Update-LocalAI {
                     return 2
                 }
                 $null = Enable-LauncherVersion -InstallRoot $activation.InstallRoot -Tag $activation.To -StatePath $paths.State
+                $warned = @($warned) + @(Update-LocalAIShortcut -Context $Context)
                 Write-Host "The launcher is $($activation.To) now. Run 'local-ai install' to set up the rest." -ForegroundColor Green
+                if ((& $count) -gt 0) { return 2 }
                 return 0
             }
             $url = Resolve-OllamaUrl -Setting $settings.Ollama.Url
@@ -7210,6 +7302,7 @@ function Update-LocalAI {
                         return 2
                     }
                     $null = Enable-LauncherVersion -InstallRoot $activation.InstallRoot -Tag $activation.To -StatePath $paths.State
+                    $warned = @($warned) + @(Update-LocalAIShortcut -Context $Context)
                     Write-Host "The launcher is $($activation.To) now, and everything matches its pin." -ForegroundColor Green
                 } else {
                     Write-Host 'Everything matches its pin.' -ForegroundColor Green
@@ -7266,6 +7359,7 @@ function Update-LocalAI {
                     }
                     throw $failed
                 }
+                $warned = @($warned) + @(Update-LocalAIShortcut -Context $Context)
                 Write-Host "The launcher is $($activation.To) now; the parts come next."
             }
 
@@ -9374,24 +9468,27 @@ function Invoke-LauncherRollback {
 
 # start's look for a newer launcher, which never changes start's exit code or throws: while Launcher.CheckForUpdates is on, for a release install, at most
 # once per Launcher.CheckIntervalHours after state.json's Launcher.LastCheck, ask Launcher.Repo for its latest release (Get-LauncherRelease, 5 s), record the
-# answer or the reason it failed as LastCheck, and print one line when that release is newer than this one. $NowTicks stands in for the time.
+# answer or the reason it failed as LastCheck, and print one line, naming 'local-ai update' and the Start menu shortcut Update Local AI, when that release is
+# newer than this one. A start before the check is due again prints nothing, also while LastCheck records a newer release. $NowTicks stands in for the time.
+# Returns $true when it printed that line, else $false.
 function Invoke-LauncherPassiveCheck {
     [CmdletBinding()]
+    [OutputType([bool])]
     param(
         [Parameter(Mandatory)][hashtable]$Context,
         [long]$NowTicks = [DateTime]::UtcNow.Ticks
     )
     try {
         $launcher = $Context.Settings.Launcher
-        if ($launcher -isnot [hashtable] -or -not $launcher.CheckForUpdates) { return }
+        if ($launcher -isnot [hashtable] -or -not $launcher.CheckForUpdates) { return $false }
         $repoRoot = [string]$Context.RepoRoot
         $installRoot = if ($Context.InstallRoot) { [string]$Context.InstallRoot } else { Get-LauncherInstallRoot -LocalAppData $env:LOCALAPPDATA }
-        if ((Get-LauncherInstallKind -RepoRoot $repoRoot -InstallRoot $installRoot) -ne 'release') { return }
+        if ((Get-LauncherInstallKind -RepoRoot $repoRoot -InstallRoot $installRoot) -ne 'release') { return $false }
         $last = (Read-LauncherRecord -StatePath $Context.Paths.State)['LastCheck']
         $checkedAt = if ($last -is [hashtable]) { [long]$last.CheckedAt } else { [long]0 }
         $interval = [TimeSpan]::FromHours([int]$launcher.CheckIntervalHours).Ticks
         # A check in the future, as after the clock was set back, counts as due.
-        if ($checkedAt -gt 0 -and $checkedAt -le $NowTicks -and $NowTicks - $checkedAt -lt $interval) { return }
+        if ($checkedAt -gt 0 -and $checkedAt -le $NowTicks -and $NowTicks - $checkedAt -lt $interval) { return $false }
         $running = [IO.Path]::GetFileName($repoRoot.TrimEnd('\'))
         $check = @{ CheckedAt = $NowTicks; Latest = $null; Digest = $null; Error = $null }
         try {
@@ -9404,11 +9501,14 @@ function Invoke-LauncherPassiveCheck {
         }
         Save-LauncherCheck -StatePath $Context.Paths.State -Check $check
         if ($check.Latest -and (ConvertTo-LauncherVersion -Tag $check.Latest) -gt (ConvertTo-LauncherVersion -Tag $running)) {
-            Write-Host "The launcher $($check.Latest) is out, and this one is $running; 'local-ai update' installs it." -ForegroundColor Cyan
+            Write-Host ("The launcher $($check.Latest) is out, and this one is $running; 'local-ai update' or the Start menu shortcut 'Update Local AI' " +
+                'installs it.') -ForegroundColor Cyan
+            return $true
         }
     } catch {
         Write-Verbose "The look for a newer launcher failed: $($_.Exception.Message)"
     }
+    return $false
 }
 
 # Return what status shows about the launcher's own releases for the launcher in $RepoRoot, without the network and writing nothing: @{ Data (kind, latest,
@@ -9682,7 +9782,8 @@ function Get-LocalAIVerb {
 # its module function with a context table; first refuse it, unless its Redirected is Warn, when $LocalAppData or the known folder $ShellLocalAppData is
 # redirected into an app package's store, or Root has a private copy there. update starts with the launcher's own release (Invoke-LauncherSelfUpdate, or
 # Invoke-LauncherRollback with -Rollback), which may hand the run over to another version; -ActivateLauncher <tag> marks the run handed over to. After start,
-# Invoke-LauncherPassiveCheck. Prints any error with its stack and the transcript path, as one JSON line with -Json. Returns 0, 1 or 2 (degraded).
+# Invoke-LauncherPassiveCheck; when that printed that a newer launcher is out and start ends with 0, Wait-LocalAIConsoleKey once the transcript has stopped
+# and the lock is released. Prints any error with its stack and the transcript path, as one JSON line with -Json. Returns 0, 1 or 2 (degraded).
 function Invoke-LocalAI {
     [CmdletBinding()]
     [OutputType([int])]
@@ -9734,10 +9835,10 @@ function Invoke-LocalAI {
         $sameFolder = [string]::Equals($ShellLocalAppData.TrimEnd('\'), $LocalAppData.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)
         if (-not $redirection -and $ShellLocalAppData -and -not $sameFolder) { $redirection = Get-AppDataRedirection -LocalAppData $ShellLocalAppData }
         if ($spec.Redirected -ne 'Warn') {
-            # The command to run elsewhere keeps the switches given; the Start menu shortcuts run start and stop without any.
+            # The command to run elsewhere keeps the switches given; the Start menu shortcuts run start, stop and update without any.
             $line = (@($Verb) + @($given.Keys | Where-Object { $given[$_] } | ForEach-Object { "-$_" })) -join ' '
             if ($redirection) {
-                $shortcut = @{ start = 'Start Local AI'; stop = 'Stop Local AI' }[$line]
+                $shortcut = @{ start = 'Start Local AI'; stop = 'Stop Local AI'; update = 'Update Local AI' }[$line]
                 $route = if ($shortcut) { ", or use the Start menu shortcut '$shortcut'" } else { '' }
                 throw ("$(Format-AppDataRedirection -Redirection $redirection), so the launcher's files would land where other windows never see them. " +
                     "Nothing was changed. Run 'local-ai $line' from a console window or Windows Terminal$route.")
@@ -9839,8 +9940,10 @@ function Invoke-LocalAI {
             throw "$($spec.Function) returned '$code' instead of exit code 0, 1 or 2."
         }
         # It never changes the exit code, and it never throws.
-        if ($Verb -eq 'start') { Invoke-LauncherPassiveCheck -Context $context }
-        return $code
+        $noticed = $false
+        if ($Verb -eq 'start') { $noticed = Invoke-LauncherPassiveCheck -Context $context }
+        # local-ai.cmd pauses after any other exit code, so only a start that ends with 0 waits below.
+        if (-not ($noticed -and $code -eq 0)) { return $code }
     } catch {
         if ($Json) {
             Write-Host (ConvertTo-LocalAIJsonText -Value ([ordered]@{
@@ -9860,6 +9963,10 @@ function Invoke-LocalAI {
         }
         Exit-LocalAILock -Mutex $hold.Mutex
     }
+    # Reached only when start printed that a newer launcher is out and ends with 0, which local-ai.cmd does not pause after: the window a Start menu shortcut
+    # opened stays open to read that line. Only now, so that no other run waits for the lock while this one waits for a key.
+    Wait-LocalAIConsoleKey
+    return $code
 }
 
 Export-ModuleMember -Function @(

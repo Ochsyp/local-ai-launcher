@@ -302,6 +302,27 @@ BeforeAll {
         if ($Shim) { [IO.File]::WriteAllText((Join-Path $root 'local-ai.cmd'), (InModuleScope LocalAI { Get-LauncherShimText }), [Text.Encoding]::ASCII) }
         return @{ LocalAppData = $local; Root = $root; Versions = (Join-Path $root 'versions') }
     }
+
+    # Return a stand-in for WScript.Shell: CreateShortcut gives an object with the fields $Store holds for the path (or a new shortcut's), and
+    # its Save stores the fields, adds the path to $Saves and writes a placeholder file there.
+    function Get-FakeShell([hashtable]$Store, [System.Collections.Generic.List[string]]$Saves) {
+        $shell = [pscustomobject]@{ Store = $Store; Saves = $Saves }
+        $shell | Add-Member -MemberType ScriptMethod -Name CreateShortcut -Value {
+            param([string]$Path)
+            $link = [pscustomobject]@{ FullName = $Path; TargetPath = ''; Arguments = ''; WorkingDirectory = ''; WindowStyle = 1; IconLocation = ',0'; Description = ''; Shell = $this }
+            $saved = $this.Store[$Path]
+            if ($saved) { foreach ($key in @($saved.Keys)) { $link.$key = $saved[$key] } }
+            $link | Add-Member -MemberType ScriptMethod -Name Save -Value {
+                $fields = @{}
+                foreach ($key in 'TargetPath', 'Arguments', 'WorkingDirectory', 'WindowStyle', 'IconLocation', 'Description') { $fields[$key] = $this.$key }
+                $this.Shell.Store[$this.FullName] = $fields
+                $this.Shell.Saves.Add($this.FullName)
+                [IO.File]::WriteAllText($this.FullName, 'lnk')
+            }
+            $link
+        }
+        return $shell
+    }
 }
 
 Describe 'Get-LocalAIPaths' {
@@ -1095,6 +1116,8 @@ Describe 'Invoke-LocalAI' {
             function script:Invoke-TestVerbOk([hashtable]$Context) { $script:TestContext = $Context; 0 }
             # Write a line to the pipeline, then report degraded with exit code 2.
             function script:Invoke-TestVerbNoisy([hashtable]$Context) { $script:TestContext = $Context; 'verb-noise'; 2 }
+            # Fail with exit code 1.
+            function script:Invoke-TestVerbFailing([hashtable]$Context) { $script:TestContext = $Context; 1 }
             # End with text instead of an exit code.
             function script:Invoke-TestVerbNoCode([hashtable]$Context) { $script:TestContext = $Context; 'oops' }
             # Stop the dispatcher's transcript itself, then succeed.
@@ -1455,7 +1478,7 @@ Describe 'Invoke-LocalAI' {
         @{ Verb = 'install'; Route = '' }
         @{ Verb = 'start'; Route = ", or use the Start menu shortcut 'Start Local AI'" }
         @{ Verb = 'stop'; Route = ", or use the Start menu shortcut 'Stop Local AI'" }
-        @{ Verb = 'update'; Route = '' }
+        @{ Verb = 'update'; Route = ", or use the Start menu shortcut 'Update Local AI'" }
         @{ Verb = 'uninstall'; Route = '' }
         @{ Verb = 'shortcuts'; Route = '' }
     ) {
@@ -1705,6 +1728,35 @@ Describe 'Invoke-LocalAI' {
         Should -Invoke Invoke-LauncherPassiveCheck -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Context.Verb -eq 'start' }
         $null = Invoke-Dispatcher @{ Verb = 'status'; Root = $root; LockName = $lock }
         Should -Invoke Invoke-LauncherPassiveCheck -ModuleName LocalAI -Times 1 -Exactly
+    }
+
+    It 'waits for a key once the lock is free when start said that a newer launcher is out and ends with 0, keeping that exit code' {
+        Mock Get-LocalAIVerb -ModuleName LocalAI -MockWith { Get-TestVerbTable -Function 'Invoke-TestVerbOk' }
+        Mock Invoke-LauncherPassiveCheck -ModuleName LocalAI -MockWith {
+            Write-Host 'The launcher v9.9.9 is out.'
+            $true
+        }
+        $seen = @{ Free = $null }
+        Mock Wait-LocalAIConsoleKey -ModuleName LocalAI -MockWith { $seen.Free = Test-MutexFree -Name $lock }
+        $run = Invoke-Dispatcher @{ Verb = 'start'; Root = $root; LockName = $lock }
+        $run.Code | Should -Be @(0)
+        $run.Printed | Should -BeLike '*The launcher v9.9.9 is out.*'
+        Should -Invoke Wait-LocalAIConsoleKey -ModuleName LocalAI -Times 1 -Exactly
+        $seen.Free | Should -BeTrue
+    }
+
+    It 'does not wait for a key after start <Case>' -ForEach @(
+        @{ Case = 'without a newer launcher'; Function = 'Invoke-TestVerbOk'; Noticed = $false; Code = 0 }
+        @{ Case = 'that ends with 2, after which local-ai.cmd pauses'; Function = 'Invoke-TestVerbNoisy'; Noticed = $true; Code = 2 }
+        @{ Case = 'that ends with 1, after which local-ai.cmd pauses'; Function = 'Invoke-TestVerbFailing'; Noticed = $true; Code = 1 }
+    ) {
+        Mock Get-LocalAIVerb -ModuleName LocalAI -MockWith { Get-TestVerbTable -Function $Function }
+        Mock Invoke-LauncherPassiveCheck -ModuleName LocalAI -MockWith { $Noticed }
+        Mock Wait-LocalAIConsoleKey -ModuleName LocalAI
+        $run = Invoke-Dispatcher @{ Verb = 'start'; Root = $root; LockName = $lock }
+        $run.Code | Should -Be @($Code)
+        Should -Invoke Invoke-LauncherPassiveCheck -ModuleName LocalAI -Times 1 -Exactly
+        Should -Invoke Wait-LocalAIConsoleKey -ModuleName LocalAI -Times 0 -Exactly
     }
 
     It 'hands over to another version only after it has stopped the transcript and released the lock, and returns its exit code' {
@@ -9461,7 +9513,7 @@ Describe 'Get-LocalAIStatus' {
             "%APPDATA% into that package's private stores C:\Users\Test\AppData\Local\Packages\Fake_123\LocalCache\Local and " +
             "C:\Users\Test\AppData\Local\Packages\Fake_123\LocalCache\Roaming instead, where other windows never see them. status runs here, but " +
             "every other verb refuses to, so that the launcher's files never land there. Run those, such as 'local-ai start', from a console window or " +
-            "Windows Terminal; the Start menu shortcuts 'Start Local AI' and 'Stop Local AI' work too.")
+            "Windows Terminal; the Start menu shortcuts 'Start Local AI', 'Stop Local AI' and 'Update Local AI' work too.")
         $run.Printed | Should -BeLike '*Status: degraded, with 1 warning(s); see above.'
         $context.Json = $true
         $document = ConvertFrom-LocalAIJson -Text ([string](Invoke-StatusVerb -Context $context).Records[0].MessageData)
@@ -9800,27 +9852,6 @@ Describe 'Set-LocalAIShortcut' {
                 Printed = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$($_.MessageData)" }) -join "`n"
             }
         }
-
-        # Return a stand-in for WScript.Shell: CreateShortcut gives an object with the fields $Store holds for the path (or a new shortcut's), and
-        # its Save stores the fields, adds the path to $Saves and writes a placeholder file there.
-        function Get-FakeShell([hashtable]$Store, [System.Collections.Generic.List[string]]$Saves) {
-            $shell = [pscustomobject]@{ Store = $Store; Saves = $Saves }
-            $shell | Add-Member -MemberType ScriptMethod -Name CreateShortcut -Value {
-                param([string]$Path)
-                $link = [pscustomobject]@{ FullName = $Path; TargetPath = ''; Arguments = ''; WorkingDirectory = ''; WindowStyle = 1; IconLocation = ',0'; Description = ''; Shell = $this }
-                $saved = $this.Store[$Path]
-                if ($saved) { foreach ($key in @($saved.Keys)) { $link.$key = $saved[$key] } }
-                $link | Add-Member -MemberType ScriptMethod -Name Save -Value {
-                    $fields = @{}
-                    foreach ($key in 'TargetPath', 'Arguments', 'WorkingDirectory', 'WindowStyle', 'IconLocation', 'Description') { $fields[$key] = $this.$key }
-                    $this.Shell.Store[$this.FullName] = $fields
-                    $this.Shell.Saves.Add($this.FullName)
-                    [IO.File]::WriteAllText($this.FullName, 'lnk')
-                }
-                $link
-            }
-            return $shell
-        }
     }
 
     BeforeEach {
@@ -9840,10 +9871,10 @@ Describe 'Set-LocalAIShortcut' {
         Mock Update-SessionPath -ModuleName LocalAI
     }
 
-    It 'creates Start, Stop and Status shortcuts that run local-ai.cmd with their verb in a normal window, with the Ollama icon' {
+    It 'creates Start, Stop, Status and Update shortcuts that run local-ai.cmd with their verb in a normal window, with the Ollama icon' {
         $run = Invoke-ShortcutVerb -Context $context
         $run.Code | Should -Be @(0)
-        foreach ($verb in 'Start', 'Stop', 'Status') {
+        foreach ($verb in 'Start', 'Stop', 'Status', 'Update') {
             $fields = $store[(Join-Path $folder "$verb Local AI.lnk")]
             $fields.TargetPath | Should -BeExactly $target
             $fields.Arguments | Should -BeExactly $verb.ToLowerInvariant()
@@ -9856,7 +9887,10 @@ Describe 'Set-LocalAIShortcut' {
         $store[(Join-Path $folder 'Stop Local AI.lnk')].Description |
             Should -BeExactly 'Stop Open WebUI, ComfyUI and the image gate, unload local-chat from Ollama, and quit the Ollama app when local-ai started it'
         $store[(Join-Path $folder 'Status Local AI.lnk')].Description | Should -BeExactly 'Show whether Ollama, Open WebUI, ComfyUI and the image gate run, and what needs attention'
-        $saves.Count | Should -Be 3
+        $store[(Join-Path $folder 'Update Local AI.lnk')].Description |
+            Should -BeExactly 'Bring a release install of the launcher to its latest release and every part to its pin, after showing the plan and asking'
+        $saves.Count | Should -Be 4
+        $run.Printed | Should -BeLike "*The Start menu folder $folder holds Start, Stop, Status and Update Local AI."
     }
 
     It 'names the file tools when Files.Root is set and leaves images out when they are off' {
@@ -9870,8 +9904,23 @@ Describe 'Set-LocalAIShortcut' {
         $null = Invoke-ShortcutVerb -Context $context
         $run = Invoke-ShortcutVerb -Context $context
         $run.Code | Should -Be @(0)
-        $saves.Count | Should -Be 3
-        $run.Printed | Should -BeLike "*$folder\Start Local AI.lnk is up to date.*$folder\Stop Local AI.lnk is up to date.*$folder\Status Local AI.lnk is up to date.*"
+        $saves.Count | Should -Be 4
+        $run.Printed | Should -BeLike ("*$folder\Start Local AI.lnk is up to date.*$folder\Stop Local AI.lnk is up to date.*$folder\Status Local AI.lnk is up to date.*" +
+            "$folder\Update Local AI.lnk is up to date.*")
+    }
+
+    It 'adds Update Local AI beside the Start, Stop and Status shortcuts an earlier version made, leaving those alone' {
+        $null = Invoke-ShortcutVerb -Context $context
+        $update = Join-Path $folder 'Update Local AI.lnk'
+        Remove-Item -LiteralPath $update
+        $store.Remove($update)
+        $saves.Clear()
+        $run = Invoke-ShortcutVerb -Context $context
+        $run.Code | Should -Be @(0)
+        @($saves) | Should -Be @($update)
+        $run.Printed | Should -BeLike "*Start Local AI.lnk is up to date.*Stop Local AI.lnk is up to date.*Status Local AI.lnk is up to date.*Created $update.*"
+        $store[$update].TargetPath | Should -BeExactly $target
+        $store[$update].Arguments | Should -BeExactly 'update'
     }
 
     It 'replaces a Start shortcut of the same name that runs another program, and says what it ran' {
@@ -9890,7 +9939,7 @@ Describe 'Set-LocalAIShortcut' {
         $store[(Join-Path $folder 'Stop Local AI.lnk')].Description = 'old text'
         $run = Invoke-ShortcutVerb -Context $context
         $run.Printed | Should -BeLike "*Updated $folder\Stop Local AI.lnk.*"
-        $saves.Count | Should -Be 4
+        $saves.Count | Should -Be 5
     }
 
     It 'sets no icon when the Ollama app has none' {
@@ -9905,14 +9954,15 @@ Describe 'Set-LocalAIShortcut' {
         $saves.Count | Should -Be 0
     }
 
-    It 'with -Remove deletes only the three shortcuts, and the folder once nothing else is in it' {
+    It 'with -Remove deletes only the four shortcuts, and the folder once nothing else is in it' {
         $null = Invoke-ShortcutVerb -Context $context
         $other = Join-Path $folder 'Other.lnk'
         [IO.File]::WriteAllText($other, 'lnk')
         $context.Remove = $true
         $run = Invoke-ShortcutVerb -Context $context
         $run.Code | Should -Be @(0)
-        $run.Printed | Should -BeLike "*Removed $folder\Start Local AI.lnk.*Removed $folder\Stop Local AI.lnk.*Removed $folder\Status Local AI.lnk.*Kept $folder, which holds other files.*"
+        $run.Printed | Should -BeLike ("*Removed $folder\Start Local AI.lnk.*Removed $folder\Stop Local AI.lnk.*Removed $folder\Status Local AI.lnk.*" +
+            "Removed $folder\Update Local AI.lnk.*Kept $folder, which holds other files.*")
         @(Get-ChildItem -LiteralPath $folder | ForEach-Object { $_.Name }) | Should -Be @('Other.lnk')
         Remove-Item -LiteralPath $other
         $run = Invoke-ShortcutVerb -Context $context
@@ -9954,7 +10004,7 @@ Describe 'Set-LocalAIShortcut' {
         $context.InstallRoot = $install.Root
         $run = Invoke-ShortcutVerb -Context $context
         $run.Code | Should -Be @(0)
-        foreach ($verb in 'Start', 'Stop', 'Status') {
+        foreach ($verb in 'Start', 'Stop', 'Status', 'Update') {
             $fields = $store[(Join-Path $folder "$verb Local AI.lnk")]
             $fields.TargetPath | Should -BeExactly (Join-Path $install.Root 'local-ai.cmd')
             $fields.WorkingDirectory | Should -BeExactly $install.Root
@@ -9981,6 +10031,107 @@ Describe 'Set-LocalAIShortcut' {
     }
 }
 
+Describe 'Update-LocalAIShortcut' {
+    BeforeAll {
+        # Run Update-LocalAIShortcut and return @{ Printed; Warnings; Other } with the host text and the warnings joined, and anything else it wrote.
+        function Invoke-TestShortcutUpdate([hashtable]$Context) {
+            $output = @(Invoke-ModuleFunction 'Update-LocalAIShortcut' @{ Context = $Context } 3>&1 6>&1)
+            return @{
+                Printed  = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$($_.MessageData)" }) -join "`n"
+                Warnings = @($output | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message }) -join "`n"
+                Other    = @($output | Where-Object { $_ -isnot [System.Management.Automation.InformationRecord] -and $_ -isnot [System.Management.Automation.WarningRecord] })
+            }
+        }
+    }
+
+    BeforeEach {
+        $install = Write-TestLauncherInstall -Tags @('v1.1.0') -Current 'v1.1.0'
+        $root = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $settings = Get-LocalAISettings -DefaultsPath (Join-Path (Split-Path $PSScriptRoot -Parent) 'config\defaults.psd1')
+        $folder = Join-Path $root 'Start Menu\Programs\Local AI'
+        $settings.Shortcuts.Folder = $folder
+        $context = @{ Verb = 'update'; Paths = (Get-LocalAIPaths -Root $root); Settings = $settings; RepoRoot = (Join-Path $install.Versions 'v1.1.0')
+            InstallRoot = $install.Root; Remove = $false }
+        $store = @{}
+        $saves = New-Object System.Collections.Generic.List[string]
+        $shell = Get-FakeShell -Store $store -Saves $saves
+        Mock Get-WScriptShell -ModuleName LocalAI -MockWith { $shell }
+        $seen = New-Object System.Collections.Generic.List[hashtable]
+        Mock Set-LocalAIShortcut -ModuleName LocalAI -MockWith {
+            $seen.Add($Context)
+            0
+        }
+        # Put a Start Local AI shortcut that runs $Target into Shortcuts.Folder.
+        $addStart = {
+            param([string]$Target)
+            $null = New-Item -ItemType Directory -Force -Path $folder
+            $start = Join-Path $folder 'Start Local AI.lnk'
+            [IO.File]::WriteAllText($start, 'lnk')
+            $store[$start] = @{ TargetPath = $Target; Arguments = 'start' }
+        }
+    }
+
+    It 'rewrites the launcher''s shortcuts for the launcher of this run when Shortcuts.Folder holds the Start Local AI of this install, named <Case>' -ForEach @(
+        @{ Case = 'as Set-LocalAIShortcut names it'; Target = { Join-Path $install.Root 'local-ai.cmd' } }
+        @{ Case = 'in capitals'; Target = { (Join-Path $install.Root 'local-ai.cmd').ToUpperInvariant() } }
+    ) {
+        & $addStart (& $Target)
+        $run = Invoke-TestShortcutUpdate -Context $context
+        $run.Printed | Should -BeExactly "Bringing the launcher's Start menu shortcuts up to date..."
+        $run.Warnings | Should -BeNullOrEmpty
+        $run.Other | Should -BeNullOrEmpty
+        $seen.Count | Should -Be 1
+        $seen[0].RepoRoot | Should -BeExactly (Join-Path $install.Versions 'v1.1.0')
+        $seen[0].InstallRoot | Should -BeExactly $install.Root
+        $seen[0].Remove | Should -BeFalse
+        $seen[0].Settings.Shortcuts.Folder | Should -BeExactly $folder
+        $saves.Count | Should -Be 0
+    }
+
+    It 'creates no shortcuts where Shortcuts.Folder is missing or holds no Start Local AI, also when it holds the other shortcuts' {
+        $run = Invoke-TestShortcutUpdate -Context $context
+        $run.Printed | Should -BeNullOrEmpty
+        Test-Path -LiteralPath $folder | Should -BeFalse
+        $null = New-Item -ItemType Directory -Force -Path $folder
+        foreach ($name in 'Stop Local AI.lnk', 'Status Local AI.lnk') { [IO.File]::WriteAllText((Join-Path $folder $name), 'lnk') }
+        $run = Invoke-TestShortcutUpdate -Context $context
+        $run.Printed | Should -BeNullOrEmpty
+        $run.Warnings | Should -BeNullOrEmpty
+        $seen.Count | Should -Be 0
+    }
+
+    It 'leaves the shortcuts alone, without a word, when Start Local AI runs <Case>' -ForEach @(
+        @{ Case = 'the local-ai.cmd of a git clone'; Target = { Join-Path $TestDrive 'clone\local-ai.cmd' } }
+        @{ Case = 'nothing'; Target = { '' } }
+    ) {
+        & $addStart (& $Target)
+        $run = Invoke-TestShortcutUpdate -Context $context
+        $run.Printed | Should -BeNullOrEmpty
+        $run.Warnings | Should -BeNullOrEmpty
+        $run.Other | Should -BeNullOrEmpty
+        $seen.Count | Should -Be 0
+    }
+
+    It 'warns instead of throwing when the shortcuts cannot be written, naming the shortcuts verb, and returns that warning' {
+        & $addStart (Join-Path $install.Root 'local-ai.cmd')
+        Mock Set-LocalAIShortcut -ModuleName LocalAI -MockWith { throw 'Access to the path is denied.' }
+        $run = Invoke-TestShortcutUpdate -Context $context
+        $text = "Could not bring the Start menu shortcuts up to date: Access to the path is denied. Run 'local-ai shortcuts' to try again."
+        $run.Warnings | Should -BeExactly $text
+        $run.Other | Should -Be @($text)
+    }
+
+    It 'warns and returns that warning when Start Local AI cannot be read' {
+        & $addStart (Join-Path $install.Root 'local-ai.cmd')
+        Mock Get-WScriptShell -ModuleName LocalAI -MockWith { throw 'Unable to open the shortcut.' }
+        $run = Invoke-TestShortcutUpdate -Context $context
+        $text = "Could not bring the Start menu shortcuts up to date: Unable to open the shortcut. Run 'local-ai shortcuts' to try again."
+        $run.Warnings | Should -BeExactly $text
+        $run.Other | Should -Be @($text)
+        $seen.Count | Should -Be 0
+    }
+}
+
 Describe 'local-ai.cmd' {
     BeforeAll {
         # A copy of local-ai.cmd beside a stub src\local-ai.ps1 that prints a marker and exits with LOCALAI_STUB_CODE.
@@ -10004,6 +10155,8 @@ Describe 'local-ai.cmd' {
         @{ When = 'not after no verb'; Arguments = ''; Code = 0; Pauses = $false }
         @{ When = 'after a failed start'; Arguments = 'start'; Code = 1; Pauses = $true }
         @{ When = 'after a degraded stop'; Arguments = 'stop'; Code = 2; Pauses = $true }
+        @{ When = 'after an update that succeeded'; Arguments = 'update'; Code = 0; Pauses = $true }
+        @{ When = 'after an Update that succeeded, in any case'; Arguments = 'Update'; Code = 0; Pauses = $true }
     ) {
         $saved = $env:LOCALAI_STUB_CODE
         try {
@@ -10091,6 +10244,10 @@ Describe 'Update helpers' {
         Invoke-ModuleFunction 'Test-LocalAIConsoleInput' | Should -Be ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected)
     }
 
+    It 'tells whether this window shows the output, as .NET reports it' {
+        Invoke-ModuleFunction 'Test-LocalAIConsoleOutput' | Should -Be (-not [Console]::IsOutputRedirected)
+    }
+
     It 'drops pending console keys, and leaves a host without a console buffer alone' {
         { Invoke-ModuleFunction 'Clear-LocalAIConsoleInput' } | Should -Not -Throw
     }
@@ -10103,6 +10260,119 @@ Describe 'Update helpers' {
         @(Invoke-ModuleFunction 'Get-LocalAIRunningService' @{ Path = $path }) | Should -Be @('ImageGate', 'OpenWebUI')
         [IO.File]::WriteAllText($path, 'not json')
         @(Invoke-ModuleFunction 'Get-LocalAIRunningService' @{ Path = $path }).Count | Should -Be 0
+    }
+}
+
+Describe 'Wait-LocalAIConsoleKey' {
+    BeforeAll {
+        # Run Wait-LocalAIConsoleKey and return @{ Printed; Other } with the host texts joined by '|' and anything else it wrote.
+        function Invoke-TestWait {
+            $output = @(Invoke-ModuleFunction 'Wait-LocalAIConsoleKey' 3>&1 6>&1)
+            return @{
+                Printed = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$($_.MessageData)" }) -join '|'
+                Other   = @($output | Where-Object { $_ -isnot [System.Management.Automation.InformationRecord] })
+            }
+        }
+    }
+
+    BeforeEach {
+        $order = New-Object System.Collections.Generic.List[string]
+        Mock Test-LocalAIConsoleInput -ModuleName LocalAI -MockWith { $true }
+        # Not this test run's output, which a runner may redirect, nor its command line, which may hold -NonInteractive.
+        Mock Test-LocalAIConsoleOutput -ModuleName LocalAI -MockWith { $true }
+        Mock Test-LocalAINonInteractive -ModuleName LocalAI -MockWith { $false }
+        Mock Clear-LocalAIConsoleInput -ModuleName LocalAI -MockWith { $order.Add('flush') }
+        # Never the real key, which would wait for a person at this console; 13 is Enter.
+        Mock Read-LocalAIConsoleKey -ModuleName LocalAI -MockWith {
+            $order.Add('read')
+            13
+        }
+    }
+
+    It 'drops the keys typed ahead, then asks for any key and waits for one, writing nothing else' {
+        $run = Invoke-TestWait
+        @($order) | Should -Be @('flush', 'read')
+        $run.Printed | Should -BeExactly 'Press any key to continue . . .|'
+        $run.Other | Should -BeNullOrEmpty
+    }
+
+    It 'goes on waiting while only Alt, Shift, a Windows key, Ctrl or a lock key goes down, as for Alt+Tab, and ends at the next key, such as Ctrl+C' {
+        $keys = New-Object System.Collections.Generic.Queue[int]
+        # Alt, Shift, the left and the right Windows key, Ctrl, Caps Lock, Num Lock, Scroll Lock, then C.
+        foreach ($code in 18, 16, 91, 92, 17, 20, 144, 145, 67) { $keys.Enqueue($code) }
+        Mock Read-LocalAIConsoleKey -ModuleName LocalAI -MockWith {
+            $order.Add('read')
+            $keys.Dequeue()
+        }
+        $null = Invoke-TestWait
+        @($order) | Should -Be (@('flush') + @('read') * 9)
+        $keys.Count | Should -Be 0
+    }
+
+    It 'returns at once, printing nothing, when this window cannot ask, as when a program or a test redirects its input' {
+        Mock Test-LocalAIConsoleInput -ModuleName LocalAI -MockWith { $false }
+        $run = Invoke-TestWait
+        $run.Printed | Should -BeNullOrEmpty
+        @($order) | Should -BeNullOrEmpty
+        Should -Invoke Read-LocalAIConsoleKey -ModuleName LocalAI -Times 0 -Exactly
+    }
+
+    It 'returns at once, printing nothing, when its output goes to a file or a pipe, as when a program reads it, although the window could ask' {
+        Mock Test-LocalAIConsoleOutput -ModuleName LocalAI -MockWith { $false }
+        $run = Invoke-TestWait
+        $run.Printed | Should -BeNullOrEmpty
+        $run.Other | Should -BeNullOrEmpty
+        @($order) | Should -BeNullOrEmpty
+        Should -Invoke Read-LocalAIConsoleKey -ModuleName LocalAI -Times 0 -Exactly
+    }
+
+    It 'returns at once, printing nothing, when PowerShell runs with -NonInteractive, as a scheduled task may start it, although the window could ask' {
+        Mock Test-LocalAINonInteractive -ModuleName LocalAI -MockWith { $true }
+        $run = Invoke-TestWait
+        $run.Printed | Should -BeNullOrEmpty
+        $run.Other | Should -BeNullOrEmpty
+        @($order) | Should -BeNullOrEmpty
+        Should -Invoke Read-LocalAIConsoleKey -ModuleName LocalAI -Times 0 -Exactly
+    }
+
+    It 'never throws when this host reads no keys' {
+        Mock Read-LocalAIConsoleKey -ModuleName LocalAI -MockWith { throw 'The method or operation is not implemented.' }
+        $run = Invoke-TestWait
+        $run.Printed | Should -BeExactly 'Press any key to continue . . .|'
+        $run.Other | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Test-LocalAINonInteractive' {
+    It 'is <Expected> for the command line <Line>' -ForEach @(
+        @{ Line = 'powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -File C:\Launcher\src\local-ai.ps1 start'; Expected = $true }
+        @{ Line = 'powershell.exe -noni -File C:\Launcher\src\local-ai.ps1'; Expected = $true }
+        @{ Line = 'powershell.exe /NONINTER -Command Get-Date'; Expected = $true }
+        @{ Line = 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy RemoteSigned -File C:\Launcher\src\local-ai.ps1 update'; Expected = $false }
+        @{ Line = 'powershell.exe -non -NoExit'; Expected = $false }
+        @{ Line = '-noni.exe -NoProfile'; Expected = $false }
+        @{ Line = 'powershell.exe -NoProfile -File C:\x-noninteractive\src\local-ai.ps1 start'; Expected = $false }
+    ) {
+        Invoke-ModuleFunction 'Test-LocalAINonInteractive' @{ CommandLine = @($Line -split ' ') } | Should -Be $Expected
+    }
+
+    It 'takes the switch after an en dash, an em dash or a horizontal bar, as powershell.exe does' {
+        foreach ($code in 0x2013, 0x2014, 0x2015) {
+            Invoke-ModuleFunction 'Test-LocalAINonInteractive' @{ CommandLine = @('powershell.exe', ([string][char]$code + 'NonInteractive')) } | Should -BeTrue
+        }
+    }
+
+    It 'reads the command line of the powershell.exe it runs in, which here <Case>' -ForEach @(
+        @{ Case = 'has -NonInteractive'; Switches = @('-NoProfile', '-NonInteractive'); Expected = $true }
+        @{ Case = 'has none'; Switches = @('-NoProfile'); Expected = $false }
+    ) {
+        $module = Join-Path (Split-Path $PSScriptRoot -Parent) 'src\LocalAI.psm1'
+        $quoted = "'" + [Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($module) + "'"
+        # Without progress records, which powershell.exe writes to stderr as CLIXML while its output is redirected.
+        $command = "`$ProgressPreference = 'SilentlyContinue'; Import-Module $quoted; & (Get-Module LocalAI) { Test-LocalAINonInteractive }"
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        $said = @(& (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') @Switches -EncodedCommand $encoded)
+        $said | Should -Be @([string]$Expected)
     }
 }
 
@@ -12596,7 +12866,7 @@ Describe 'Invoke-UvToolUninstall and Remove-OllamaModel' {
 Describe 'Uninstall-LocalAI' {
     BeforeAll {
         $repoRoot = Split-Path $PSScriptRoot -Parent
-        $shortcutNames = @('Start Local AI.lnk', 'Stop Local AI.lnk', 'Status Local AI.lnk')
+        $shortcutNames = @('Start Local AI.lnk', 'Stop Local AI.lnk', 'Status Local AI.lnk', 'Update Local AI.lnk')
 
         # Run Uninstall-LocalAI and return @{ Code; Printed; Warnings } with the host text and the warnings joined.
         function Invoke-UninstallVerb([hashtable]$Context) {
@@ -12608,7 +12878,7 @@ Describe 'Uninstall-LocalAI' {
             }
         }
 
-        # Lay out what install leaves, all below TestDrive: the three shortcuts, the open-webui and mcpo tool folders in $ToolDir, a ComfyUI checkout (marked as cloned
+        # Lay out what install leaves, all below TestDrive: the four shortcuts, the open-webui and mcpo tool folders in $ToolDir, a ComfyUI checkout (marked as cloned
         # when $Cloned) whose venv marker records $CreatedVenv ($null: no marker), the file tools' files, Open WebUI's data, a file in Files.Root, state.json and the stamp.
         function Write-TestInstall([hashtable]$Settings, [hashtable]$Paths, [string]$ToolDir, [bool]$Cloned, $CreatedVenv, [bool]$NodeByLauncher) {
             $folder = $Settings.Shortcuts.Folder
@@ -12711,7 +12981,7 @@ Describe 'Uninstall-LocalAI' {
         $run.Code | Should -Be @(0)
         @($questions) | Should -Be @('Uninstall these now?')
         $folder = $settings.Shortcuts.Folder
-        $run.Printed | Should -BeLike ("*Uninstall removes:*the Start menu shortcuts Start Local AI.lnk, Stop Local AI.lnk, Status Local AI.lnk in $folder*" +
+        $run.Printed | Should -BeLike ("*Uninstall removes:*the Start menu shortcuts Start Local AI.lnk, Stop Local AI.lnk, Status Local AI.lnk, Update Local AI.lnk in $folder*" +
             "Open WebUI 0.12.4: the uv tool open-webui in $toolDir\open-webui*mcpo 0.0.20, which serves the file tools: the uv tool mcpo in $toolDir\mcpo*" +
             "ComfyUI's venv $($settings.ComfyUI.Dir)\.venv, which install created*the Ollama model local-chat, which install created from $source, whose weights stay*" +
             'It first stops what the launcher runs: OpenWebUI.*Your data stays:*')
@@ -14647,6 +14917,25 @@ Describe 'Update-LocalAI with -ActivateLauncher' {
         $root = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
         $paths = Get-LocalAIPaths -Root $root
         $settings = Get-LocalAISettings -DefaultsPath (Join-Path $repoRoot 'config\defaults.psd1')
+        # Not this PC's Start menu, whose shortcuts update brings up to date once it made the new version active, nor its ComfyUI or OLLAMA_HOST, which
+        # the descriptions of the shortcuts read.
+        $shortcutFolder = Join-Path $root 'Start Menu\Programs\Local AI'
+        $settings.Shortcuts.Folder = $shortcutFolder
+        $settings.ComfyUI.Dir = Join-Path $root 'ComfyUI'
+        $settings.Ollama.Url = 'http://127.0.0.1:11434'
+        $store = @{}
+        $saves = New-Object System.Collections.Generic.List[string]
+        $shell = Get-FakeShell -Store $store -Saves $saves
+        Mock Get-WScriptShell -ModuleName LocalAI -MockWith { $shell }
+        Mock Get-OllamaIcon -ModuleName LocalAI
+        # Put the Start Local AI shortcut that an earlier 'local-ai shortcuts' made into Shortcuts.Folder, running $Target, by default the shim of the install.
+        $addStart = {
+            param([string]$Target = (Join-Path $install.Root 'local-ai.cmd'))
+            $null = New-Item -ItemType Directory -Force -Path $shortcutFolder
+            $start = Join-Path $shortcutFolder 'Start Local AI.lnk'
+            [IO.File]::WriteAllText($start, 'lnk')
+            $store[$start] = @{ TargetPath = $Target; Arguments = 'start' }
+        }
         Write-LocalAIState -Path $paths.InstallStamp -State @{
             Ollama = @{ Version = '0.40.11' }; Model = @{ Alias = 'local-chat' }; OpenWebUI = @{ Version = '0.12.4'; Python = '3.12.16'; Path = 'C:\uv\bin\open-webui.exe' }
         }
@@ -14754,10 +15043,13 @@ Describe 'Update-LocalAI with -ActivateLauncher' {
 
     It 'shows no launcher line when that version is active already' {
         [IO.File]::WriteAllText($currentFile, "v1.1.0`r`n")
+        & $addStart
+        Mock Set-LocalAIShortcut -ModuleName LocalAI -MockWith { 0 }
         $run = Invoke-UpdateVerb -Context $context
         $run.Code | Should -Be @(0)
         $run.Printed | Should -Not -BeLike '*Launcher:*'
         (Read-LocalAIState -Path $paths.State).Launcher.ContainsKey('Version') | Should -BeFalse
+        Should -Invoke Set-LocalAIShortcut -ModuleName LocalAI -Times 0 -Exactly
     }
 
     It 'goes back to an older version, as update -Rollback hands over to it, only on yes, and records the newer one as the version before' {
@@ -14810,10 +15102,150 @@ Describe 'Update-LocalAI with -ActivateLauncher' {
     It 'starts again what ran before, and passes the error on, when current cannot be written after the stop' {
         Mock Get-LocalAIRunningService -ModuleName LocalAI -MockWith { 'OpenWebUI' }
         Mock Enable-LauncherVersion -ModuleName LocalAI -MockWith { throw 'Access to the path current is denied.' }
+        & $addStart
+        Mock Set-LocalAIShortcut -ModuleName LocalAI -MockWith { 0 }
         { Update-LocalAI -Context $context 6>$null } | Should -Throw -ExpectedMessage 'Access to the path current is denied.'
         Should -Invoke Start-LocalAI -ModuleName LocalAI -Times 1 -Exactly
         Should -Invoke Install-ChatModel -ModuleName LocalAI -Times 0 -Exactly
+        Should -Invoke Set-LocalAIShortcut -ModuleName LocalAI -Times 0 -Exactly
         [IO.File]::ReadAllText($currentFile) | Should -BeExactly "v1.0.0`r`n"
+    }
+
+    It 'gives an install whose Start menu folder holds the shortcuts of an earlier version Update Local AI, for the shim of the install folder' {
+        [IO.File]::WriteAllText((Join-Path $install.Root 'local-ai.cmd'), 'shim')
+        # The Start, Stop and Status shortcuts an earlier version made: this version's, without Update Local AI.
+        $null = Set-LocalAIShortcut -Context @{ Settings = $settings; Paths = $paths; RepoRoot = $context.RepoRoot; InstallRoot = $install.Root; Remove = $false } 6>$null
+        $update = Join-Path $shortcutFolder 'Update Local AI.lnk'
+        Remove-Item -LiteralPath $update
+        $store.Remove($update)
+        $saves.Clear()
+        $run = Invoke-UpdateVerb -Context $context
+        $run.Code | Should -Be @(0)
+        $run.Warnings | Should -BeNullOrEmpty
+        @($saves) | Should -Be @($update)
+        $store[$update].TargetPath | Should -BeExactly (Join-Path $install.Root 'local-ai.cmd')
+        $store[$update].WorkingDirectory | Should -BeExactly $install.Root
+        $store[$update].Arguments | Should -BeExactly 'update'
+        $run.Printed | Should -BeLike ("*Bringing the launcher's Start menu shortcuts up to date...*Created $update.*The Start menu folder $shortcutFolder holds " +
+            'Start, Stop, Status and Update Local AI.*The launcher is v1.1.0 now; the parts come next.*')
+    }
+
+    It 'counts no warning that the descriptions of the shortcuts silence, as one for ComfyUI.Args, when <Case>' -ForEach @(
+        @{ Case = 'parts change'; Setup = {} }
+        @{ Case = 'only the launcher changes'; Setup = { $world.Plan.Components = @(@{ Name = 'Model'; Display = 'Model'; Changes = @(); Problem = $null; Note = $null }) } }
+        @{ Case = 'install has not set up the parts yet'; Setup = { Remove-Item -LiteralPath $paths.InstallStamp } }
+    ) {
+        . $Setup
+        [IO.File]::WriteAllText((Join-Path $install.Root 'local-ai.cmd'), 'shim')
+        # Dropped with a warning wherever ComfyUI's start is planned, as for the descriptions, which leave that warning unprinted.
+        $settings.ComfyUI.Args = @('--enable-manager')
+        & $addStart
+        $run = Invoke-UpdateVerb -Context $context
+        $run.Code | Should -Be @(0)
+        $run.Warnings | Should -BeNullOrEmpty
+        $run.Printed | Should -Not -BeLike '*warning(s)*'
+        $store[(Join-Path $shortcutFolder 'Update Local AI.lnk')].Arguments | Should -BeExactly 'update'
+    }
+
+    It 'leaves Start menu shortcuts that run a git clone as they are, without a word' {
+        [IO.File]::WriteAllText((Join-Path $install.Root 'local-ai.cmd'), 'shim')
+        $clone = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $null = New-Item -ItemType Directory -Force -Path (Join-Path $clone '.git')
+        [IO.File]::WriteAllText((Join-Path $clone 'local-ai.cmd'), 'clone')
+        # The shortcuts 'local-ai shortcuts' made in the clone.
+        $null = Set-LocalAIShortcut -Context @{ Settings = $settings; Paths = $paths; RepoRoot = $clone; InstallRoot = $install.Root; Remove = $false } 6>$null
+        $saves.Clear()
+        $run = Invoke-UpdateVerb -Context $context
+        $run.Code | Should -Be @(0)
+        $run.Warnings | Should -BeNullOrEmpty
+        $run.Printed | Should -Not -BeLike '*Start menu shortcuts*'
+        $saves.Count | Should -Be 0
+        foreach ($verb in 'Start', 'Stop', 'Status', 'Update') {
+            $store[(Join-Path $shortcutFolder "$verb Local AI.lnk")].TargetPath | Should -BeExactly (Join-Path $clone 'local-ai.cmd')
+        }
+        [IO.File]::ReadAllText($currentFile) | Should -BeExactly "v1.1.0`r`n"
+    }
+
+    It 'brings the shortcuts up to date right after current names the new version, before any part changes' {
+        & $addStart
+        Mock Set-LocalAIShortcut -ModuleName LocalAI -MockWith {
+            $calls.Add("shortcuts at $(& $active)")
+            0
+        }
+        $run = Invoke-UpdateVerb -Context $context
+        $run.Code | Should -Be @(0)
+        @($calls | Where-Object { $_ -notlike 'wait' -and $_ -ne 'start' }) |
+            Should -Be @('ask Update these now? at v1.0.0', 'stop at v1.0.0', 'shortcuts at v1.1.0', 'model at v1.1.0', 'stop at v1.1.0')
+        Should -Invoke Set-LocalAIShortcut -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter {
+            $Context.RepoRoot -eq (Join-Path $install.Versions 'v1.1.0') -and $Context.InstallRoot -eq $install.Root -and -not $Context.Remove
+        }
+    }
+
+    It 'brings the shortcuts up to date also when <Case>' -ForEach @(
+        @{ Case = 'only the launcher changes'; Setup = { $world.Plan.Components = @(@{ Name = 'Model'; Display = 'Model'; Changes = @(); Problem = $null; Note = $null }) }
+            Next = 'The launcher is v1.1.0 now, and everything matches its pin.' }
+        @{ Case = 'install has not set up the parts yet'; Setup = { Remove-Item -LiteralPath $paths.InstallStamp }
+            Next = "The launcher is v1.1.0 now. Run 'local-ai install' to set up the rest." }
+    ) {
+        . $Setup
+        & $addStart
+        Mock Set-LocalAIShortcut -ModuleName LocalAI -MockWith {
+            $calls.Add("shortcuts at $(& $active)")
+            0
+        }
+        $run = Invoke-UpdateVerb -Context $context
+        $run.Code | Should -Be @(0)
+        @($calls | Where-Object { $_ -like 'shortcuts*' }) | Should -Be @('shortcuts at v1.1.0')
+        $run.Printed | Should -BeLike "*Bringing the launcher's Start menu shortcuts up to date...`n$Next"
+    }
+
+    It 'warns, keeps the new version and returns 2 when the shortcuts cannot be brought up to date, when <Case>' -ForEach @(
+        @{ Case = 'parts change'; Setup = {}; Last = 'Update finished with 1 warning(s); see above.' }
+        @{ Case = 'only the launcher changes'; Setup = { $world.Plan.Components = @(@{ Name = 'Model'; Display = 'Model'; Changes = @(); Problem = $null; Note = $null }) }
+            Last = 'The launcher is v1.1.0 now, and everything matches its pin.' }
+        @{ Case = 'install has not set up the parts yet'; Setup = { Remove-Item -LiteralPath $paths.InstallStamp }
+            Last = "The launcher is v1.1.0 now. Run 'local-ai install' to set up the rest." }
+    ) {
+        . $Setup
+        & $addStart
+        Mock Set-LocalAIShortcut -ModuleName LocalAI -MockWith { throw 'Access to the path is denied.' }
+        $run = Invoke-UpdateVerb -Context $context
+        $run.Code | Should -Be @(2)
+        $run.Warnings | Should -BeExactly "Could not bring the Start menu shortcuts up to date: Access to the path is denied. Run 'local-ai shortcuts' to try again."
+        $run.Printed | Should -BeLike "*$Last"
+        [IO.File]::ReadAllText($currentFile) | Should -BeExactly "v1.1.0`r`n"
+    }
+
+    It 'still counts a warning from before the activation once the shortcuts are up to date, when <Case>' -ForEach @(
+        @{ Case = 'parts change'; Setup = {}; Shown = 'The plan warns.' }
+        @{ Case = 'only the launcher changes'; Setup = { $world.Plan.Components = @(@{ Name = 'Model'; Display = 'Model'; Changes = @(); Problem = $null; Note = $null }) }
+            Shown = 'The plan warns.' }
+        # No plan comes before the activation there, so the warning is one the run was handed, which it does not print again.
+        @{ Case = 'install has not set up the parts yet'; Setup = { Remove-Item -LiteralPath $paths.InstallStamp; $context.Warnings = @('An earlier step warned.') }
+            Shown = '' }
+    ) {
+        . $Setup
+        & $addStart
+        Mock Set-LocalAIShortcut -ModuleName LocalAI -MockWith { 0 }
+        Mock Get-LocalAIUpdatePlan -ModuleName LocalAI -MockWith {
+            Write-Warning 'The plan warns.'
+            $world.Plan
+        }
+        $run = Invoke-UpdateVerb -Context $context
+        Should -Invoke Set-LocalAIShortcut -ModuleName LocalAI -Times 1 -Exactly
+        $run.Warnings | Should -BeExactly $Shown
+        $run.Code | Should -Be @(2)
+    }
+
+    It 'leaves the shortcuts alone when the answer is no, and brings them up to date on the yes of the next update' {
+        & $addStart
+        Mock Set-LocalAIShortcut -ModuleName LocalAI -MockWith { 0 }
+        $world.Yes = $false
+        (Invoke-UpdateVerb -Context $context).Code | Should -Be @(2)
+        Should -Invoke Set-LocalAIShortcut -ModuleName LocalAI -Times 0 -Exactly
+        $world.Yes = $true
+        (Invoke-UpdateVerb -Context $context).Code | Should -Be @(0)
+        Should -Invoke Set-LocalAIShortcut -ModuleName LocalAI -Times 1 -Exactly
     }
 
     It 'refuses, changing nothing, when this run is <Case>' -ForEach @(
@@ -15140,12 +15572,14 @@ Describe 'Invoke-LauncherPassiveCheck' {
         $repoRoot = Split-Path $PSScriptRoot -Parent
         $now = (New-Object DateTime -ArgumentList 2026, 11, 4, 12, 0, 0, ([DateTimeKind]::Utc)).Ticks
 
-        # Run Invoke-LauncherPassiveCheck for $context at $now and return @{ Printed; Other } with the host text joined and anything else it wrote.
+        # Run Invoke-LauncherPassiveCheck for $context at $now and return @{ Printed; Returned; Other } with the host text joined, what it returned and
+        # anything else it wrote.
         function Invoke-TestPassiveCheck {
             $output = @(Invoke-ModuleFunction 'Invoke-LauncherPassiveCheck' @{ Context = $context; NowTicks = $now } 3>&1 6>&1)
             return @{
-                Printed = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$($_.MessageData)" }) -join "`n"
-                Other   = @($output | Where-Object { $_ -isnot [System.Management.Automation.InformationRecord] })
+                Printed  = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$($_.MessageData)" }) -join "`n"
+                Returned = @($output | Where-Object { $_ -is [bool] })
+                Other    = @($output | Where-Object { $_ -isnot [System.Management.Automation.InformationRecord] -and $_ -isnot [bool] })
             }
         }
     }
@@ -15165,10 +15599,11 @@ Describe 'Invoke-LauncherPassiveCheck' {
         }
     }
 
-    It 'asks GitHub with a 5 s timeout, records the answer and says in one line that a newer launcher is out' {
+    It 'asks GitHub with a 5 s timeout, records the answer and says in one line that a newer launcher is out, naming the update shortcut' {
         $run = Invoke-TestPassiveCheck
         $run.Other | Should -BeNullOrEmpty
-        $run.Printed | Should -BeExactly "The launcher v1.1.0 is out, and this one is v1.0.0; 'local-ai update' installs it."
+        $run.Returned | Should -Be @($true)
+        $run.Printed | Should -BeExactly "The launcher v1.1.0 is out, and this one is v1.0.0; 'local-ai update' or the Start menu shortcut 'Update Local AI' installs it."
         $seen.Count | Should -Be 1
         $seen[0].Uri | Should -BeExactly "https://api.github.com/repos/$($settings.Launcher.Repo)/releases/latest"
         $seen[0].TimeoutSec | Should -Be 5
@@ -15181,7 +15616,9 @@ Describe 'Invoke-LauncherPassiveCheck' {
 
     It 'prints nothing when this is the latest release' {
         $world.Release = Get-TestReleaseObject -Tag 'v1.0.0'
-        (Invoke-TestPassiveCheck).Printed | Should -BeNullOrEmpty
+        $run = Invoke-TestPassiveCheck
+        $run.Printed | Should -BeNullOrEmpty
+        $run.Returned | Should -Be @($false)
         (Read-LocalAIState -Path $paths.State).Launcher.LastCheck.Latest | Should -BeExactly 'v1.0.0'
     }
 
@@ -15192,6 +15629,18 @@ Describe 'Invoke-LauncherPassiveCheck' {
         $settings.Launcher.CheckIntervalHours = 12
         $null = Invoke-TestPassiveCheck
         $seen.Count | Should -Be 1
+    }
+
+    It 'says nothing and returns $false between checks, also while the last check found a newer launcher, and says it again at the next check' {
+        Write-LocalAIState -Path $paths.State -State @{ Launcher = @{ LastCheck = @{ CheckedAt = ($now - [TimeSpan]::FromHours(23).Ticks); Latest = 'v1.1.0'; Digest = ''; Error = $null } } }
+        $run = Invoke-TestPassiveCheck
+        $run.Printed | Should -BeNullOrEmpty
+        $run.Returned | Should -Be @($false)
+        $seen.Count | Should -Be 0
+        $settings.Launcher.CheckIntervalHours = 12
+        $run = Invoke-TestPassiveCheck
+        $run.Printed | Should -BeLike 'The launcher v1.1.0 is out, *'
+        $run.Returned | Should -Be @($true)
     }
 
     It 'asks again when the last check lies in the future, as after the clock was set back' {
@@ -15206,7 +15655,9 @@ Describe 'Invoke-LauncherPassiveCheck' {
         @{ Case = 'a launcher in another folder'; Setup = { $context.RepoRoot = Write-TestReleaseFolder -Path (Join-Path $root 'Downloads\local-ai-launcher-1.0.0') -Tag 'v1.0.0' } }
     ) {
         . $Setup
-        (Invoke-TestPassiveCheck).Printed | Should -BeNullOrEmpty
+        $run = Invoke-TestPassiveCheck
+        $run.Printed | Should -BeNullOrEmpty
+        $run.Returned | Should -Be @($false)
         $seen.Count | Should -Be 0
         Test-Path -LiteralPath $paths.State | Should -BeFalse
     }
@@ -15218,16 +15669,17 @@ Describe 'Invoke-LauncherPassiveCheck' {
         . $Setup
         $run = Invoke-TestPassiveCheck
         $run.Printed | Should -BeNullOrEmpty
+        $run.Returned | Should -Be @($false)
         $run.Other | Should -BeNullOrEmpty
         $check = (Read-LocalAIState -Path $paths.State).Launcher.LastCheck
         $check.Error | Should -BeLike $Failure
         ($null -eq $check.Latest) | Should -BeTrue
     }
 
-    It 'never throws, also when state.json is not valid JSON' {
+    It 'never throws, also when state.json is not valid JSON, and then returns $false' {
         $null = New-Item -ItemType Directory -Force -Path $paths.Root
         [IO.File]::WriteAllText($paths.State, '{ broken')
-        { $null = Invoke-TestPassiveCheck } | Should -Not -Throw
+        (Invoke-TestPassiveCheck).Returned | Should -Be @($false)
         [IO.File]::ReadAllText($paths.State) | Should -BeExactly '{ broken'
     }
 }
