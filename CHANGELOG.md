@@ -11,6 +11,13 @@ All notable changes to this project are listed here. The format follows
   `install-stamp.json` in `%LOCALAPPDATA%\local-ai` records the parts already, as on a PC that
   ran the launcher from a git clone.
 
+### Fixed
+
+- A program the launcher runs in its own console window, such as winget, `ollama pull` or
+  `npm ci`, no longer loses its exit code when it ends within moments of starting. Windows
+  PowerShell's `Start-Process` gave no handle to such a program in time, so the step failed with
+  an empty exit code.
+
 ## [1.0.0] - 2026-11-11
 
 The launcher was redesigned. These entries compare it with the earlier set of scripts.

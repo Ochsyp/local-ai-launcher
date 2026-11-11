@@ -497,22 +497,35 @@ function Invoke-Native {
     try {
         if ($Console) {
             # The program inherits this console, so progress bars draw, and a process it leaves
-            # running, such as the Ollama app, holds no pipe for this call to wait on. No -Wait,
-            # which in 5.1 also waits for every child process.
-            $start = @{ FilePath = $program[0].Path; NoNewWindow = $true; PassThru = $true; ErrorAction = 'Stop' }
-            if ($passed.Count -gt 0) { $start.ArgumentList = $passed -join ' ' }
-            $process = Start-Process @start
-            # 5.1 reports no ExitCode unless the handle was opened while the process ran.
-            $null = $process.Handle
-            if ($TimeoutSeconds -gt 0) {
-                if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
-                    try { $process.Kill() } catch { Write-Verbose "Could not stop $FilePath`: $($_.Exception.Message)" }
-                    throw "'$((@($FilePath) + $ArgumentList) -join ' ')' did not finish within $TimeoutSeconds s and was stopped."
-                }
-            } else {
-                $process.WaitForExit()
+            # running, such as the Ollama app, holds no pipe for this call to wait on. Process.Start
+            # keeps the handle CreateProcess returns: the Process that Start-Process -NoNewWindow
+            # gives in 5.1 holds none, so a program that ended before this call opened one lost its
+            # exit code. WaitForExit waits for the program alone, where Start-Process -Wait also
+            # waits for every child process.
+            $startInfo = New-Object Diagnostics.ProcessStartInfo -ArgumentList $program[0].Path
+            $startInfo.UseShellExecute = $false
+            if ($passed.Count -gt 0) { $startInfo.Arguments = $passed -join ' ' }
+            # As Start-Process: the current FileSystem location, which the process's own current
+            # directory does not follow.
+            $startInfo.WorkingDirectory = (Get-Location -PSProvider FileSystem).ProviderPath
+            try {
+                $process = [Diagnostics.Process]::Start($startInfo)
+            } catch {
+                throw "Cannot start '$((@($FilePath) + $ArgumentList) -join ' ')': $($_.Exception.GetBaseException().Message)"
             }
-            $code = $process.ExitCode
+            try {
+                if ($TimeoutSeconds -gt 0) {
+                    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+                        try { $process.Kill() } catch { Write-Verbose "Could not stop $FilePath`: $($_.Exception.Message)" }
+                        throw "'$((@($FilePath) + $ArgumentList) -join ' ')' did not finish within $TimeoutSeconds s and was stopped."
+                    }
+                } else {
+                    $process.WaitForExit()
+                }
+                $code = $process.ExitCode
+            } finally {
+                $process.Dispose()
+            }
         } else {
             # A blank stderr line is an error record whose text would read 'RemoteException'.
             & $FilePath @passed 2>&1 | ForEach-Object {
