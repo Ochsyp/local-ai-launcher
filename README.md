@@ -114,7 +114,10 @@ brings it to the latest release.
    powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\install.ps1 -AddToPath
    ```
 
-4. Open a new console window, then go on with `local-ai install`.
+4. Open a new console window, then go on with `local-ai install`. On a PC where the launcher
+   ran before, as from a git clone, the parts are installed already: `install.ps1` then names
+   `local-ai status` instead, which says whether `local-ai update` should bring them to the new
+   version's pins.
 
 `install.ps1` asks GitHub for the latest release and downloads its zip. It checks the zip's
 SHA-256 against the digest GitHub lists and every file against the manifest in the zip, then puts

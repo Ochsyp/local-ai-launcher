@@ -804,7 +804,8 @@ public static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UInt
     }
 
     # Install the launcher release $Tag of the GitHub repository $Repo, or its latest release, into $LocalAppData\Programs\local-ai-launcher, as the top of this
-    # file describes, and print the next step. Refuses inside an app package's container, which a probe of $LocalAppData or $ShellLocalAppData, the known
+    # file describes, and print the next step: local-ai install, or local-ai status when install-stamp.json in $LocalAppData\local-ai records the parts
+    # already. Refuses inside an app package's container, which a probe of $LocalAppData or $ShellLocalAppData, the known
     # folder, shows, and while another version that is whole runs there, as moving between versions is update's job. Throws on any failure, saying what changed.
     function Install-LauncherFromRelease {
         [CmdletBinding()]
@@ -918,12 +919,28 @@ public static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UInt
             }
         }
 
+        # A PC where the launcher ran before, from a git clone or another folder, keeps its parts and their record in $LocalAppData\local-ai, which
+        # this install shares. When that record names Ollama, Model and OpenWebUI, as update requires, status comes next instead of install.
+        $next = 'install'
+        $stampPath = [IO.Path]::Combine($LocalAppData, 'local-ai', 'install-stamp.json')
+        if ([IO.File]::Exists($stampPath)) {
+            try {
+                $stamp = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($stampPath))
+                $unrecorded = @('Ollama', 'Model', 'OpenWebUI' | Where-Object { $stamp.$_ -isnot [Management.Automation.PSCustomObject] })
+                if ($unrecorded.Count -eq 0) { $next = 'status' }
+            } catch {
+                Write-Verbose "Could not read $stampPath, so install comes next: $($_.Exception.Message)"
+            }
+        }
         Write-Host ''
         Write-Host "The launcher $tag is installed in $root." -ForegroundColor Green
+        if ($next -eq 'status') {
+            Write-Host "$stampPath records the parts as installed, so status comes next; it names 'local-ai update' when they differ from the pins of $tag."
+        }
         if ($AddToPath) {
-            Write-Host 'Next, open a new console window and run: local-ai install'
+            Write-Host "Next, open a new console window and run: local-ai $next"
         } else {
-            Write-Host "Next, run: & `"$shim`" install"
+            Write-Host "Next, run: & `"$shim`" $next"
             Write-Host 'With -AddToPath, install.ps1 also puts local-ai on your Path.'
         }
     }

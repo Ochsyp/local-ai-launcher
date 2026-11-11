@@ -15597,6 +15597,31 @@ Describe 'install.ps1' {
             Should -Invoke Get-LauncherRelease -Times 1 -Exactly -ParameterFilter { $Tag -ceq 'v1.1.0' }
         }
 
+        It 'names <Next> as the next step when install-stamp.json <Case>' -ForEach @(
+            @{ Case = 'records Ollama, Model and OpenWebUI, as after an install from a git clone'; Next = 'status'
+                Stamp = '{"Ollama": {"Version": "0.40.11"}, "Model": {"Alias": "local-chat"}, "OpenWebUI": {"Version": "0.12.4"}, "ComfyUI": {"Commit": "a"}}' }
+            @{ Case = 'records no OpenWebUI'; Next = 'install'; Stamp = '{"Ollama": {"Version": "0.40.11"}, "Model": {"Alias": "local-chat"}}' }
+            @{ Case = 'records a part as no object'; Next = 'install'; Stamp = '{"Ollama": "0.40.11", "Model": {"Alias": "local-chat"}, "OpenWebUI": {"Version": "0.12.4"}}' }
+            @{ Case = 'is not JSON'; Next = 'install'; Stamp = '{ broken' }
+        ) {
+            $null = Write-TestFile "$(Split-Path $local -Leaf)\local-ai\install-stamp.json" $Stamp
+            $printed = @(& $install)
+            $printed | Should -Contain "Next, run: & `"$destShim`" $Next"
+            $reason = @($printed | Where-Object { $_ -like '*records the parts as installed*' })
+            if ($Next -eq 'status') {
+                $reason | Should -Be @("$(Join-Path $local 'local-ai\install-stamp.json') records the parts as installed, so status comes next; it names " +
+                    "'local-ai update' when they differ from the pins of v1.1.0.")
+            } else {
+                $reason | Should -BeNullOrEmpty
+            }
+        }
+
+        It 'names status for a new console window with -AddToPath when install-stamp.json records the parts' {
+            $null = Write-TestFile "$(Split-Path $local -Leaf)\local-ai\install-stamp.json" '{"Ollama": {"Version": "0.40.11"}, "Model": {"Alias": "local-chat"}, "OpenWebUI": {"Version": "0.12.4"}}'
+            $printed = & $install @{ AddToPath = $true }
+            $printed | Should -Contain 'Next, open a new console window and run: local-ai status'
+        }
+
         It 'refuses inside an app package, which the probe of <Case> finds, before it asks GitHub' -ForEach @(
             @{ Case = '%LOCALAPPDATA%'; Shell = ''; Probed = 1 }
             @{ Case = 'the known folder, when %LOCALAPPDATA% names another one'; Shell = 'C:\Users\User\AppData\Local'; Probed = 2 }
