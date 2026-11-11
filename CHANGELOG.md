@@ -5,6 +5,12 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `install.ps1` names `local-ai status` as the next step, instead of `local-ai install`, when
+  `install-stamp.json` in `%LOCALAPPDATA%\local-ai` records the parts already, as on a PC that
+  ran the launcher from a git clone.
+
 ## [1.0.0] - 2026-11-11
 
 The launcher was redesigned. These entries compare it with the earlier set of scripts.
