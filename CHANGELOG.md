@@ -5,6 +5,29 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The Start menu shortcut Update Local AI, which runs `local-ai.cmd update`. `local-ai
+  shortcuts` creates it beside Start, Stop and Status Local AI, and `uninstall` and
+  `shortcuts -Remove` remove it with them. The refusal inside a packaged app and its line in
+  `status` name it too.
+- When `update` makes another launcher version active and the Start menu folder holds the
+  Start Local AI shortcut of that install, it brings the shortcuts up to date as `local-ai
+  shortcuts` does, so an existing install gets Update Local AI with its next update. When that
+  fails, `update` warns and returns 2. Shortcuts that point at a git clone or another folder
+  stay as they are.
+
+### Changed
+
+- `local-ai.cmd` pauses after `update`, as after `status`, so its result stays readable in a
+  window that a shortcut opened. With `-Json` it still never pauses.
+- The line `start` prints when a newer launcher is out also names the Start menu shortcut
+  Update Local AI. When `start` printed it and ends with exit code 0, it waits for a key, so a
+  window that a shortcut opened stays open to read it. It never waits when its input or output
+  is redirected, as with `cmd /c "local-ai start < NUL"`, or when the `powershell.exe` that
+  runs `src\local-ai.ps1` has `-NonInteractive`. As before, `start` prints the line only when
+  its check runs, at most once per `Launcher.CheckIntervalHours`.
+
 ## [1.0.1] - 2026-11-11
 
 ### Changed

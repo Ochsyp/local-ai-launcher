@@ -354,10 +354,11 @@
     }
 
     Shortcuts = @{
-        # The Start menu folder where 'local-ai shortcuts' creates Start, Stop and Status Local AI,
-        # which run local-ai.cmd; install creates none. The verb replaces other shortcuts of those
-        # names in this folder, and -Remove deletes those three names only. A full path on a drive
-        # letter.
+        # The Start menu folder where 'local-ai shortcuts' creates Start, Stop, Status and Update
+        # Local AI, which run local-ai.cmd; install creates none. The verb replaces other shortcuts
+        # of those names in this folder, and -Remove deletes those four names only. update rewrites
+        # them when it makes another launcher version active and this folder holds the Start Local
+        # AI of that release install. A full path on a drive letter.
         Folder = '%APPDATA%\Microsoft\Windows\Start Menu\Programs\Local AI'
     }
 
