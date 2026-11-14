@@ -278,12 +278,15 @@
         # search_files that visits more than 100000 entries or waits 15 s on one filesystem call.
         # 2.2.0 (2026-11-04) keeps every path check and both stops. It serves 16 tools: 2.1.0's 14
         # and the new write tools append_file and copy_file, which DisabledTools hides. The five
-        # offered tools answer as before, except that search_files names the folders it could not
-        # read, read_text_file takes head and tail as whole numbers and returns nothing for 0, and a
-        # path through a dangling link reports 'Broken symlink'. Its file:// resources and its options
-        # --read-only and --confine-roots go unused, since mcpo 0.0.20 serves only tools. It turns 14
-        # days old on 2026-11-18. Must equal the version that ServerPackage\package.json pins; install
-        # runs npm ci on that folder's lockfile.
+        # offered tools mostly answer as before. search_files names the folders it could not read,
+        # and fails on a pattern over 64 KB instead of finding nothing. read_text_file takes head
+        # and tail as whole numbers and returns nothing for 0. A path through a dangling link
+        # reports 'Broken symlink', and a path that starts with ~\ now means the home folder, which
+        # the path check refuses unless it lies in Root. Its file:// resources and --confine-roots
+        # go unused, since mcpo 0.0.20 serves only tools and offers no MCP Roots. Its --read-only,
+        # which would withhold the six write tools, goes unused too: DisabledTools hides them. It
+        # turns 14 days old on 2026-11-18T21:36Z. Must equal the version that ServerPackage\package.json
+        # pins; install runs npm ci on that folder's lockfile.
         # Its overrides hold @modelcontextprotocol/server and core at 2.3.1 (2026-10-05), the SDK the
         # server ran on from 2.0.1 to 2.2.0, which server-filesystem's ^2.3.1 accepts. They hold
         # minimatch at 11.0.4 (2026-11-02), which has the same code as 11.0.3 and lies inside 2.2.0's
@@ -291,9 +294,10 @@
         # newest minimatch. 2.2.0 no longer needs glob, so GHSA-3g3m-2fjr-6pw4 no longer applies and
         # glob's override went. The lockfile was made with npm's --before 2026-11-05, which kept
         # brace-expansion at 5.0.12 and @isaacs/nonrecursive-glob-match at 1.0.3, so every locked
-        # package is at least 14 days old on 2026-11-18. server-filesystem 2.3.0, minimatch 11.0.8
-        # and brace-expansion 5.0.13 fix advisories published on 2026-11-10 and 2026-11-11, a race
-        # in read_text_file and patterns that tie up search_files; they turn 14 days old on 2026-11-25.
+        # package is at least 14 days old from 2026-11-18T21:36Z. server-filesystem 2.3.0,
+        # minimatch 11.0.8 and brace-expansion 5.0.13 fix advisories published on 2026-11-10 and
+        # 2026-11-11, a race in read_text_file and patterns that tie up search_files; they turn 14
+        # days old on 2026-11-25.
         ServerVersion        = '2.2.0'
         ServerPackage        = 'config\files-server'
         # The tools Open WebUI offers the model, as the server names them. Open WebUI sees them under
