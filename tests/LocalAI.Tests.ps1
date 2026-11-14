@@ -5142,7 +5142,7 @@ Describe 'New-McpoConfig' {
         $script = 'C:\Users\User\AppData\Local\local-ai\files-server\node_modules\@modelcontextprotocol\server-filesystem\dist\index.js'
     }
 
-    It 'writes one stdio server files that runs node on the server script with Files.Root, hiding Files.DisabledTools' {
+    It 'writes one stdio server files that runs node on the server script with --read-only and Files.Root, hiding Files.DisabledTools as well' {
         New-McpoConfig -Settings $settings -Path $path -NodePath $node -ServerScript $script
         $config = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($path))
         @($config.PSObject.Properties.Name) | Should -Be @('mcpServers')
@@ -5150,7 +5150,7 @@ Describe 'New-McpoConfig' {
         $files = $config.mcpServers.files
         @($files.PSObject.Properties.Name | Sort-Object) | Should -Be @('args', 'command', 'disabledTools')
         $files.command | Should -BeExactly $node
-        @($files.args) | Should -Be @($script, 'D:\AI-Folder')
+        @($files.args) | Should -Be @($script, '--read-only', 'D:\AI-Folder')
         @($files.disabledTools) | Should -Be @('read_file', 'write_file', 'edit_file', 'create_directory', 'move_file')
     }
 
@@ -5168,7 +5168,7 @@ Describe 'New-McpoConfig' {
         $bytes[0] | Should -Be ([byte][char]'{')
         @($bytes | Where-Object { $_ -gt 127 }).Count | Should -Be 0
         [Text.Encoding]::ASCII.GetString($bytes) | Should -BeLike '*"D:\\Data-\u00fc\u4e2d"*'
-        @((ConvertFrom-Json -InputObject ([Text.Encoding]::ASCII.GetString($bytes))).mcpServers.files.args)[1] | Should -BeExactly $root
+        @((ConvertFrom-Json -InputObject ([Text.Encoding]::ASCII.GetString($bytes))).mcpServers.files.args)[-1] | Should -BeExactly $root
     }
 
     It 'hands the server a root typed in another case spelled as on disk, as Test-FilesRoot checked it' {
@@ -5178,7 +5178,7 @@ Describe 'New-McpoConfig' {
         New-McpoConfig -Settings $settings -Path $path -NodePath $node -ServerScript $script
         $expected = & (Get-Module LocalAI) { param($Given) (Resolve-OnDiskPath -Path $Given).Path } $onDisk
         $expected | Should -BeLike '*\AI-Files'
-        @((ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($path))).mcpServers.files.args)[1] | Should -BeExactly $expected
+        @((ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($path))).mcpServers.files.args)[-1] | Should -BeExactly $expected
     }
 
     It 'hands the server a root typed with an 8.3 short name by its long name' {
@@ -5190,14 +5190,14 @@ Describe 'New-McpoConfig' {
         }
         $settings.Files.Root = Join-Path $short 'Common Files'
         New-McpoConfig -Settings $settings -Path $path -NodePath $node -ServerScript $script
-        @((ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($path))).mcpServers.files.args)[1] | Should -BeExactly $long
+        @((ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($path))).mcpServers.files.args)[-1] | Should -BeExactly $long
     }
 
     It 'replaces a config an earlier start wrote, leaving no .tmp' {
         New-McpoConfig -Settings $settings -Path $path -NodePath $node -ServerScript $script
         $settings.Files.Root = 'E:\Other'
         New-McpoConfig -Settings $settings -Path $path -NodePath $node -ServerScript $script
-        @((ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($path))).mcpServers.files.args)[1] | Should -BeExactly 'E:\Other'
+        @((ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($path))).mcpServers.files.args)[-1] | Should -BeExactly 'E:\Other'
         Test-Path -LiteralPath "$path.tmp" | Should -BeFalse
     }
 }

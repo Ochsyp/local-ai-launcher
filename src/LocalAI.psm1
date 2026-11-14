@@ -3229,9 +3229,10 @@ function Test-FilesRoot {
     return $true
 }
 
-# Write mcpo's config to $Path, replacing it in one step: the one stdio server 'files', which runs $NodePath on $ServerScript with Files.Root (full,
-# spelled as on disk as Test-FilesRoot checked it, without a trailing '\') as its only folder and hides Files.DisabledTools. ASCII with \u escapes and
-# no BOM, as mcpo 0.0.20 reads it with the ANSI code page. No env entry: mcpo hands the server its own environment, which Start-LocalAIService limits.
+# Write mcpo's config to $Path, replacing it in one step: the one stdio server 'files', which runs $NodePath on $ServerScript with --read-only and
+# Files.Root (full, spelled as on disk as Test-FilesRoot checked it, without a trailing '\') as its only folder, and hides Files.DisabledTools. ASCII with
+# \u escapes and no BOM, as mcpo 0.0.20 reads it with the ANSI code page. No env entry: mcpo hands the server its own environment, which
+# Start-LocalAIService limits.
 function New-McpoConfig {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'Called by the start verb, which offers no -WhatIf.')]
@@ -3244,9 +3245,11 @@ function New-McpoConfig {
     )
     $server = @{
         command       = $NodePath
-        # One folder: a second would widen what the tools read, and with none the server exits. The server lists a root given in another
-        # spelling twice, as given and as on disk, so it gets the on-disk one. From 2.1.0 on, it also serves a path that spells it in another case.
-        args          = @($ServerScript, (Resolve-OnDiskPath -Path $Settings.Files.Root).Path)
+        # --read-only (2.2.0 and later) withholds every tool not marked read-only, a write tool a later version adds included, before mcpo
+        # connects; Files.DisabledTools and start's route check stay a second guard. One folder: a second would widen what the tools read, and
+        # with none the server exits. The server lists a root given in another spelling twice, as given and as on disk, so it gets the on-disk
+        # one. From 2.1.0 on, it also serves a path that spells it in another case.
+        args          = @($ServerScript, '--read-only', (Resolve-OnDiskPath -Path $Settings.Files.Root).Path)
         disabledTools = @($Settings.Files.DisabledTools)
     }
     Write-LocalAIState -Path $Path -State @{ mcpServers = @{ files = $server } } -Ascii
