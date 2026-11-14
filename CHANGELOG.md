@@ -27,16 +27,42 @@ All notable changes to this project are listed here. The format follows
   is redirected, as with `cmd /c "local-ai start < NUL"`, or when the `powershell.exe` that
   runs `src\local-ai.ps1` has `-NonInteractive`. As before, `start` prints the line only when
   its check runs, at most once per `Launcher.CheckIntervalHours`.
-- The file tools run `@modelcontextprotocol/server-filesystem` 2.2.0. It adds the write tools
-  `append_file` and `copy_file`, which `Files.DisabledTools` hides and the settings check
-  requires hidden, so a `settings.psd1` that sets `Files.DisabledTools` must name both. The
-  five offered tools mostly answer as before. `search_files` names the folders it could not
-  read, and fails on a pattern over 64 KB instead of finding nothing. `read_text_file` takes
-  `head` and `tail` as whole numbers and returns nothing for 0. A path through a dangling link
-  reports a broken link, and a path that starts with `~\` means your home folder, which the
-  file tools refuse unless it lies in `Files.Root`. The server no longer needs glob, so its npm
-  override is gone and the install is about 6 MB smaller. Where the file tools are set up,
-  `local-ai update` runs npm ci again with the new lockfile.
+- The file tools run `@modelcontextprotocol/server-filesystem` 2.3.0, where 1.0.1 ran 2.1.0. It
+  adds the write tools `append_file` and `copy_file`, which `Files.DisabledTools` hides and the
+  settings check requires hidden, so a `settings.psd1` that sets `Files.DisabledTools` must name
+  both. The five offered tools mostly answer as before:
+  - `search_files` names the folders it could not read, and fails on a pattern over 64 KB
+    instead of finding nothing. A plain exclude name leaves out that folder at any depth.
+  - `read_text_file` takes `head` and `tail` as whole numbers and returns nothing for 0.
+  - A path through a dangling link reports a broken link. A path that starts with `~\` means
+    your home folder, which the file tools refuse unless it lies in `Files.Root`.
+  - On Windows the server refuses a path that names an NTFS alternate data stream, such as
+    `file.txt:Zone.Identifier`, which it read before, or a device, or that has a part ending in
+    a dot or a space.
+  - It cannot read a file in a folder whose path is longer than 258 characters while Windows'
+    long paths are off, which is the default.
+
+  The server no longer needs glob, so its npm override is gone and the install is about 6 MB
+  smaller. Where the file tools are set up, `local-ai update` runs npm ci again with the new
+  lockfile.
+
+### Security
+
+- The files server's lockfile takes server-filesystem 2.3.0, minimatch 11.0.8 and
+  brace-expansion 5.0.13. They fix advisories published on 2026-11-10 and 2026-11-11 that npm
+  audit and Dependabot do not list yet:
+  - GHSA-p9cv-8g75-4xcg: `read_text_file` checked a path, then opened it again by name, so a
+    program that writes in the folder could swap in a link to a file outside it. 2.3.0 opens the
+    file inside the folder it checked. On Windows that only narrows the race.
+  - GHSA-7m4x-rv66-mxhh: the same race in `move_file`, which the launcher hides.
+  - GHSA-hqmv-qgp3-jx75 and GHSA-cf2h-pxjq-68xw in minimatch, and GHSA-6jwq-xf8q-xcwh in
+    brace-expansion: a `search_files` pattern from the model could use up the files server's
+    memory or CPU.
+  - GHSA-c859-jr93-m5j4 in minimatch's `escape()`, which the server does not call.
+
+  The maintainer took these three versions before they were 14 days old, as was
+  `@isaacs/nonrecursive-glob-match` 1.1.0, which minimatch 11.0.8 needs. npm overrides hold
+  minimatch and brace-expansion at the fixed versions.
 
 ## [1.0.1] - 2026-11-11
 

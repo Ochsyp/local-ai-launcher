@@ -240,8 +240,10 @@
     Files     = @{
         # The only folder the tools may read, as a full path on a drive letter; empty turns them off
         # and needs no Node.js. Use a dedicated folder that only you write to and that holds nothing
-        # secret: the model may quote any file in it, and NTFS alternate streams such as
-        # Zone.Identifier are readable as well (read_text_file of 'file.txt:Zone.Identifier' answered).
+        # secret: the model may quote any file in it. On Windows the server refuses a path that
+        # names an NTFS alternate stream, such as file.txt:Zone.Identifier, or a device, such as NUL,
+        # or that has a part ending in a dot or a space. It cannot read a file in a folder whose path
+        # is longer than 258 characters while Windows' long paths are off, which is the default.
         # read_text_file returns a whole file unless the model asks for its head or tail, and a text
         # file of 300 KB overflows local-chat's 32K context, which leaves the answer unusable.
         # start refuses a drive root, %USERPROFILE% or a folder above it, a path through a link, a
@@ -264,7 +266,8 @@
         # streamablehttp_client, which mcpo imports at startup (open-webui/mcpo#303), and FastAPI
         # 0.145.0 removed the **extra that mcpo's FastAPI(ssl_certfile=...) call needs. pydantic
         # 2.14.1 works with server-filesystem 2.0.1, whose tool schemas 2.1.0 keeps, so it needs no cap;
-        # 2.2.0 only makes read_text_file's head and tail integers, which mcpo maps to int.
+        # 2.2.0 only makes read_text_file's head and tail integers, which mcpo maps to int, and 2.3.0
+        # only adds descriptions; mcpo served 2.3.0's five offered tools on 2026-11-14.
         McpoWith             = @('mcp==1.30.0', 'fastapi<0.145')
         # Passed as --exclude-newer: mcpo's other dependencies resolve to their newest release
         # uploaded before this time (44 packages, tested with server-filesystem 2.0.1). Empty lifts
@@ -273,32 +276,41 @@
         McpoExcludeNewer     = '2026-10-13T00:00:00Z'
         # @modelcontextprotocol/server-filesystem, which needs node >= 24. 2.0.1 was the first release
         # with the 2026-10-25 path-check fixes (GHSA-7rgq-gccq-qphx, GHSA-4gxg-m5jx-9j57), which
-        # affect its read tools in 1.0.0 and 2.0.0; 2.1.0 and 2.2.0 keep them. 2.1.0 serves a path
-        # that spells Root in another letter case, adds a hardLinks line to get_file_info, and stops a
-        # search_files that visits more than 100000 entries or waits 15 s on one filesystem call.
-        # 2.2.0 (2026-11-04) keeps every path check and both stops. It serves 16 tools: 2.1.0's 14
-        # and the new write tools append_file and copy_file, which DisabledTools hides. The five
-        # offered tools mostly answer as before. search_files names the folders it could not read,
-        # and fails on a pattern over 64 KB instead of finding nothing. read_text_file takes head
-        # and tail as whole numbers and returns nothing for 0. A path through a dangling link
-        # reports 'Broken symlink', and a path that starts with ~\ now means the home folder, which
-        # the path check refuses unless it lies in Root. Its file:// resources and --confine-roots
-        # go unused, since mcpo 0.0.20 serves only tools and offers no MCP Roots. Its --read-only,
-        # which would withhold the six write tools, goes unused too: DisabledTools hides them. It
-        # turns 14 days old on 2026-11-18T21:36Z. Must equal the version that ServerPackage\package.json
-        # pins; install runs npm ci on that folder's lockfile.
+        # affect its read tools in 1.0.0 and 2.0.0; every later release keeps them. 2.1.0 serves a
+        # path that spells Root in another letter case, adds a hardLinks line to get_file_info, and
+        # stops a search_files that visits more than 100000 entries or waits 15 s on one filesystem
+        # call. 2.2.0 adds the write tools append_file and copy_file, which DisabledTools hides; its
+        # search_files names the folders it could not read and fails on a pattern over 64 KB, its
+        # read_text_file takes head and tail as whole numbers and returns nothing for 0, a path
+        # through a dangling link reports 'Broken symlink', and a path that starts with ~\ means the
+        # home folder, which the path check refuses unless it lies in Root.
+        # 2.3.0 (2026-11-11) serves the same 16 tools. It fixes GHSA-p9cv-8g75-4xcg, a race between
+        # read_text_file's path check and its open: reads now enter the checked folder and open the
+        # file there, which closes the race on Linux and macOS and, by its own account, only narrows
+        # it on Windows. It fixes GHSA-7m4x-rv66-mxhh in move_file, which DisabledTools hides. On
+        # Windows it refuses alternate streams, devices and names ending in a dot or a space, and a
+        # file in a folder longer than 258 characters (see Root above). A bare name in search_files'
+        # excludePatterns now matches at any depth, and list_directory's description names the
+        # hidden list_directory_with_sizes and directory_tree. Its file:// resources and
+        # --confine-roots go unused, since mcpo 0.0.20 serves only tools and offers no MCP Roots;
+        # --read-only, which withholds the six write tools, goes unused too, since DisabledTools
+        # hides them. --read-only-dir must stay unused: it adds a block to list_allowed_directories,
+        # which start's check reads as a second folder. 2.3.0 was taken on 2026-11-14 for its
+        # advisory fixes, before it was 14 days old (2026-11-25T07:10Z), at the maintainer's word.
+        # Must equal the version that ServerPackage\package.json pins; install runs npm ci on that
+        # folder's lockfile.
         # Its overrides hold @modelcontextprotocol/server and core at 2.3.1 (2026-10-05), the SDK the
-        # server ran on from 2.0.1 to 2.2.0, which server-filesystem's ^2.3.1 accepts. They hold
-        # minimatch at 11.0.4 (2026-11-02), which has the same code as 11.0.3 and lies inside 2.2.0's
-        # own ^11.0.4, past 11.0.1, the fix for GHSA-g3hv-75wg-m249; without it, npm would lock the
-        # newest minimatch. 2.2.0 no longer needs glob, so GHSA-3g3m-2fjr-6pw4 no longer applies and
-        # glob's override went. The lockfile was made with npm's --before 2026-11-05, which kept
-        # brace-expansion at 5.0.12 and @isaacs/nonrecursive-glob-match at 1.0.3, so every locked
-        # package is at least 14 days old from 2026-11-18T21:36Z. server-filesystem 2.3.0,
-        # minimatch 11.0.8 and brace-expansion 5.0.13 fix advisories published on 2026-11-10 and
-        # 2026-11-11, a race in read_text_file and patterns that tie up search_files; they turn 14
-        # days old on 2026-11-25.
-        ServerVersion        = '2.2.0'
+        # server ran on from 2.0.1 to 2.3.0, which server-filesystem's ^2.3.1 accepts. They hold
+        # minimatch at 11.0.8 (2026-11-11), which fixes GHSA-hqmv-qgp3-jx75, GHSA-cf2h-pxjq-68xw and
+        # GHSA-c859-jr93-m5j4, and brace-expansion at 5.0.13 (2026-11-11), which fixes
+        # GHSA-6jwq-xf8q-xcwh: patterns that could tie up search_files. The server's own ^11.0.4 and
+        # minimatch's own ^5.0.12 admit the versions before those fixes, and npm audit does not list
+        # these advisories yet, so only the overrides keep the fixes in. Both were taken before they
+        # were 14 days old, at the maintainer's word, as was @isaacs/nonrecursive-glob-match 1.1.0
+        # (2026-11-05), which minimatch 11.0.8 needs. The lockfile was made with npm's --before
+        # 2026-11-11T12:28:00Z, so it holds nothing newer. 2.2.0 and later need no glob, so
+        # GHSA-3g3m-2fjr-6pw4 no longer applies.
+        ServerVersion        = '2.3.0'
         ServerPackage        = 'config\files-server'
         # The tools Open WebUI offers the model, as the server names them. Open WebUI sees them under
         # mcpo's operation ids, tool_<name>_post, and the model calls them by those names.
@@ -324,8 +336,8 @@
         # (58674545) and the mcpo.exe trampoline (47104).
         InstallBytes         = 119062513
         # Free space install wants, plus 10 percent, on the %LOCALAPPDATA% drive before npm ci: the
-        # server's node_modules and package files with install's marker, for 2.2.0 (15571425 bytes).
-        ServerInstallBytes   = 15571425
+        # server's node_modules and package files with install's marker, for 2.3.0 (15773335 bytes).
+        ServerInstallBytes   = 15773335
     }
 
     HfCli     = @{
