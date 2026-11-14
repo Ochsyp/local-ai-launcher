@@ -263,7 +263,8 @@
         # Passed with --with, since mcpo 0.0.20 sets no upper bounds: mcp 2.x removed
         # streamablehttp_client, which mcpo imports at startup (open-webui/mcpo#303), and FastAPI
         # 0.145.0 removed the **extra that mcpo's FastAPI(ssl_certfile=...) call needs. pydantic
-        # 2.14.1 works with server-filesystem 2.0.1, whose tool schemas 2.1.0 keeps, so it needs no cap.
+        # 2.14.1 works with server-filesystem 2.0.1, whose tool schemas 2.1.0 keeps, so it needs no cap;
+        # 2.2.0 only makes read_text_file's head and tail integers, which mcpo maps to int.
         McpoWith             = @('mcp==1.30.0', 'fastapi<0.145')
         # Passed as --exclude-newer: mcpo's other dependencies resolve to their newest release
         # uploaded before this time (44 packages, tested with server-filesystem 2.0.1). Empty lifts
@@ -272,31 +273,37 @@
         McpoExcludeNewer     = '2026-10-13T00:00:00Z'
         # @modelcontextprotocol/server-filesystem, which needs node >= 24. 2.0.1 was the first release
         # with the 2026-10-25 path-check fixes (GHSA-7rgq-gccq-qphx, GHSA-4gxg-m5jx-9j57), which
-        # affect its read tools in 1.0.0 and 2.0.0. 2.1.0 (2026-10-28) keeps them and serves the same
-        # 14 tools with the same schemas. It also serves a path that spells Root in another letter
-        # case, adds a hardLinks line to get_file_info, fixes read_text_file's head and tail, and
-        # stops a search_files that visits more than 100000 entries or waits 15 s on one filesystem
-        # call. It was 13 days old when Dependabot's bump reached main. Must equal the version that
-        # ServerPackage\package.json pins; install runs npm ci on that folder's lockfile.
-        # Its overrides hold @modelcontextprotocol/server and core at 2.3.1 (2026-10-05), which
-        # server-filesystem's ^2.3.1 accepts, since 2.4.0 was 4 days old. They also lift glob to
-        # 14.0.3 and minimatch to 11.0.3, past the ^13.0.6 and ^10.0.1 that server-filesystem 2.0.1
-        # and 2.1.0 ask for, for GHSA-3g3m-2fjr-6pw4 and GHSA-g3hv-75wg-m249. minimatch 11.0.1 is the
-        # first fix; 11.0.3 adds a cache of compiled patterns. glob 14.0.3 is the first release whose
-        # bundle, its default entry, holds the fixed minimatch code; 14.0.2 bundles 11.0.0. Those two,
-        # and the path-scurry 3.0.0 and @isaacs/nonrecursive-glob-match 1.0.3 they need, were 6 or 7
-        # days old when pinned; every other locked package was at least 14 days old. The server never
-        # loads glob, and its search_files answered 295 test cases the same with minimatch 11.0.3 as
-        # with 10.2.6.
-        ServerVersion        = '2.1.0'
+        # affect its read tools in 1.0.0 and 2.0.0; 2.1.0 and 2.2.0 keep them. 2.1.0 serves a path
+        # that spells Root in another letter case, adds a hardLinks line to get_file_info, and stops a
+        # search_files that visits more than 100000 entries or waits 15 s on one filesystem call.
+        # 2.2.0 (2026-11-04) keeps every path check and both stops. It serves 16 tools: 2.1.0's 14
+        # and the new write tools append_file and copy_file, which DisabledTools hides. The five
+        # offered tools answer as before, except that search_files names the folders it could not
+        # read, read_text_file takes head and tail as whole numbers and returns nothing for 0, and a
+        # path through a dangling link reports 'Broken symlink'. Its file:// resources and its options
+        # --read-only and --confine-roots go unused, since mcpo 0.0.20 serves only tools. It turns 14
+        # days old on 2026-11-18. Must equal the version that ServerPackage\package.json pins; install
+        # runs npm ci on that folder's lockfile.
+        # Its overrides hold @modelcontextprotocol/server and core at 2.3.1 (2026-10-05), the SDK the
+        # server ran on from 2.0.1 to 2.2.0, which server-filesystem's ^2.3.1 accepts. They hold
+        # minimatch at 11.0.4 (2026-11-02), which has the same code as 11.0.3 and lies inside 2.2.0's
+        # own ^11.0.4, past 11.0.1, the fix for GHSA-g3hv-75wg-m249; without it, npm would lock the
+        # newest minimatch. 2.2.0 no longer needs glob, so GHSA-3g3m-2fjr-6pw4 no longer applies and
+        # glob's override went. The lockfile was made with npm's --before 2026-11-05, which kept
+        # brace-expansion at 5.0.12 and @isaacs/nonrecursive-glob-match at 1.0.3, so every locked
+        # package is at least 14 days old on 2026-11-18. server-filesystem 2.3.0, minimatch 11.0.8
+        # and brace-expansion 5.0.13 fix advisories published on 2026-11-10 and 2026-11-11, a race
+        # in read_text_file and patterns that tie up search_files; they turn 14 days old on 2026-11-25.
+        ServerVersion        = '2.2.0'
         ServerPackage        = 'config\files-server'
         # The tools Open WebUI offers the model, as the server names them. Open WebUI sees them under
         # mcpo's operation ids, tool_<name>_post, and the model calls them by those names.
         AllowedTools         = @('read_text_file', 'list_directory', 'search_files', 'get_file_info', 'list_allowed_directories')
-        # The tools mcpo hides: every write tool (write_file, edit_file, create_directory and
-        # move_file must stay listed), the deprecated read_file alias, and the tools most likely to
-        # flood a 32K context.
-        DisabledTools        = @('read_file', 'write_file', 'edit_file', 'create_directory', 'move_file', 'read_multiple_files', 'read_media_file', 'directory_tree', 'list_directory_with_sizes')
+        # The tools mcpo hides: every write tool (write_file, edit_file, create_directory, move_file,
+        # append_file and copy_file must stay listed), the deprecated read_file alias, and the tools
+        # most likely to flood a 32K context.
+        DisabledTools        = @('read_file', 'write_file', 'edit_file', 'create_directory', 'move_file', 'append_file', 'copy_file', 'read_multiple_files',
+            'read_media_file', 'directory_tree', 'list_directory_with_sizes')
         # mcpo is not started while Root holds a file or folder whose name matches one of these, in
         # any case, because server-filesystem has no deny list of its own; a matching folder, such as
         # .git or .ssh, counts as a whole. Root must also hold no folder start cannot list. The check
@@ -313,8 +320,8 @@
         # (58674545) and the mcpo.exe trampoline (47104).
         InstallBytes         = 119062513
         # Free space install wants, plus 10 percent, on the %LOCALAPPDATA% drive before npm ci: the
-        # server's node_modules and package files with install's marker, for 2.1.0 (21642382 bytes).
-        ServerInstallBytes   = 21642382
+        # server's node_modules and package files with install's marker, for 2.2.0 (15571425 bytes).
+        ServerInstallBytes   = 15571425
     }
 
     HfCli     = @{

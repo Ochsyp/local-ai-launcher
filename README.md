@@ -415,14 +415,14 @@ The file tools let the model read one folder. To turn them on:
    path such as `C:\AI-Files` works best.
 2. Set `Files.Root` to it in `settings.psd1`.
 3. Run `local-ai install`. It installs Node.js, mcpo 0.0.20 and
-   `@modelcontextprotocol/server-filesystem` 2.1.0 from the lockfile in `config\files-server`,
+   `@modelcontextprotocol/server-filesystem` 2.2.0 from the lockfile in `config\files-server`,
    and creates the key file.
 4. Run `local-ai start`.
 
 Open WebUI offers them as **Workspace files**: `read_text_file`, `list_directory`,
 `search_files`, `get_file_info` and `list_allowed_directories`. The tools are read-only. Every
-write tool is hidden, and the settings check refuses a `Files.DisabledTools` that leaves one
-out. Only the admin account gets the tools.
+write tool is hidden, `append_file` and `copy_file` among them, and the settings check refuses a
+`Files.DisabledTools` that leaves one out. Only the admin account gets the tools.
 
 Each `start` checks the folder first. It leaves the file tools off, with a warning, when
 `Files.Root`:
@@ -449,7 +449,8 @@ Know these limits:
   of about 300 KB overflows `local-chat`'s 32K context and leaves the answer unusable.
 - `search_files` stops with an error once it has visited more than 100000 entries, as in a
   folder that grew after the check of `start`, or when one folder takes more than 15 s to
-  answer. A narrower path or exclude patterns get past that.
+  answer. A narrower path or exclude patterns get past that. After its results it names the
+  folders it could not read.
 - The mcpo API key lives in `%LOCALAPPDATA%\local-ai\files.key`, which only your account may
   open. mcpo 0.0.20 takes the key only on its command line, so other programs that run as the
   same user can read it there, as they can in Open WebUI's `TOOL_SERVER_CONNECTIONS`.

@@ -261,8 +261,8 @@ function Test-LocalAISetting {
         if ($allowed.Count -eq 0) { "Setting 'Files.AllowedTools' must name at least one tool." }
         $both = @($allowed | Where-Object { $disabled -contains $_ })
         if ($both.Count -gt 0) { "Settings Files.AllowedTools and Files.DisabledTools both name $($both -join ', '); a tool is either offered or hidden." }
-        # The tools of server-filesystem 2.0.1 and 2.1.0 that change files.
-        $open = @(foreach ($tool in 'write_file', 'edit_file', 'create_directory', 'move_file') { if ($disabled -notcontains $tool) { $tool } })
+        # The tools of server-filesystem 2.2.0 that change files; append_file and copy_file are new in 2.2.0.
+        $open = @(foreach ($tool in 'write_file', 'edit_file', 'create_directory', 'move_file', 'append_file', 'copy_file') { if ($disabled -notcontains $tool) { $tool } })
         if ($open.Count -gt 0) { "Setting 'Files.DisabledTools' must hide every write tool, but leaves out $($open -join ', ')." }
     }
     # Start-LocalAIService withholds these whatever a list names, so naming one would only mislead.
