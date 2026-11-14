@@ -430,6 +430,8 @@ Each `start` checks the folder first. It leaves the file tools off, with a warni
 - is not a full path on a drive letter, or is a drive root;
 - is `%USERPROFILE%` or a folder above it;
 - is a link (a junction or symbolic link), or has one on its path;
+- has a name on its path that the files server refuses: a Windows device name, such as `aux` or
+  `con.txt`, or a name ending in a dot or a space;
 - lies in or around `%LOCALAPPDATA%\local-ai`, this repository, uv's tool folder,
   `OpenWebUI.DataDir` or `ComfyUI.Dir`;
 - holds a file or folder whose name matches `Files.DenyPatterns`, such as `.env`, `*.key`,
@@ -445,10 +447,11 @@ Know these limits:
 
 - The model may quote any file in the folder.
 - On Windows the files server refuses a path that names an NTFS alternate data stream, such as
-  `file.txt:Zone.Identifier`, or a device, such as `NUL`, or that has a part ending in a dot or a
-  space. `list_directory` still shows such names.
-- It cannot read a file in a folder whose path is longer than 258 characters while Windows' long
-  paths are off, which is the default. `list_directory` and `search_files` still show the file.
+  `file.txt:Zone.Identifier`, or that has a part which is a device name, such as `NUL` or
+  `aux.txt`, or ends in a dot or a space. `list_directory` still shows such names, and
+  `search_files` skips them without a word.
+- It cannot read a file in a folder whose path is longer than 258 characters, since Windows does
+  not let it enter such a folder. `list_directory` and `search_files` still show the file.
 - `read_text_file` returns a whole file unless the model asks for its head or tail. A text file
   of about 300 KB overflows `local-chat`'s 32K context and leaves the answer unusable.
 - `search_files` stops with an error once it has visited more than 100000 entries, as in a

@@ -4872,6 +4872,7 @@ Describe 'Test-FilesRoot' {
         $links = New-Object System.Collections.Generic.List[string]
         $denied = $null
         $longTop = $null
+        $oddTop = $null
     }
 
     AfterEach {
@@ -4884,6 +4885,23 @@ Describe 'Test-FilesRoot' {
         }
         # Windows PowerShell 5.1 removes TestDrive with paths of at most 260 characters.
         if ($longTop) { [IO.Directory]::Delete('\\?\' + $longTop, $true) }
+        # A folder with a device name, which only the \\?\ form removes on every Windows.
+        if ($oddTop) { [IO.Directory]::Delete('\\?\' + $oddTop, $true) }
+    }
+
+    It 'refuses a folder whose path holds <Name>, as server-filesystem 2.3.0 refuses every path through it' -ForEach @(
+        @{ Name = 'aux' }
+        @{ Name = 'Con.d' }
+    ) {
+        # Made through \\?\, since Windows takes such a name for a device only as the last part of a path as written.
+        $oddTop = Join-Path $base $Name
+        $odd = Join-Path $oddTop 'AI-Files'
+        $null = [IO.Directory]::CreateDirectory('\\?\' + $odd)
+        [IO.File]::WriteAllText('\\?\' + (Join-Path $odd 'readme.md'), 'read me')
+        $settings.Files.Root = $odd
+        $run = Invoke-RootTest -Settings $settings -Paths $paths -UserProfile $userProfile
+        $run.Result | Should -Be @($false)
+        $run.Warnings | Should -BeLike "*is not served*the name '$Name' on its path is a Windows device name or ends in a dot or a space*"
     }
 
     It 'serves a folder whose file names match no deny pattern, warning about nothing' {
@@ -5181,6 +5199,32 @@ Describe 'New-McpoConfig' {
         New-McpoConfig -Settings $settings -Path $path -NodePath $node -ServerScript $script
         @((ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($path))).mcpServers.files.args)[1] | Should -BeExactly 'E:\Other'
         Test-Path -LiteralPath "$path.tmp" | Should -BeFalse
+    }
+}
+
+Describe 'Get-FilesServerRefusedName' {
+    It 'names the first part of <Path> that server-filesystem 2.3.0 refuses on Windows: <Expected>' -ForEach @(
+        @{ Path = 'C:\AI\aux\root'; Expected = 'aux' }
+        @{ Path = 'C:\AI\Con.d\root'; Expected = 'Con.d' }
+        @{ Path = 'C:\AI\nul.txt'; Expected = 'nul.txt' }
+        @{ Path = 'C:\AI\COM1'; Expected = 'COM1' }
+        @{ Path = 'C:\AI\lpt9 .log\x'; Expected = 'lpt9 .log' }
+        @{ Path = 'C:\AI\notes \root'; Expected = 'notes ' }
+        @{ Path = 'C:\AI\notes..\root'; Expected = 'notes..' }
+        @{ Path = 'C:\AI\aux\prn'; Expected = 'aux' }
+        @{ Path = 'C:\AI-Files'; Expected = '' }
+        @{ Path = 'C:\AI\console\auxiliary\com10\lpt0\nul-files'; Expected = '' }
+        @{ Path = 'C:\AI\a.b\.hidden\x y'; Expected = '' }
+    ) {
+        $name = Invoke-ModuleFunction 'Get-FilesServerRefusedName' @{ Path = $Path }
+        if ($Expected) { $name | Should -BeExactly $Expected } else { $name | Should -BeNullOrEmpty }
+    }
+
+    It 'takes COM and LPT with a superscript digit, as Windows does' {
+        foreach ($code in 0x00B9, 0x00B2, 0x00B3) {
+            $part = 'com' + [char]$code
+            Invoke-ModuleFunction 'Get-FilesServerRefusedName' @{ Path = "C:\AI\$part\root" } | Should -BeExactly $part
+        }
     }
 }
 

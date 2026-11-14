@@ -50,7 +50,7 @@ that contain them into issues, pull requests, reports or commits.
 - The check does not follow links inside the folder; the files server refuses those that lead
   outside it. Files added while mcpo runs are not checked.
 - On Windows the files server refuses paths that name NTFS alternate data streams, such as
-  `file.txt:Zone.Identifier`, or devices.
+  `file.txt:Zone.Identifier`, or device names, such as `aux.txt`.
 - The files server checks a path, then reads the file inside the folder it checked
   (GHSA-p9cv-8g75-4xcg, fixed in 2.3.0). On Windows that only narrows the race: a program that
   can write in the folder could still swap a subfolder for a link in between. So keep the

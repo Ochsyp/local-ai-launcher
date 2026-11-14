@@ -241,9 +241,11 @@
         # The only folder the tools may read, as a full path on a drive letter; empty turns them off
         # and needs no Node.js. Use a dedicated folder that only you write to and that holds nothing
         # secret: the model may quote any file in it. On Windows the server refuses a path that
-        # names an NTFS alternate stream, such as file.txt:Zone.Identifier, or a device, such as NUL,
-        # or that has a part ending in a dot or a space. It cannot read a file in a folder whose path
-        # is longer than 258 characters while Windows' long paths are off, which is the default.
+        # names an NTFS alternate stream, such as file.txt:Zone.Identifier, or that has a part which
+        # is a device name, such as NUL or aux.txt, or ends in a dot or a space; search_files skips
+        # such names without a word, and start refuses a Root whose own path holds one. It cannot
+        # read a file in a folder whose path is longer than 258 characters, since Windows does not
+        # let it enter such a folder.
         # read_text_file returns a whole file unless the model asks for its head or tail, and a text
         # file of 300 KB overflows local-chat's 32K context, which leaves the answer unusable.
         # start refuses a drive root, %USERPROFILE% or a folder above it, a path through a link, a
@@ -288,10 +290,10 @@
         # read_text_file's path check and its open: reads now enter the checked folder and open the
         # file there, which closes the race on Linux and macOS and, by its own account, only narrows
         # it on Windows. It fixes GHSA-7m4x-rv66-mxhh in move_file, which DisabledTools hides. On
-        # Windows it refuses alternate streams, devices and names ending in a dot or a space, and a
-        # file in a folder longer than 258 characters (see Root above). A bare name in search_files'
-        # excludePatterns now matches at any depth, and list_directory's description names the
-        # hidden list_directory_with_sizes and directory_tree. Its file:// resources and
+        # Windows it refuses alternate streams, device names and names ending in a dot or a space,
+        # and cannot read a file in a folder longer than 258 characters (see Root above). A bare
+        # name in search_files' excludePatterns now matches at any depth, and list_directory's
+        # description names the hidden list_directory_with_sizes and directory_tree. Its file:// resources and
         # --confine-roots go unused, since mcpo 0.0.20 serves only tools and offers no MCP Roots;
         # --read-only, which withholds the six write tools, goes unused too, since DisabledTools
         # hides them. --read-only-dir must stay unused: it adds a block to list_allowed_directories,
@@ -301,11 +303,13 @@
         # folder's lockfile.
         # Its overrides hold @modelcontextprotocol/server and core at 2.3.1 (2026-10-05), the SDK the
         # server ran on from 2.0.1 to 2.3.0, which server-filesystem's ^2.3.1 accepts. They hold
-        # minimatch at 11.0.8 (2026-11-11), which fixes GHSA-hqmv-qgp3-jx75, GHSA-cf2h-pxjq-68xw and
-        # GHSA-c859-jr93-m5j4, and brace-expansion at 5.0.13 (2026-11-11), which fixes
-        # GHSA-6jwq-xf8q-xcwh: patterns that could tie up search_files. The server's own ^11.0.4 and
+        # minimatch at 11.0.8 (2026-11-11) and brace-expansion at 5.0.13 (2026-11-11). Those fix
+        # GHSA-hqmv-qgp3-jx75 and GHSA-cf2h-pxjq-68xw in minimatch and GHSA-6jwq-xf8q-xcwh in
+        # brace-expansion, patterns that could tie up search_files, and GHSA-c859-jr93-m5j4 in
+        # minimatch's escape(), which the server does not call. The server's own ^11.0.4 and
         # minimatch's own ^5.0.12 admit the versions before those fixes, and npm audit does not list
-        # these advisories yet, so only the overrides keep the fixes in. Both were taken before they
+        # these advisories yet, so the overrides keep a lockfile made again from falling back to
+        # them. Both were taken before they
         # were 14 days old, at the maintainer's word, as was @isaacs/nonrecursive-glob-match 1.1.0
         # (2026-11-05), which minimatch 11.0.8 needs. The lockfile was made with npm's --before
         # 2026-11-11T12:28:00Z, so it holds nothing newer. 2.2.0 and later need no glob, so
@@ -336,8 +340,8 @@
         # (58674545) and the mcpo.exe trampoline (47104).
         InstallBytes         = 119062513
         # Free space install wants, plus 10 percent, on the %LOCALAPPDATA% drive before npm ci: the
-        # server's node_modules and package files with install's marker, for 2.3.0 (15773335 bytes).
-        ServerInstallBytes   = 15773335
+        # server's node_modules and package files with install's marker, for 2.3.0 (15773368 bytes).
+        ServerInstallBytes   = 15773368
     }
 
     HfCli     = @{

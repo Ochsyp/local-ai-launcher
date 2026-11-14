@@ -31,16 +31,18 @@ All notable changes to this project are listed here. The format follows
   adds the write tools `append_file` and `copy_file`, which `Files.DisabledTools` hides and the
   settings check requires hidden, so a `settings.psd1` that sets `Files.DisabledTools` must name
   both. The five offered tools mostly answer as before:
-  - `search_files` names the folders it could not read, and fails on a pattern over 64 KB
-    instead of finding nothing. A plain exclude name leaves out that folder at any depth.
+  - `search_files` names the folders it could not read, and fails on a pattern over 64 KB or
+    with more than 256 extglobs in one part instead of finding nothing. A plain exclude name
+    leaves out that folder at any depth.
   - `read_text_file` takes `head` and `tail` as whole numbers and returns nothing for 0.
   - A path through a dangling link reports a broken link. A path that starts with `~\` means
     your home folder, which the file tools refuse unless it lies in `Files.Root`.
   - On Windows the server refuses a path that names an NTFS alternate data stream, such as
-    `file.txt:Zone.Identifier`, which it read before, or a device, or that has a part ending in
-    a dot or a space.
-  - It cannot read a file in a folder whose path is longer than 258 characters while Windows'
-    long paths are off, which is the default.
+    `file.txt:Zone.Identifier`, which it read before, or that has a part which is a device
+    name, such as `aux.txt`, or ends in a dot or a space. `start` refuses a `Files.Root` whose
+    own path holds such a name, since the server would answer no request there.
+  - It cannot read a file in a folder whose path is longer than 258 characters, since Windows
+    does not let it enter such a folder.
 
   The server no longer needs glob, so its npm override is gone and the install is about 6 MB
   smaller. Where the file tools are set up, `local-ai update` runs npm ci again with the new
