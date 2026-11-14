@@ -27,6 +27,16 @@ All notable changes to this project are listed here. The format follows
   is redirected, as with `cmd /c "local-ai start < NUL"`, or when the `powershell.exe` that
   runs `src\local-ai.ps1` has `-NonInteractive`. As before, `start` prints the line only when
   its check runs, at most once per `Launcher.CheckIntervalHours`.
+- The file tools run `@modelcontextprotocol/server-filesystem` 2.2.0. It adds the write tools
+  `append_file` and `copy_file`, which `Files.DisabledTools` hides and the settings check
+  requires hidden, so a `settings.psd1` that sets `Files.DisabledTools` must name both. The
+  five offered tools mostly answer as before. `search_files` names the folders it could not
+  read, and fails on a pattern over 64 KB instead of finding nothing. `read_text_file` takes
+  `head` and `tail` as whole numbers and returns nothing for 0. A path through a dangling link
+  reports a broken link, and a path that starts with `~\` means your home folder, which the
+  file tools refuse unless it lies in `Files.Root`. The server no longer needs glob, so its npm
+  override is gone and the install is about 6 MB smaller. Where the file tools are set up,
+  `local-ai update` runs npm ci again with the new lockfile.
 
 ## [1.0.1] - 2026-11-11
 

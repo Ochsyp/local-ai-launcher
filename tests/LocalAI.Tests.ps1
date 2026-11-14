@@ -401,7 +401,7 @@ Describe 'Get-LocalAISettings' {
     Files     = @{
         Root = ''; McpoVersion = '0.0.20'; Python = '3.12'; McpoWith = @('mcp==1.30.0', 'fastapi<0.145'); McpoExcludeNewer = '2026-10-13T00:00:00Z'
         ServerVersion = '2.0.1'; AllowedTools = @('read_text_file', 'list_directory')
-        DisabledTools = @('read_file', 'write_file', 'edit_file', 'create_directory', 'move_file'); DenyPatterns = @('*.key', '*secret*')
+        DisabledTools = @('read_file', 'write_file', 'edit_file', 'create_directory', 'move_file', 'append_file', 'copy_file'); DenyPatterns = @('*.key', '*secret*')
     }
 }
 '@
@@ -522,10 +522,12 @@ Describe 'Get-LocalAISettings' {
         @{ Name = 'an mcpo requirement that is an option'; Text = "@{ Files = @{ McpoWith = @('mcp==1.30.0', '--index-url=http://x') } }"; Message = "*'Files.McpoWith'*must list package requirements*" }
         @{ Name = 'an mcpo cut-off date without a time'; Text = "@{ Files = @{ McpoExcludeNewer = '2026-10-13' } }"; Message = "*'Files.McpoExcludeNewer' = '2026-10-13' must be empty or a UTC time*" }
         @{ Name = 'a tool name with a comma'; Text = "@{ Files = @{ AllowedTools = @('read_text_file,write_file') } }"; Message = "*'Files.AllowedTools'*must list tool names made of lowercase letters, digits and `"_`"*" }
-        @{ Name = 'a tool name in capitals'; Text = "@{ Files = @{ DisabledTools = @('Write_File', 'write_file', 'edit_file', 'create_directory', 'move_file') } }"; Message = "*'Files.DisabledTools'*must list tool names*" }
+        @{ Name = 'a tool name in capitals'; Text = "@{ Files = @{ DisabledTools = @('Write_File', 'write_file', 'edit_file', 'create_directory', 'move_file', 'append_file', 'copy_file') } }"; Message = "*'Files.DisabledTools'*must list tool names*" }
         @{ Name = 'an empty deny pattern'; Text = "@{ Files = @{ DenyPatterns = @('*.key', ' ') } }"; Message = "*'Files.DenyPatterns'*must list file or folder name patterns, none of them empty*" }
         @{ Name = 'a tool both offered and hidden'; Text = "@{ Files = @{ AllowedTools = @('read_text_file', 'move_file') } }"; Message = '*Files.AllowedTools and Files.DisabledTools both name move_file; a tool is either offered or hidden*' }
-        @{ Name = 'a write tool left visible'; Text = "@{ Files = @{ DisabledTools = @('read_file', 'write_file', 'create_directory') } }"; Message = "*'Files.DisabledTools' must hide every write tool, but leaves out edit_file, move_file*" }
+        @{ Name = 'a write tool left visible'; Text = "@{ Files = @{ DisabledTools = @('read_file', 'write_file', 'create_directory') } }"; Message = "*'Files.DisabledTools' must hide every write tool, but leaves out edit_file, move_file, append_file, copy_file*" }
+        @{ Name = 'a write tool that server-filesystem 2.2.0 added left visible'; Text = "@{ Files = @{ DisabledTools = @('read_file', 'write_file', 'edit_file', 'create_directory', 'move_file') } }"
+            Message = "*'Files.DisabledTools' must hide every write tool, but leaves out append_file, copy_file*" }
         @{ Name = 'no tool offered'; Text = '@{ Files = @{ AllowedTools = @() } }'; Message = "*'Files.AllowedTools' must name at least one tool*" }
         @{ Name = 'Model.Alias among the superseded aliases'; Text = "@{ Model = @{ SupersededAliases = @('old-chat', 'local-chat') } }"; Message = "*'Model.SupersededAliases' names local-chat, which Model.Alias or Model.Source uses; update never removes those*" }
         @{ Name = 'Model.Alias with its tag among the superseded aliases'; Text = "@{ Model = @{ SupersededAliases = @('LOCAL-CHAT:latest') } }"; Message = "*'Model.SupersededAliases' names LOCAL-CHAT:latest, which Model.Alias or Model.Source uses*" }

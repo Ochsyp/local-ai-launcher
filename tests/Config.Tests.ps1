@@ -284,31 +284,30 @@ Describe 'config\files-server' {
         }
     }
 
-    It 'pins the version 2.1.0, which keeps the 2026-10-25 path-check fixes that came with 2.0.1' {
-        $settings.Files.ServerVersion | Should -BeExactly '2.1.0'
+    It 'pins the version 2.2.0, which keeps the 2026-10-25 path-check fixes that came with 2.0.1' {
+        $settings.Files.ServerVersion | Should -BeExactly '2.2.0'
     }
 
     It 'holds every override at an exact version, and the lockfile at those' {
-        @($manifest.overrides.Keys | Sort-Object) | Should -Be @('@modelcontextprotocol/core', '@modelcontextprotocol/server', 'glob', 'minimatch')
+        @($manifest.overrides.Keys | Sort-Object) | Should -Be @('@modelcontextprotocol/core', '@modelcontextprotocol/server', 'minimatch')
         foreach ($package in $manifest.overrides.Keys) {
             $manifest.overrides[$package] | Should -MatchExactly '^\d+\.\d+\.\d+$' -Because "$package is pinned exactly"
             $lock.packages["node_modules/$package"].version | Should -BeExactly $manifest.overrides[$package]
         }
-        # 2.4.0 of both was 4 days old when the lockfile was made; 2.3.1 satisfies the server's ^2.3.1.
+        # 2.3.1, the SDK the server ran on from 2.0.1 to 2.2.0, satisfies the server's ^2.3.1.
         $manifest.overrides['@modelcontextprotocol/server'] | Should -BeExactly '2.3.1'
         $lock.packages["node_modules/$name"].dependencies['@modelcontextprotocol/server'] | Should -BeExactly '^2.3.1'
     }
 
-    It 'lifts glob and minimatch past the ranges the server asks for, to the fixes for GHSA-3g3m-2fjr-6pw4 and GHSA-g3hv-75wg-m249' {
-        $manifest.overrides['glob'] | Should -BeExactly '14.0.3'
-        $manifest.overrides['minimatch'] | Should -BeExactly '11.0.3'
-        # These overrides can go once the server's own ranges reach glob 14.0.3 and minimatch 11.0.1.
-        # glob 14.0.2 is not enough: its bundle still holds minimatch code from before that fix.
-        $lock.packages["node_modules/$name"].dependencies['glob'] | Should -BeExactly '^13.0.6'
-        $lock.packages["node_modules/$name"].dependencies['minimatch'] | Should -BeExactly '^10.0.1'
-        # One copy of each, so no older one stays nested under another package.
+    It 'holds minimatch at 11.0.4, inside the server''s own range and past the fix for GHSA-g3hv-75wg-m249, and locks no glob' {
+        $manifest.overrides['minimatch'] | Should -BeExactly '11.0.4'
+        # 2.2.0 asks for ^11.0.4 itself, past 11.0.1, the first fix; the override keeps npm from locking a release under 14 days old.
+        $lock.packages["node_modules/$name"].dependencies['minimatch'] | Should -BeExactly '^11.0.4'
+        # 2.2.0 no longer depends on glob, so GHSA-3g3m-2fjr-6pw4 no longer applies.
+        $lock.packages["node_modules/$name"].dependencies.ContainsKey('glob') | Should -BeFalse
+        # One copy of minimatch and none of glob, so no older one stays nested under another package.
         $copies = @($lock.packages.Keys | Where-Object { $_ -match '(^|/)node_modules/(glob|minimatch)$' } | Sort-Object)
-        $copies | Should -Be @('node_modules/glob', 'node_modules/minimatch')
+        $copies | Should -Be @('node_modules/minimatch')
     }
 }
 
@@ -323,12 +322,12 @@ Describe 'Files tool lists and mcpo pins' {
 
     It 'offers and hides disjoint sets of tools, hiding every write tool and read_file' {
         @($files.AllowedTools | Where-Object { $files.DisabledTools -contains $_ }) | Should -BeNullOrEmpty
-        foreach ($tool in 'write_file', 'edit_file', 'create_directory', 'move_file', 'read_file') {
+        foreach ($tool in 'write_file', 'edit_file', 'create_directory', 'move_file', 'append_file', 'copy_file', 'read_file') {
             $files.DisabledTools | Should -Contain $tool
         }
-        # server-filesystem 2.1.0 serves these 14 tools, as 2.0.1 did.
-        @(@($files.AllowedTools) + @($files.DisabledTools) | Sort-Object) | Should -Be @('create_directory', 'directory_tree', 'edit_file',
-            'get_file_info', 'list_allowed_directories', 'list_directory', 'list_directory_with_sizes', 'move_file', 'read_file',
+        # server-filesystem 2.2.0 serves these 16 tools: the 14 of 2.0.1 and 2.1.0, and the write tools append_file and copy_file.
+        @(@($files.AllowedTools) + @($files.DisabledTools) | Sort-Object) | Should -Be @('append_file', 'copy_file', 'create_directory', 'directory_tree',
+            'edit_file', 'get_file_info', 'list_allowed_directories', 'list_directory', 'list_directory_with_sizes', 'move_file', 'read_file',
             'read_media_file', 'read_multiple_files', 'read_text_file', 'search_files', 'write_file')
     }
 
