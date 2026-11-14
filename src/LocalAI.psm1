@@ -261,7 +261,7 @@ function Test-LocalAISetting {
         if ($allowed.Count -eq 0) { "Setting 'Files.AllowedTools' must name at least one tool." }
         $both = @($allowed | Where-Object { $disabled -contains $_ })
         if ($both.Count -gt 0) { "Settings Files.AllowedTools and Files.DisabledTools both name $($both -join ', '); a tool is either offered or hidden." }
-        # The tools of server-filesystem 2.2.0 that change files; append_file and copy_file are new in 2.2.0.
+        # The tools of server-filesystem 2.2.0 and 2.3.0 that change files; append_file and copy_file are new in 2.2.0.
         $open = @(foreach ($tool in 'write_file', 'edit_file', 'create_directory', 'move_file', 'append_file', 'copy_file') { if ($disabled -notcontains $tool) { $tool } })
         if ($open.Count -gt 0) { "Setting 'Files.DisabledTools' must hide every write tool, but leaves out $($open -join ', ')." }
     }
@@ -3050,9 +3050,27 @@ public static int[] CountOutside(string[] paths) {
     return , ([LocalAI.FileLinks]::CountOutside([string[]]@($Path)))
 }
 
-# Return $true when Files.Root may be served: an existing folder, as a full drive-letter path through no link, no drive root, not $UserProfile or above it,
-# not in or around Paths.Root, $RepoRoot, $ToolDir, OpenWebUI.DataDir or ComfyUI.Dir (8.3 names expanded), holding within $MaxEntries entries only folders it
-# can list, no name Files.DenyPatterns matches (any case) and no hard link with a name outside it; links inside are not followed. Else warns once, $false.
+# Return the first name in the full path $Path that server-filesystem 2.3.0 refuses on Windows, in every path that holds it: a device name such as AUX or
+# nul.txt, alone or with an extension, or a name ending in a dot or a space; nothing when there is none. Pure.
+function Get-FilesServerRefusedName {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$Path
+    )
+    # The pattern of the server's path-validation.js; its superscript digits 1 to 3 come from their codes, so this file stays ASCII.
+    $super = [string][char]0x00B9 + [char]0x00B2 + [char]0x00B3
+    $device = '(?is)^(?:CON|PRN|AUX|NUL|COM[1-9' + $super + ']|LPT[1-9' + $super + ']) *(?:\..*)?\z'
+    foreach ($name in (($Path -replace '^[A-Za-z]:', '') -split '[\\/]')) {
+        if ($name -eq '' -or $name -eq '.' -or $name -eq '..') { continue }
+        if ($name -match $device -or $name.EndsWith('.') -or $name.EndsWith(' ')) { return $name }
+    }
+}
+
+# Return $true when Files.Root may be served: an existing folder, as a full drive-letter path through no link and with no name the files server refuses
+# (Get-FilesServerRefusedName), no drive root, not $UserProfile or above it, not in or around Paths.Root, $RepoRoot, $ToolDir, OpenWebUI.DataDir or ComfyUI.Dir
+# (8.3 names expanded), holding within $MaxEntries entries only folders it can list, no name Files.DenyPatterns matches (any case) and no hard link with a
+# name outside it; links inside are not followed. Else warns once, $false.
 function Test-FilesRoot {
     [CmdletBinding()]
     [OutputType([bool])]
@@ -3084,10 +3102,15 @@ function Test-FilesRoot {
         } else {
             # The checks below compare paths as written, and the files server serves the folder a link or short name leads to.
             $onDisk = Resolve-OnDiskPath -Path $root
+            # The server refuses every path through such a name, so it would answer no request.
+            $refused = Get-FilesServerRefusedName -Path $onDisk.Path
             if ($onDisk.Link -and $onDisk.Link -eq $onDisk.Path) {
                 $problem = 'it is a link (a junction or symbolic link). Set it to the folder the link leads to.'
             } elseif ($onDisk.Link) {
                 $problem = "the folder $($onDisk.Link) on its path is a link (a junction or symbolic link). Set it to the path the link leads to."
+            } elseif ($refused) {
+                $problem = ("the name '$refused' on its path is a Windows device name or ends in a dot or a space, which the files server refuses in every " +
+                    'path. Choose a folder whose path has no such name.')
             } elseif ($UserProfile -and (& $within (Resolve-OnDiskPath -Path $UserProfile).Path $onDisk.Path)) {
                 $problem = "it is %USERPROFILE% or a folder above it. $choose"
             } else {

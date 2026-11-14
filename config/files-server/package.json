@@ -1,11 +1,12 @@
 {
   "private": true,
   "dependencies": {
-    "@modelcontextprotocol/server-filesystem": "2.2.0"
+    "@modelcontextprotocol/server-filesystem": "2.3.0"
   },
   "overrides": {
     "@modelcontextprotocol/core": "2.3.1",
     "@modelcontextprotocol/server": "2.3.1",
-    "minimatch": "11.0.4"
+    "brace-expansion": "5.0.13",
+    "minimatch": "11.0.8"
   }
 }

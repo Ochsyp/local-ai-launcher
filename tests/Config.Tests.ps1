@@ -284,30 +284,32 @@ Describe 'config\files-server' {
         }
     }
 
-    It 'pins the version 2.2.0, which keeps the 2026-10-25 path-check fixes that came with 2.0.1' {
-        $settings.Files.ServerVersion | Should -BeExactly '2.2.0'
+    It 'pins the version 2.3.0, which fixes GHSA-p9cv-8g75-4xcg and keeps the 2026-10-25 path-check fixes that came with 2.0.1' {
+        $settings.Files.ServerVersion | Should -BeExactly '2.3.0'
     }
 
     It 'holds every override at an exact version, and the lockfile at those' {
-        @($manifest.overrides.Keys | Sort-Object) | Should -Be @('@modelcontextprotocol/core', '@modelcontextprotocol/server', 'minimatch')
+        @($manifest.overrides.Keys | Sort-Object) | Should -Be @('@modelcontextprotocol/core', '@modelcontextprotocol/server', 'brace-expansion', 'minimatch')
         foreach ($package in $manifest.overrides.Keys) {
             $manifest.overrides[$package] | Should -MatchExactly '^\d+\.\d+\.\d+$' -Because "$package is pinned exactly"
             $lock.packages["node_modules/$package"].version | Should -BeExactly $manifest.overrides[$package]
         }
-        # 2.3.1, the SDK the server ran on from 2.0.1 to 2.2.0, satisfies the server's ^2.3.1.
+        # 2.3.1, the SDK the server ran on from 2.0.1 to 2.3.0, satisfies the server's ^2.3.1.
         $manifest.overrides['@modelcontextprotocol/server'] | Should -BeExactly '2.3.1'
         $lock.packages["node_modules/$name"].dependencies['@modelcontextprotocol/server'] | Should -BeExactly '^2.3.1'
     }
 
-    It 'holds minimatch at 11.0.4, inside the server''s own range and past the fix for GHSA-g3hv-75wg-m249, and locks no glob' {
-        $manifest.overrides['minimatch'] | Should -BeExactly '11.0.4'
-        # 2.2.0 asks for ^11.0.4 itself, past 11.0.1, the first fix; the override keeps npm from locking a release under 14 days old.
+    It 'holds minimatch at 11.0.8 and brace-expansion at 5.0.13, which fix GHSA-hqmv-qgp3-jx75, GHSA-cf2h-pxjq-68xw and GHSA-6jwq-xf8q-xcwh, and locks no glob' {
+        # The server's own ^11.0.4 and minimatch's own ^5.0.12 admit the versions before those fixes, so overrides hold both.
+        $manifest.overrides['minimatch'] | Should -BeExactly '11.0.8'
+        $manifest.overrides['brace-expansion'] | Should -BeExactly '5.0.13'
         $lock.packages["node_modules/$name"].dependencies['minimatch'] | Should -BeExactly '^11.0.4'
-        # 2.2.0 no longer depends on glob, so GHSA-3g3m-2fjr-6pw4 no longer applies.
+        $lock.packages['node_modules/minimatch'].dependencies['brace-expansion'] | Should -BeExactly '^5.0.12'
+        # The server no longer depends on glob, so GHSA-3g3m-2fjr-6pw4 no longer applies.
         $lock.packages["node_modules/$name"].dependencies.ContainsKey('glob') | Should -BeFalse
-        # One copy of minimatch and none of glob, so no older one stays nested under another package.
-        $copies = @($lock.packages.Keys | Where-Object { $_ -match '(^|/)node_modules/(glob|minimatch)$' } | Sort-Object)
-        $copies | Should -Be @('node_modules/minimatch')
+        # One copy each of minimatch and brace-expansion, and none of glob, so no older one stays nested under another package.
+        $copies = @($lock.packages.Keys | Where-Object { $_ -match '(^|/)node_modules/(glob|minimatch|brace-expansion)$' } | Sort-Object)
+        $copies | Should -Be @('node_modules/brace-expansion', 'node_modules/minimatch')
     }
 }
 
@@ -325,7 +327,7 @@ Describe 'Files tool lists and mcpo pins' {
         foreach ($tool in 'write_file', 'edit_file', 'create_directory', 'move_file', 'append_file', 'copy_file', 'read_file') {
             $files.DisabledTools | Should -Contain $tool
         }
-        # server-filesystem 2.2.0 serves these 16 tools: the 14 of 2.0.1 and 2.1.0, and the write tools append_file and copy_file.
+        # server-filesystem 2.2.0 and 2.3.0 serve these 16 tools: the 14 of 2.0.1 and 2.1.0, and the write tools append_file and copy_file.
         @(@($files.AllowedTools) + @($files.DisabledTools) | Sort-Object) | Should -Be @('append_file', 'copy_file', 'create_directory', 'directory_tree',
             'edit_file', 'get_file_info', 'list_allowed_directories', 'list_directory', 'list_directory_with_sizes', 'move_file', 'read_file',
             'read_media_file', 'read_multiple_files', 'read_text_file', 'search_files', 'write_file')

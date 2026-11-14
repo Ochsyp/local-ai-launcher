@@ -49,7 +49,12 @@ that contain them into issues, pull requests, reports or commits.
   outside it, as a `.venv` that uv made does.
 - The check does not follow links inside the folder; the files server refuses those that lead
   outside it. Files added while mcpo runs are not checked.
-- NTFS alternate data streams, such as `file.txt:Zone.Identifier`, are readable.
+- On Windows the files server refuses paths that name NTFS alternate data streams, such as
+  `file.txt:Zone.Identifier`, or device names, such as `aux.txt`.
+- The files server checks a path, then reads the file inside the folder it checked
+  (GHSA-p9cv-8g75-4xcg, fixed in 2.3.0). On Windows that only narrows the race: a program that
+  can write in the folder could still swap a subfolder for a link in between. So keep the
+  folder one that only you write to.
 - mcpo's API key is in `%LOCALAPPDATA%\local-ai\files.key`, which only your account may open.
   mcpo 0.0.20 takes the key only on its command line, and Open WebUI gets it in
   `TOOL_SERVER_CONNECTIONS`. Other programs of the same Windows user can read it in both places.
