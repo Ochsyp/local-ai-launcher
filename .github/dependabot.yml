@@ -1,23 +1,29 @@
-# Weekly update pull requests, grouped so each ecosystem opens at most one at a time.
+# standard:begin dependabot
+# Dependabot. The workflows here are copies from the repository standard, so their actions move
+# only with a standard release: the github-actions entry below opens no version updates
+# (open-pull-requests-limit: 0), and repo-standard takes them. Every other entry is this
+# repository's own: grouped, so it has at most one pull request open, with a cooldown of at least
+# 7 days (security updates skip it; an image the owner publishes may be excluded, because the
+# owner's publish is its gate), committing as chore(deps), or as ci for what only CI uses.
 version: 2
 updates:
+# standard:end dependabot
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
-    commit-message:
-      prefix: ci
-    groups:
-      github-actions:
-        patterns: ["*"]
+    open-pull-requests-limit: 0
   # The files server's package.json and package-lock.json. Config.Tests.ps1 pins the versions in
-  # them, so its update pull request also needs Files.ServerVersion and those tests changed.
+  # them, so its update pull request also needs Files.ServerVersion and those tests changed. The
+  # 14 days match the launcher's rule for new versions.
   - package-ecosystem: npm
     directory: /config/files-server
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 14
     commit-message:
-      prefix: deps
+      prefix: chore(deps)
     groups:
       files-server:
         patterns: ["*"]
@@ -27,8 +33,12 @@ updates:
     directory: /tests
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 14
     commit-message:
-      prefix: deps
+      prefix: chore(deps)
     groups:
       test-requirements:
         patterns: ["*"]
+# config/comfyui/constraints.txt and the pins in config/defaults.psd1 have no ecosystem here;
+# they move by hand.

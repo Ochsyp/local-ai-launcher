@@ -3,11 +3,15 @@
 This is a single-maintainer project. The launcher is meant for a single-user Windows PC that
 you trust.
 
-## Reporting a problem
+<!-- standard:begin reporting -->
+## Reporting a vulnerability
 
-Report a vulnerability privately through GitHub: on the repository's **Security** tab, choose
-*Report a vulnerability*. Do not open a public issue for it. Never paste tokens, keys or logs
-that contain them into issues, pull requests, reports or commits.
+Report a vulnerability through GitHub's private vulnerability reporting: the **Security** tab,
+then **Report a vulnerability**. Do not open a public issue.
+<!-- standard:end reporting -->
+
+Never paste tokens, keys or logs that contain them into issues, pull requests, reports or
+commits.
 
 ## Network
 
@@ -41,9 +45,9 @@ that contain them into issues, pull requests, reports or commits.
 ## File tools
 
 - They are read-only. The files server starts with `--read-only`, which withholds every tool
-  it does not mark read-only, also in a later release. mcpo hides the write tools as well, and the settings
-  check refuses a `Files.DisabledTools` that leaves one out. Only the admin account gets the
-  tools.
+  it does not mark read-only, also in a later release. mcpo hides the write tools as well, and
+  the settings check refuses a `Files.DisabledTools` that leaves one out. Only the admin
+  account gets the tools.
 - `start` refuses a `Files.Root` that is a drive root, `%USERPROFILE%` or a folder above it, a
   link or a path through one, or a folder in or around `%LOCALAPPDATA%\local-ai`, this
   repository, uv's tool folder, `OpenWebUI.DataDir` or `ComfyUI.Dir`. It also refuses a folder
@@ -190,14 +194,24 @@ control.
   where the zip came from. The asset `install.ps1` is the zip's `src/install.ps1`, which the
   check of each published release compares byte for byte.
 
+<!-- standard:begin automated-checks -->
 ## Automated checks
 
-- gitleaks scans the commits of every push and pull request, and the full history once a week
-  and on demand (`.github/workflows/secret-scan.yml`).
-- `.github/workflows/ci.yml` runs PSScriptAnalyzer, the Pester tests and the image gate's
-  unittest tests on `windows-latest`, and checks `VERSION` against `CHANGELOG.md`.
-- `.github/workflows/release.yml` builds the zip twice for a pull request that changes the
-  release tooling or `VERSION`, and checks each published release: `SHA256SUMS`, the manifest,
-  `install.ps1` against the zip, and the release and build provenance attestations.
-- Dependabot proposes weekly updates for the pinned GitHub Actions, the files server's npm
-  lockfile (`config/files-server`) and the Python test requirements (`tests`).
+- **Secret scan.** The `secret-scan` workflow runs gitleaks (MIT, pinned by version and SHA-256,
+  always with its default rules) and this repository's rule packs over the commits of each pull
+  request and each push to `main`, and over the whole history every Monday and when run by hand.
+  Positive controls run first, so a scanner that finds nothing fails. Findings are redacted.
+  GitHub's secret scanning and push protection are on as well. GitHub turns the Monday run off
+  after 60 days without activity in this repository.
+- **Hooks.** The hooks in `.githooks/` check every commit and push on the maintainer's machine:
+  content, path names, messages, ref names and identities, against the rule packs and a denylist
+  that never leaves that machine. The maintainer also checks every day what reached GitHub, pull
+  request texts and release notes included.
+- **CI and releases.** The `ci` workflow checks the standard's copies, the privacy rules over the
+  tree, the version, the changelog and the pull request, and runs the tests. The `release`
+  workflow builds, attests and drafts each release, and verifies it once it is published.
+- **Dependencies.** Dependabot watches the ecosystems in `.github/dependabot.yml`, with security
+  updates on.
+
+If a secret is ever committed, rotate it first, then remove it from the history.
+<!-- standard:end automated-checks -->

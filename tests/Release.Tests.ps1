@@ -2,7 +2,7 @@
 #                 LOCAL AI RELEASE TESTS
 # -------------------------------------------------------
 #
-# Pester 6 tests for .github\scripts\LocalAIRelease.psm1, which release.yml and ci.yml run: the
+# Pester 6 tests for .github\scripts\LocalAIRelease.psm1, which release.yml runs: the
 # rules for VERSION and CHANGELOG.md, the release notes, the manifest and SHA256SUMS formats, the
 # asset install.ps1, full builds in git repositories made in TestDrive:, and the export-ignore
 # rules of this repository's .gitattributes. git must be on PATH; every remote is a folder in

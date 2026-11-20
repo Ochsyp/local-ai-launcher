@@ -1,99 +1,211 @@
-# Runs PSScriptAnalyzer and Pester in Windows PowerShell 5.1, the image gate tests in Python 3.13,
-# and the check of VERSION against CHANGELOG.md, on every push and pull request.
-# Actions are pinned to commit SHAs; Dependabot proposes updates.
+# CI of the repository standard: the same file in every repository (.github/standard/MANIFEST);
+# change it in repo-standard, never here. standard checks the standard's copies, the privacy rules
+# over the tree, VERSION, CHANGELOG.md and the pull request, and says what the other jobs run.
+# lint, test and system run this repository's ci/<stage>; image builds and smoke-tests the
+# container image; hooks-windows runs the hook tests in Git Bash where minutes are free.
+# all-passed is the check a ruleset requires. Actions are pinned to commit SHAs.
 name: ci
 
 on:
-  push:
   pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 4 * * 1'      # standard always; the stages too where CI_WEEKLY=yes
   workflow_dispatch:
+  workflow_call:              # release.yml runs the same checks before it builds
 
 permissions:
   contents: read
 
-# One run per branch or pull request at a time: a newer pull request run cancels the older one,
-# and a newer branch run waits for it.
+# A newer push to a pull request cancels its older run; every other run, a called one included,
+# has a group of its own and is never cancelled. The PR number is unique; a fork's branch name
+# is not.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+defaults:
+  run:
+    shell: bash               # pipefail; Git Bash on windows runners
+
 jobs:
-  powershell:
-    runs-on: windows-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install PSScriptAnalyzer 1.25.0 and Pester 6.2.0
-        shell: powershell
-        run: |
-          $ProgressPreference = 'SilentlyContinue'
-          [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-          # Install-Module asks before it installs the NuGet provider, so it is installed first.
-          if (-not (Get-PackageProvider -ListAvailable | Where-Object { $_.Name -eq 'NuGet' -and $_.Version -ge [version]'2.8.5.201' })) {
-            $null = Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force
-          }
-          # -Force skips the prompt for the untrusted PSGallery; -SkipPublisherCheck lets Pester 6
-          # install beside the in-box Pester 3.4, which another publisher signed.
-          foreach ($module in @(@{ Name = 'PSScriptAnalyzer'; Version = '1.25.0' }, @{ Name = 'Pester'; Version = '6.2.0' })) {
-            for ($attempt = 1; ; $attempt++) {
-              try {
-                Install-Module -Name $module.Name -RequiredVersion $module.Version -Repository PSGallery -Scope CurrentUser -Force -SkipPublisherCheck
-                break
-              } catch {
-                if ($attempt -ge 3) { throw }
-                Write-Host "Installing $($module.Name) failed, trying again: $($_.Exception.Message)"
-                Start-Sleep -Seconds 15
-              }
-            }
-          }
-          Get-Module -ListAvailable -Name PSScriptAnalyzer, Pester | Format-Table -AutoSize Name, Version, ModuleBase
-      - name: Run tests\run-checks.ps1
-        shell: powershell
-        run: |
-          # The runner's TEMP is an 8.3 short path (C:\Users\RUNNER~1\...), which the launcher
-          # spells out in full; RUNNER_TEMP has no short names, so TestDrive paths stay comparable.
-          $env:TEMP = $env:RUNNER_TEMP
-          $env:TMP = $env:RUNNER_TEMP
-          # Continue, so a line the checks write to stderr does not stop this step; the exit code decides.
-          $ErrorActionPreference = 'Continue'
-          powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-checks.ps1
-          exit $LASTEXITCODE
-
-  python:
-    runs-on: windows-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: '3.13'
-      - name: Install tests\requirements.txt
-        shell: pwsh
-        run: python -m pip install --disable-pip-version-check --no-input -r tests/requirements.txt
-      - name: Run the image gate tests
-        shell: pwsh
-        run: python -I -B -m unittest discover -s tests -p "test_*.py"
-
-  # The release rules of CONTRIBUTING.md, with .github/scripts/LocalAIRelease.psm1 as release.yml
-  # uses it. A pull request that changes VERSION also needs a new tag and a higher version.
-  version:
-    runs-on: windows-latest
+  standard:
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read     # pr-title reads the current title and body
+    outputs:
+      runner: ${{ steps.conf.outputs.runner }}
+      lint: ${{ steps.conf.outputs.lint }}
+      test: ${{ steps.conf.outputs.test }}
+      system: ${{ steps.conf.outputs.system }}
+      python: ${{ steps.conf.outputs.python }}
+      ps-modules: ${{ steps.conf.outputs.ps-modules }}
+      image: ${{ steps.conf.outputs.image }}
+      windows: ${{ steps.conf.outputs.windows }}
+      required: ${{ steps.conf.outputs.required }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: conf
+        env:
+          EVENT: ${{ github.event_name }}
+          WORKFLOW: ${{ github.workflow }}
+          PRIVATE: ${{ github.event.repository.private }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        # Also prints full-suite=true for public and source repositories, schedule and dispatch,
+        # and for a change to any path the MANIFEST lists.
+        run: .github/standard/bin/conf --ci >> "$GITHUB_OUTPUT"
+      - run: .github/standard/bin/install-tools bats shellcheck actionlint
+      - name: The standard's copies, blocks, modes and config
+        env:
+          EVENT: ${{ github.event_name }}
+          PRIVATE: ${{ github.event.repository.private }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: .github/standard/bin/standard-check --ci
+      - name: actionlint (1.7.12 does not know the ubuntu-26.04 label yet)
+        run: actionlint -ignore 'label "ubuntu-26\.04" is unknown'
+      - name: Lint of the hooks, the standard's tools and ci/
+        run: bats --tap .github/standard/tests/lint.bats | tee "$RUNNER_TEMP/lint.tap"
+      - name: Behaviour tests of the standard's code
+        if: steps.conf.outputs.full-suite == 'true'
+        run: bats --tap --filter-tags '!lint' .github/standard/tests/ | tee "$RUNNER_TEMP/suite.tap"
+      - run: .github/standard/bin/no-skips "$RUNNER_TEMP"/*.tap
+      - name: Privacy rules over the tree
+        run: sh .githooks/privacy-scan --tracked
+      - name: VERSION, CHANGELOG.md and the release tags
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: git tag --list 'v*' | .github/standard/bin/release-meta check --event "$EVENT"
+      - name: The current title follows Conventional Commits, and title and body pass the packs
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: .github/standard/bin/pr-title "$PR_NUMBER"
+      - name: The pull request adds a CHANGELOG.md entry
+        if: github.event_name == 'pull_request'
+        env:
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: .github/standard/bin/changelog-entry
+
+  lint:
+    needs: standard
+    if: needs.standard.outputs.lint == 'true'
+    runs-on: ${{ needs.standard.outputs.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # A pull request's merge commit and its first parent, the base branch, whose VERSION the
-          # check compares.
-          fetch-depth: 2
-      - name: Check VERSION against CHANGELOG.md
-        shell: powershell
+      - if: needs.standard.outputs.python != ''
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ needs.standard.outputs.python }}
+      - name: The pinned PowerShell modules
+        if: needs.standard.outputs.ps-modules != ''
         env:
-          EVENT_NAME: ${{ github.event_name }}
+          MODULES: ${{ needs.standard.outputs.ps-modules }}
         run: |
-          Import-Module .\.github\scripts\LocalAIRelease.psm1 -Force
-          Invoke-ReleaseVersionCheck -RepositoryPath . -PullRequest:($env:EVENT_NAME -ceq 'pull_request')
+          read -r -a modules <<< "$MODULES"
+          .github/standard/bin/install-tools "${modules[@]}"
+      - run: .github/standard/bin/run-stage lint
+
+  test:
+    needs: standard
+    if: needs.standard.outputs.test == 'true'
+    runs-on: ${{ needs.standard.outputs.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # A suite that checks the repository's release state, as release-meta.bats does, needs
+          # the tags: without them a published release looks as if it waits.
+          fetch-tags: true
+          persist-credentials: false
+      - if: needs.standard.outputs.python != ''
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ needs.standard.outputs.python }}
+      - name: The pinned PowerShell modules
+        if: needs.standard.outputs.ps-modules != ''
+        env:
+          MODULES: ${{ needs.standard.outputs.ps-modules }}
+        run: |
+          read -r -a modules <<< "$MODULES"
+          .github/standard/bin/install-tools "${modules[@]}"
+      - run: .github/standard/bin/run-stage test
+
+  system:
+    needs: standard
+    if: needs.standard.outputs.system == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: .github/standard/bin/run-stage system
+
+  image:
+    needs: standard
+    if: needs.standard.outputs.image == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/image.yml
+    with:
+      push: false
+
+  hooks-windows:
+    needs: standard
+    if: needs.standard.outputs.windows == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: .github/standard/bin/install-tools bats
+      - name: The hook and privacy-scan tests in Git Bash
+        run: >-
+          bats --tap .github/standard/tests/hooks.bats .github/standard/tests/privacy-scan.bats
+          | tee "$RUNNER_TEMP/hooks.tap"
+      - run: .github/standard/bin/no-skips "$RUNNER_TEMP/hooks.tap"
+
+  all-passed:
+    if: always()
+    needs: [standard, lint, test, system, image, hooks-windows]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Fail unless every required job passed and every other job passed or was off
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          REQUIRED: ${{ needs.standard.outputs.required }}
+        run: |
+          jq -r 'to_entries[] | "\(.key)=\(.value.result)"' <<< "$NEEDS" |
+            while IFS='=' read -r job result; do
+              case " standard $REQUIRED " in
+                *" $job "*) [[ $result == success ]] ;;
+                *) [[ $result == success || $result == skipped ]] ;;
+              esac || { echo "::error::$job ended with $result."; exit 1; }
+            done

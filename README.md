@@ -421,10 +421,10 @@ The file tools let the model read one folder. To turn them on:
 
 Open WebUI offers them as **Workspace files**: `read_text_file`, `list_directory`,
 `search_files`, `get_file_info` and `list_allowed_directories`. The tools are read-only. The
-launcher starts the files server with `--read-only`, so it offers only the tools it marks
-read-only, also in a later release. mcpo also hides every write tool, `append_file` and `copy_file` among
-them, and the settings check refuses a `Files.DisabledTools` that leaves one out. Only the admin
-account gets the tools.
+launcher starts the files server with `--read-only`, so it offers only the tools the server
+marks read-only, also in a later release. mcpo also hides every write tool, `append_file` and
+`copy_file` among them, and the settings check refuses a `Files.DisabledTools` that leaves one
+out. Only the admin account gets the tools.
 
 Each `start` checks the folder first. It leaves the file tools off, with a warning, when
 `Files.Root`:
@@ -739,13 +739,14 @@ The image gate tests need a Python 3.12 or newer that has the packages in
 <python> -I -B -m unittest discover -s tests -p "test_*.py"
 ```
 
-CI (`.github\workflows\ci.yml`) runs the same checks on `windows-latest`, and checks `VERSION`
-against `CHANGELOG.md`. [CHANGELOG.md](CHANGELOG.md) lists the changes.
+CI (`.github\workflows\ci.yml`) runs the same checks on Windows, and the checks of the shared
+repository standard that this repository follows. [CHANGELOG.md](CHANGELOG.md) lists the
+changes.
 
 Every change reaches `main` through a reviewed pull request.
 [CONTRIBUTING.md](https://github.com/Ochsyp/local-ai-launcher/blob/main/CONTRIBUTING.md)
-describes the branches, the changelog entry and the git hooks that refuse commits and pushes to
-`main`. Turn the hooks on once per clone:
+describes the branches, the changelog entry, every check and the git hooks, which refuse
+commits and pushes to `main` and private data in a change. Turn the hooks on once per clone:
 
 ```text
 git config core.hooksPath .githooks
@@ -769,12 +770,16 @@ tests\Release.Tests.ps1             Pester tests for the release scripts and the
 tests\test_image_gate.py            unittest tests for the image gate
 tests\run-checks.ps1                runs PSScriptAnalyzer and the Pester tests
 tests\requirements.txt              Python packages the image gate tests need
+ci\lint.ps1, ci\test.ps1            the CI stages lint and test: run-checks.ps1 and the image gate tests
 PSScriptAnalyzerSettings.psd1       PSScriptAnalyzer rules
-.githooks\                          refuse commits and pushes to main
-.github\                            CI, gitleaks secret scan, Dependabot and the pull request template
+.githooks\                          the standard's hooks: no commit or push to main, no private data
+.github\standard.conf               this repository's settings for the repository standard
+.github\standard\                   the standard's tools and tests; MANIFEST lists every copy
+.github\                            CI, secret scan, Dependabot and the pull request template
 .github\workflows\release.yml       builds, drafts and checks releases
-.github\scripts\                    the release scripts behind release.yml and the version check in CI
+.github\scripts\                    the release scripts behind release.yml
 .editorconfig, .gitattributes       editor settings and line endings
+.shellcheckrc                       ShellCheck settings for the standard's shell scripts
 .gitignore                          keeps secrets, weights and logs out of git
 SECURITY.md                         security policy
 CHANGELOG.md                        changes

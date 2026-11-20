@@ -1,7 +1,9 @@
 # Changelog
 
 All notable changes to this project are listed here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each version is the GitHub release
+`vX.Y.Z`.
 
 ## [Unreleased]
 
@@ -47,6 +49,7 @@ All notable changes to this project are listed here. The format follows
   The server no longer needs glob, so its npm override is gone and the install is about 6 MB
   smaller. Where the file tools are set up, `local-ai update` runs npm ci again with the new
   lockfile.
+- Repository standard 1.0.1: adopted, with the hooks, checks, workflows and blocks.
 
 ### Security
 

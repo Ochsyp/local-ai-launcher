@@ -2,7 +2,7 @@
 #                     LOCAL AI CHECKS
 # -------------------------------------------------------
 #
-# Runs PSScriptAnalyzer 1.25.0 over src, config, tests and .github with
+# Runs PSScriptAnalyzer 1.25.0 over src, config, tests, ci and .github with
 # PSScriptAnalyzerSettings.psd1, then Pester 6.2.0 over the *.Tests.ps1 files in tests, as CI
 # does. Run it in Windows PowerShell 5.1 from the repository root:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-checks.ps1
@@ -51,8 +51,8 @@ try {
     if (-not $SkipAnalyzer) {
         Import-PinnedModule -Name 'PSScriptAnalyzer' -Version '1.25.0'
         $settings = Join-Path $repoRoot 'PSScriptAnalyzerSettings.psd1'
-        # PSScriptAnalyzer 1.25.0 takes one folder per -Path. .github holds the release scripts.
-        $found = @('src', 'config', 'tests', '.github' | ForEach-Object { Invoke-ScriptAnalyzer -Path (Join-Path $repoRoot $_) -Recurse -Settings $settings })
+        # PSScriptAnalyzer 1.25.0 takes one folder per -Path. ci holds the CI stages, .github the release scripts.
+        $found = @('src', 'config', 'tests', 'ci', '.github' | ForEach-Object { Invoke-ScriptAnalyzer -Path (Join-Path $repoRoot $_) -Recurse -Settings $settings })
         Write-Output "Analyzer findings: $($found.Count)"
         if ($found.Count -gt 0) {
             $failed = $true
