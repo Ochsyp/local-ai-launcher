@@ -421,8 +421,8 @@ The file tools let the model read one folder. To turn them on:
 
 Open WebUI offers them as **Workspace files**: `read_text_file`, `list_directory`,
 `search_files`, `get_file_info` and `list_allowed_directories`. The tools are read-only. The
-launcher starts the files server with `--read-only`, so it offers no write tool at all, not even
-one a later release adds. mcpo also hides every write tool, `append_file` and `copy_file` among
+launcher starts the files server with `--read-only`, so it offers only the tools it marks
+read-only, also in a later release. mcpo also hides every write tool, `append_file` and `copy_file` among
 them, and the settings check refuses a `Files.DisabledTools` that leaves one out. Only the admin
 account gets the tools.
 

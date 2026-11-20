@@ -295,8 +295,8 @@
         # name in search_files' excludePatterns now matches at any depth, and list_directory's
         # description names the hidden list_directory_with_sizes and directory_tree. Its file:// resources and
         # --confine-roots go unused, since mcpo 0.0.20 serves only tools and offers no MCP Roots.
-        # The launcher starts it with --read-only, which withholds every write tool before mcpo
-        # connects, also one a later release adds; DisabledTools and start's route check stay a
+        # The launcher starts it with --read-only, which withholds every tool it does not mark
+        # read-only before mcpo connects; DisabledTools and start's route check stay a
         # second guard. --read-only-dir must stay unused: it adds a block to list_allowed_directories,
         # which start's check reads as a second folder. 2.3.0 was taken on 2026-11-14 for its
         # advisory fixes, before it was 14 days old (2026-11-25T07:10Z), at the maintainer's word.

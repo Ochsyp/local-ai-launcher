@@ -40,8 +40,8 @@ that contain them into issues, pull requests, reports or commits.
 
 ## File tools
 
-- They are read-only. The files server starts with `--read-only`, which withholds every write
-  tool, also one a later release adds. mcpo hides the write tools as well, and the settings
+- They are read-only. The files server starts with `--read-only`, which withholds every tool
+  it does not mark read-only, also in a later release. mcpo hides the write tools as well, and the settings
   check refuses a `Files.DisabledTools` that leaves one out. Only the admin account gets the
   tools.
 - `start` refuses a `Files.Root` that is a drive root, `%USERPROFILE%` or a folder above it, a
