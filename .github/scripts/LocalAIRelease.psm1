@@ -2,7 +2,7 @@
 #                 LOCAL AI RELEASE TOOLS
 # -------------------------------------------------------
 #
-# Functions behind .github\workflows\release.yml and the version check in ci.yml: the rules for
+# Functions behind .github\workflows\release.yml and the version check run by hand: the rules for
 # VERSION and CHANGELOG.md, the release notes, the release zip with its manifest, the check of
 # that zip, the asset install.ps1 taken from it, and SHA256SUMS. CONTRIBUTING.md describes the
 # release contract they keep, and tests\Release.Tests.ps1 tests them. They run in Windows
@@ -822,7 +822,7 @@ function Assert-ReleaseVersionBump {
     Write-Host "VERSION goes $($from)to $version, and tag v$version does not exist yet."
 }
 
-# The version check of ci.yml on the checkout $RepositoryPath: Get-ReleaseVersion, with a notice when there is no VERSION, and with
+# The version check, run by hand (CI runs the standard's release-meta), on the checkout $RepositoryPath: Get-ReleaseVersion, with a notice when there is no VERSION, and with
 # -PullRequest also Assert-ReleaseVersionBump against HEAD^1, the base branch side of the pull request's merge commit.
 function Invoke-ReleaseVersionCheck {
     [CmdletBinding()]

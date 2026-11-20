@@ -111,7 +111,9 @@ actionlint, the standard's suites, the privacy rules over the tree, `VERSION` ag
 `CHANGELOG.md`, and the pull request's title and changelog entry), the stages `lint` and `test`
 (`ci/lint.ps1` and `ci/test.ps1` on Windows), `hooks-windows`, and the gate `all-passed`. The
 `secret-scan` workflow runs the job `scan`. `release.yml` builds the zip twice for a pull request
-that changes the release tooling, `.gitattributes` or `VERSION`. CI fails on any skipped test.
+that changes the release tooling, `.gitattributes` or `VERSION`. CI fails on any skipped bats
+test. A Pester test skips only where the runner lacks what it needs, such as 8.3 short names;
+the Pester summary line shows how many skipped.
 
 ## Test data
 
