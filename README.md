@@ -420,9 +420,11 @@ The file tools let the model read one folder. To turn them on:
 4. Run `local-ai start`.
 
 Open WebUI offers them as **Workspace files**: `read_text_file`, `list_directory`,
-`search_files`, `get_file_info` and `list_allowed_directories`. The tools are read-only. Every
-write tool is hidden, `append_file` and `copy_file` among them, and the settings check refuses a
-`Files.DisabledTools` that leaves one out. Only the admin account gets the tools.
+`search_files`, `get_file_info` and `list_allowed_directories`. The tools are read-only. The
+launcher starts the files server with `--read-only`, so it offers only the tools it marks
+read-only, also in a later release. mcpo also hides every write tool, `append_file` and `copy_file` among
+them, and the settings check refuses a `Files.DisabledTools` that leaves one out. Only the admin
+account gets the tools.
 
 Each `start` checks the folder first. It leaves the file tools off, with a warning, when
 `Files.Root`:

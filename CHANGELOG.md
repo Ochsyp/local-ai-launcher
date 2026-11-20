@@ -65,6 +65,10 @@ All notable changes to this project are listed here. The format follows
   The maintainer took these three versions before they were 14 days old, as was
   `@isaacs/nonrecursive-glob-match` 1.1.0, which minimatch 11.0.8 needs. npm overrides hold
   minimatch and brace-expansion at the fixed versions.
+- `start` runs the files server with `--read-only`. The server then withholds every tool it does
+  not mark read-only before mcpo connects, so a write tool a later release adds is not offered
+  even before `Files.DisabledTools` names it. `Files.DisabledTools` and the route check at
+  `start` stay as a second guard.
 
 ## [1.0.1] - 2026-11-11
 

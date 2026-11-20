@@ -294,9 +294,10 @@
         # and cannot read a file in a folder longer than 258 characters (see Root above). A bare
         # name in search_files' excludePatterns now matches at any depth, and list_directory's
         # description names the hidden list_directory_with_sizes and directory_tree. Its file:// resources and
-        # --confine-roots go unused, since mcpo 0.0.20 serves only tools and offers no MCP Roots;
-        # --read-only, which withholds the six write tools, goes unused too, since DisabledTools
-        # hides them. --read-only-dir must stay unused: it adds a block to list_allowed_directories,
+        # --confine-roots go unused, since mcpo 0.0.20 serves only tools and offers no MCP Roots.
+        # The launcher starts it with --read-only, which withholds every tool it does not mark
+        # read-only before mcpo connects; DisabledTools and start's route check stay a
+        # second guard. --read-only-dir must stay unused: it adds a block to list_allowed_directories,
         # which start's check reads as a second folder. 2.3.0 was taken on 2026-11-14 for its
         # advisory fixes, before it was 14 days old (2026-11-25T07:10Z), at the maintainer's word.
         # Must equal the version that ServerPackage\package.json pins; install runs npm ci on that
@@ -321,7 +322,8 @@
         AllowedTools         = @('read_text_file', 'list_directory', 'search_files', 'get_file_info', 'list_allowed_directories')
         # The tools mcpo hides: every write tool (write_file, edit_file, create_directory, move_file,
         # append_file and copy_file must stay listed), the deprecated read_file alias, and the tools
-        # most likely to flood a 32K context.
+        # most likely to flood a 32K context. --read-only already withholds the write tools; listing
+        # them here keeps them hidden should the server ever start without it.
         DisabledTools        = @('read_file', 'write_file', 'edit_file', 'create_directory', 'move_file', 'append_file', 'copy_file', 'read_multiple_files',
             'read_media_file', 'directory_tree', 'list_directory_with_sizes')
         # mcpo is not started while Root holds a file or folder whose name matches one of these, in
