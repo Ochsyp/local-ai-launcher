@@ -1,42 +1,126 @@
 # Contributing
 
-Every change reaches `main` through a pull request, so that it is reviewed before it is merged.
-This holds for the maintainer too.
+local-ai-launcher has one maintainer. This file says how a change reaches `main`, how to check
+it, and how a release is made.
 
+<!-- standard:begin workflow -->
 ## Workflow
 
-1. Start from an up-to-date `main` and create a branch for the change:
-   - `phase/<n>-<slug>` for a phase of a planned redesign, for example `phase/8-env-allow-list`;
-   - `fix/<slug>`, `feat/<slug>`, `docs/<slug>` or `chore/<slug>` for anything else.
-2. Commit on that branch. Commit messages follow
-   [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/), for example
-   `fix: give Open WebUI an environment allow-list`.
-3. Add an entry for the change under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md), on the
-   same branch. A release and the fix of a draft release are the two exceptions; see
-   [Releases](#releases).
-4. Run the checks described in the README's Development section.
-5. Push the branch and open a pull request against `main`. CI and the secret scan run on it.
-6. Start the next phase only after the pull request is reviewed and merged. Its branch starts from
-   the updated `main`.
+Every change reaches `main` through a pull request that the maintainer reviews and merges. This
+holds for the maintainer too.
+
+1. Branch from an up-to-date `main`: `phase/<n>-<slug>` for a phase of the plan, or `fix/`,
+   `feat/`, `docs/` or `chore/` plus a short slug.
+2. Write commit messages and the pull request title as Conventional Commits (`feat:`, `fix:`,
+   `docs:`, `chore:`, `ci:`, `test:`, `refactor:`).
+3. Add a line under `## [Unreleased]` in `CHANGELOG.md`. Three kinds of pull request add none
+   there: a release pull request (`chore/release-X.Y.Z`), which moves the lines into the new
+   version; the fix of a draft release (`fix/release-X.Y.Z-<slug>`), whose line goes into that
+   version's section; and a Dependabot pull request, whose updates the next release pull request
+   sums up.
+4. Run the checks in Checks below, and fix what they find.
+5. Push the branch and open a pull request against `main`. Before every `gh pr create` and
+   `gh pr edit`, run `.github/standard/bin/pr-text` on the title and the body: it refuses
+   denylist terms and rule pack hits, and never prints them.
+6. Start the next phase only after the pull request is merged.
 
 One pull request holds one phase or one change.
 
+Repository work happens only on a machine with the maintainer's git configuration, which turns
+the hooks on and loads the denylists for every clone of this repository, never in a cloud
+session. That configuration matches this repository's GitHub URL: a clone made from a local path
+gets no hooks, so run `git config core.hooksPath .githooks` in it right after cloning.
+
+An outside contributor's pull request is reviewed in the browser and through CI. Hooks run from
+the checked-out tree with the maintainer's credentials, even during a fetch, so:
+- never check out a fork's pull request branch in a clone with the hooks on;
+- clone a fork only with `git clone <fork URL>` or `gh repo clone <fork> <folder> --no-upstream`,
+  into a scratch folder, and never add a remote for this repository there.
+<!-- standard:end workflow -->
+
+<!-- standard:begin guard-rails -->
 ## Guard rails
 
-`main` is never committed to or pushed to directly. GitHub does not enforce this for this
-repository, so two git hooks in `.githooks` enforce it on each clone:
+GitHub's ruleset on `main` blocks force pushes and its deletion. From this repository's
+adoption of the standard on, it also blocks direct pushes, and the merge of a pull request whose
+`all-passed` or `scan` check failed.
 
-- `pre-commit` refuses a commit while `main` or `master` is checked out;
-- `pre-push` refuses a push to `main` or `master`.
+The hooks in `.githooks/` guard every commit and push:
+- `pre-commit` refuses a commit while `main` or `master` is checked out, a changed copy of the
+  standard, a staged file above `MAX_BLOB_KB`, and staged content, path names, author or
+  committer that hold a denylist term or a rule pack hit. `pre-merge-commit` does the same for a
+  merge.
+- `commit-msg` refuses such a term or hit in the message.
+- `pre-push` refuses a push to `main` or `master`, every tag push (release tags come from
+  publishing a release), a branch or tag name with a term or hit, and what the pushed commits
+  bring in, which covers rebase, cherry-pick and `am` too.
 
-Turn them on once after cloning:
+The denylists hold names that must never be committed and never leave the maintainer's machine.
+The rule packs in `.githooks/rules/` hold the patterns: private addresses, local host names, MAC
+addresses, home paths, e-mail addresses, and disk and VM identifiers where the config enables
+them. A refusal names the file and line and the kind of finding, never the value.
 
-```text
-git config core.hooksPath .githooks
-```
+The maintainer's git configuration turns the hooks on for every clone of this repository's GitHub
+URL. In a clone made from a local path, or anywhere else, turn them on once after cloning:
+`git config core.hooksPath .githooks`. Never use `--no-verify`.
+<!-- standard:end guard-rails -->
 
-Do not bypass them with `--no-verify`. After a pull request is merged, bring the local `main` up
-to date with `git switch main` and `git pull --ff-only`.
+<!-- standard:begin standard -->
+## The repository standard
+
+Files listed in `.github/standard/MANIFEST` are copies of the repository standard. Never edit
+them here: change repo-standard, release it, and sync with a `chore/standard-X.Y.Z` pull request.
+CI fails when a copy differs or changes on another branch. Sync summaries and pull request texts
+here name no other repository. An exemption, an accepted finding or a dropped check comes in a
+`chore/privacy-*` pull request of its own.
+<!-- standard:end standard -->
+
+## Checks
+
+Run these from the repository root before you push.
+
+- In Windows PowerShell 5.1, with PSScriptAnalyzer 1.25.0 and Pester 6.2.0 installed: the
+  analyzer over `src`, `config`, `tests`, `ci` and `.github`, then every Pester test. The
+  script points `LOCALAPPDATA` at a temporary folder, so the tests leave a real install alone.
+
+  ```powershell
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\run-checks.ps1
+  ```
+
+- The image gate tests, with a Python 3.12 or newer that has the packages in
+  `tests\requirements.txt`:
+
+  ```text
+  <python> -I -B -m unittest discover -s tests -p "test_*.py"
+  ```
+
+- In Git Bash: the copies of the standard and the hooks on this clone, then the privacy rules
+  over the tree. Both print counts and paths, never a value.
+
+  ```sh
+  sh .github/standard/bin/standard-check --local
+  sh .githooks/privacy-scan --tracked
+  ```
+
+- When a change touches the standard's files: its bats suites, one file at a time in Git Bash,
+  for example `bats .github/standard/tests/hooks.bats`. `.github/standard/bin/install-tools bats`
+  installs the pinned bats and prints its folder.
+
+CI adds the rest. The `ci` workflow runs the job `standard` (the standard's copies, the config,
+actionlint, the standard's suites, the privacy rules over the tree, `VERSION` against
+`CHANGELOG.md`, and the pull request's title and changelog entry), the stages `lint` and `test`
+(`ci/lint.ps1` and `ci/test.ps1` on Windows), `hooks-windows`, and the gate `all-passed`. The
+`secret-scan` workflow runs the job `scan`. `release.yml` builds the zip twice for a pull request
+that changes the release tooling, `.gitattributes` or `VERSION`. CI fails on any skipped test.
+
+## Test data
+
+The tests use made-up values only: the Windows homes of users `User` and `Test`, addresses from
+`192.0.2.0/24` and the link-local test address of `Test-LocalHostName`, and placeholder names
+and tokens. The privacy rules run with the pack `base`. `.github/standard.conf` exempts these
+made-up values and two findings of the rules that are no private data: the folder suffixes
+`.local-ai-clone`, `.local-ai-old-venv` and `.local-ai-removing`, and GitHub's support address
+in the sign-off of Dependabot's commits. A comment above each exemption says what it covers.
 
 ## Releases
 
@@ -58,9 +142,9 @@ never publishes, edits or deletes a release.
    block form at `releases/download/vX.Y.Z/install.ps1`. Each pins the tag of a release, so it
    always gets the same file.
 5. Commit as `chore(release): X.Y.Z` and open the pull request with that title. Its body is the
-   new CHANGELOG section. CI checks that `VERSION`, the heading and the links agree, that tag
-   `vX.Y.Z` does not exist yet and that X.Y.Z is greater than the `VERSION` of `main`, when it
-   has one. The release workflow builds the zip as a dry run.
+   new CHANGELOG section. CI's job `standard` checks that `VERSION`, the heading and the links
+   agree and that X.Y.Z is above every release tag. The release workflow builds the zip as a
+   dry run.
 6. The maintainer merges it. The merge changes `VERSION` on `main`, so
    `.github/workflows/release.yml` builds the zip, `install.ps1`, `SHA256SUMS` and the
    attestation from the merge commit, and creates the draft release `vX.Y.Z` for that commit.
@@ -95,9 +179,9 @@ one of them is a MAJOR change. An added asset is a MINOR change, since `update` 
   `## [X.Y.Z] - YYYY-MM-DD` up to the next `## [` heading, without the link reference lines.
 - The asset `local-ai-launcher-X.Y.Z.zip` is
   `git archive --format=zip --prefix=local-ai-launcher-X.Y.Z/` of the built commit, made with
-  `TZ=UTC`. The export-ignore lines in `.gitattributes` keep out `.github`, `.githooks`, `tests`,
-  `.editorconfig`, `.gitattributes`, `.gitignore`, `PSScriptAnalyzerSettings.psd1` and this
-  file. The eol attributes apply: `*.cmd`, `*.ps1`, `*.psm1` and `*.psd1` have CRLF line ends,
+  `TZ=UTC`. The export-ignore lines in `.gitattributes` keep out `.github`, `.githooks`, `ci`,
+  `tests`, `.editorconfig`, `.gitattributes`, `.gitignore`, `.gitleaksignore`, `.shellcheckrc`,
+  `PSScriptAnalyzerSettings.psd1` and this file. The eol attributes apply: `*.cmd`, `*.ps1`, `*.psm1` and `*.psd1` have CRLF line ends,
   every other file LF.
 - A second `git archive` pass adds `local-ai-launcher-X.Y.Z/local-ai-release.json` with
   `--add-file`, which gives it the commit time as every other entry has. This manifest lists

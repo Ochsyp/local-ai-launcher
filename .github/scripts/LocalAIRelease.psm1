@@ -19,7 +19,8 @@ $script:ManifestName = 'local-ai-release.json'
 # The version a dry run builds when there is no VERSION file.
 $script:DryRunVersion = '0.0.0'
 # What .gitattributes marks export-ignore, folders with a trailing '/'. tests\Release.Tests.ps1 checks that the two agree.
-$script:DevPaths = @('.github/', '.githooks/', 'tests/', '.editorconfig', '.gitattributes', '.gitignore', 'PSScriptAnalyzerSettings.psd1', 'CONTRIBUTING.md')
+$script:DevPaths = @('.github/', '.githooks/', 'ci/', 'tests/', '.editorconfig', '.gitattributes', '.gitignore', '.gitleaksignore', '.shellcheckrc',
+    'PSScriptAnalyzerSettings.psd1', 'CONTRIBUTING.md')
 # The extensions .gitattributes gives CRLF and those it marks binary. Every other file of a release has LF line ends only.
 $script:CrlfExtensions = @('.ps1', '.psm1', '.psd1', '.cmd', '.bat')
 $script:BinaryExtensions = @('.ico', '.lnk', '.gguf', '.safetensors')
