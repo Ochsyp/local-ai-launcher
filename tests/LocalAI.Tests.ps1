@@ -7295,7 +7295,7 @@ Describe 'Start-LocalAI' {
                 $Service.Environment['DEFAULT_MODEL_METADATA'] -like '*"toolIds":`["server:files"`]*'
             }
             $config = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($paths.McpoConfig))
-            @($config.mcpServers.files.args) | Should -Be @($complete.Files.Script, $tool.Root)
+            @($config.mcpServers.files.args) | Should -Be @($complete.Files.Script, '--read-only', $tool.Root)
             $config.mcpServers.files.command | Should -Be $complete.Files.Node.Path
             $state = Read-LocalAIState -Path $paths.State
             $state.Services.Files.Pid | Should -Be 4500
