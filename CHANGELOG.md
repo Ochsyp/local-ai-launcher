@@ -50,6 +50,12 @@ All notable changes to this project are listed here. The format follows
   smaller. Where the file tools are set up, `local-ai update` runs npm ci again with the new
   lockfile.
 - Repository standard 1.0.1: adopted, with the hooks, checks, workflows and blocks.
+- `start` restarts an mcpo from an earlier start when its settings changed, and says so, so a
+  new `Files.Root`, `Ports.Files` or `Files.DisabledTools` applies in that start. It used to
+  leave the file tools off for that start, or keep the old settings without a word. It also
+  restarts mcpo when `install` replaced the files server under it. A file-tool call running at
+  that moment fails. An mcpo started by an older launcher restarts once. Open WebUI is not
+  restarted, so a new `Ports.Files` or `files.key` still needs `local-ai stop`.
 
 ### Security
 

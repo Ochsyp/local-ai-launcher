@@ -5204,6 +5204,15 @@ Describe 'New-McpoConfig' {
         @($files.disabledTools) | Should -Be @('read_file', 'write_file', 'edit_file', 'create_directory', 'move_file')
     }
 
+    It 'returns the server entry it wrote, so start hashes exactly what mcpo reads' {
+        $entry = New-McpoConfig -Settings $settings -Path $path -NodePath $node -ServerScript $script
+        $entry | Should -BeOfType [hashtable]
+        $files = (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($path))).mcpServers.files
+        $entry.command | Should -BeExactly $files.command
+        @($entry.args) | Should -Be @($files.args)
+        @($entry.disabledTools) | Should -Be @($files.disabledTools)
+    }
+
     It 'keeps a single disabled tool a JSON list' {
         $settings.Files.DisabledTools = @('write_file')
         New-McpoConfig -Settings $settings -Path $path -NodePath $node -ServerScript $script
@@ -5249,6 +5258,61 @@ Describe 'New-McpoConfig' {
         New-McpoConfig -Settings $settings -Path $path -NodePath $node -ServerScript $script
         @((ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($path))).mcpServers.files.args)[-1] | Should -BeExactly 'E:\Other'
         Test-Path -LiteralPath "$path.tmp" | Should -BeFalse
+    }
+}
+
+Describe 'Get-McpoConfigHash' {
+    BeforeAll {
+        # Return the hash of a typical mcpo start, with the values $Change names replaced.
+        function Get-TestConfigHash([hashtable]$Change = @{}) {
+            $values = @{
+                FilePath  = 'C:\uv\bin\mcpo.exe'
+                Arguments = @('--host', '127.0.0.1', '--port', '8189', '--api-key', 'first-key', '--strict-auth', '--cors-allow-origins',
+                    'http://127.0.0.1:8080', '--config', 'C:\local-ai\mcpo.json', '--log-level', 'WARNING')
+                Command   = 'C:\Program Files\nodejs\node.exe'
+                Server    = @('C:\server\dist\index.js', '--read-only', 'D:\AI-Folder')
+                Disabled  = @('read_file', 'write_file', 'edit_file')
+                Version   = '2.3.0'
+                Lock      = 'a' * 64
+            }
+            foreach ($key in $Change.Keys) { $values[$key] = $Change[$key] }
+            InModuleScope LocalAI -Parameters @{ Values = $values } {
+                param($Values)
+                Get-McpoConfigHash -FilePath $Values.FilePath -ArgumentList $Values.Arguments -ServerVersion $Values.Version -LockSha256 $Values.Lock -Server @{
+                    command = $Values.Command; args = $Values.Server; disabledTools = $Values.Disabled }
+            }
+        }
+    }
+
+    It 'is 64 lowercase hex characters' {
+        Get-TestConfigHash | Should -MatchExactly '^[0-9a-f]{64}$'
+    }
+
+    It 'stays the same for <Case>' -ForEach @(
+        @{ Case = 'the same values'; Change = @{} }
+        @{ Case = 'DisabledTools in another order'; Change = @{ Disabled = @('edit_file', 'read_file', 'write_file') } }
+        @{ Case = 'another API key'; Change = @{ Arguments = @('--host', '127.0.0.1', '--port', '8189', '--api-key', 'second-key', '--strict-auth',
+                    '--cors-allow-origins', 'http://127.0.0.1:8080', '--config', 'C:\local-ai\mcpo.json', '--log-level', 'WARNING') } }
+    ) {
+        Get-TestConfigHash -Change $Change | Should -BeExactly (Get-TestConfigHash)
+    }
+
+    It 'differs for <Case>' -ForEach @(
+        @{ Case = 'another mcpo program'; Change = @{ FilePath = 'D:\uv\bin\mcpo.exe' } }
+        @{ Case = 'another folder'; Change = @{ Server = @('C:\server\dist\index.js', '--read-only', 'D:\Other-Folder') } }
+        @{ Case = 'a missing --read-only'; Change = @{ Server = @('C:\server\dist\index.js', 'D:\AI-Folder') } }
+        @{ Case = 'another Node.js path'; Change = @{ Command = 'D:\nodejs\node.exe' } }
+        @{ Case = 'another server script'; Change = @{ Server = @('D:\server\dist\index.js', '--read-only', 'D:\AI-Folder') } }
+        @{ Case = 'another hidden tool'; Change = @{ Disabled = @('read_file', 'write_file', 'move_file') } }
+        @{ Case = 'another port'; Change = @{ Arguments = @('--host', '127.0.0.1', '--port', '8199', '--api-key', 'first-key', '--strict-auth',
+                    '--cors-allow-origins', 'http://127.0.0.1:8080', '--config', 'C:\local-ai\mcpo.json', '--log-level', 'WARNING') } }
+        @{ Case = 'another Open WebUI port'; Change = @{ Arguments = @('--host', '127.0.0.1', '--port', '8189', '--api-key', 'first-key', '--strict-auth',
+                    '--cors-allow-origins', 'http://127.0.0.1:8081', '--config', 'C:\local-ai\mcpo.json', '--log-level', 'WARNING') } }
+        @{ Case = 'two server arguments written as one'; Change = @{ Server = @('C:\server\dist\index.js', '--read-only D:\AI-Folder') } }
+        @{ Case = 'another installed server version'; Change = @{ Version = '2.4.0' } }
+        @{ Case = 'another installed lockfile'; Change = @{ Lock = 'b' * 64 } }
+    ) {
+        Get-TestConfigHash -Change $Change | Should -Not -BeExactly (Get-TestConfigHash)
     }
 }
 
@@ -6895,6 +6959,26 @@ Describe 'Start-LocalAI' {
                 Get-LocalAIEnvironmentHash -Environment $comfy.Environment -InheritEnvironment $comfy.InheritEnvironment
             } $Settings $Paths $Stamp
         }
+
+        # Return @{ ConfigSha256; EnvironmentSha256; OpenWebUI } that a start with the file tools computes for $Settings, $Paths, the stamp $Stamp
+        # and the key $Key: mcpo's two record hashes and Open WebUI's environment hash.
+        function Get-TestMcpoHash([hashtable]$Settings, [hashtable]$Paths, [hashtable]$Stamp, [string]$Key) {
+            & (Get-Module LocalAI) {
+                param($Settings, $Paths, $Stamp, $Key)
+                $record = $Stamp.Files
+                $server = Get-McpoServerEntry -Settings $Settings -NodePath $record.Node.Path -ServerScript $record.Script
+                $services = @(Get-LocalAIService -Settings $Settings -Paths $Paths -OllamaUrl 'http://127.0.0.1:11434' -OpenWebUI $Stamp.OpenWebUI `
+                        -Files @{ McpoPath = $record.McpoPath; McpoVersion = $record.McpoVersion; Key = $Key; Server = $server
+                            ServerVersion = $record.ServerVersion; LockSha256 = $record.LockSha256 })
+                $mcpo = @($services | Where-Object { $_.Name -eq 'Files' })[0]
+                $web = @($services | Where-Object { $_.Name -eq 'OpenWebUI' })[0]
+                @{
+                    ConfigSha256      = $mcpo.ConfigSha256
+                    EnvironmentSha256 = (Get-LocalAIEnvironmentHash -Environment $mcpo.Environment -InheritEnvironment $mcpo.InheritEnvironment)
+                    OpenWebUI         = (Get-LocalAIEnvironmentHash -Environment $web.Environment -InheritEnvironment $web.InheritEnvironment)
+                }
+            } $Settings $Paths $Stamp $Key
+        }
     }
 
     BeforeEach {
@@ -7447,7 +7531,9 @@ Describe 'Start-LocalAI' {
         }
 
         It 'reuses an mcpo an earlier start left running when it serves this root, and hands Open WebUI the file tools' {
-            $record = @{ Pid = 4500; StartTicks = 111; Path = 'C:\WINDOWS\system32\cmd.exe'; Port = 18189; Listener = @{ Pid = 7950; StartTicks = 555; Path = $mcpoListener.Path } }
+            $hashes = Get-TestMcpoHash -Settings $settings -Paths $paths -Stamp $complete -Key $tool.Key
+            $record = @{ Pid = 4500; StartTicks = 111; Path = 'C:\WINDOWS\system32\cmd.exe'; Port = 18189; Listener = @{ Pid = 7950; StartTicks = 555; Path = $mcpoListener.Path }
+                ConfigSha256 = $hashes.ConfigSha256; EnvironmentSha256 = $hashes.EnvironmentSha256 }
             Write-LocalAIState -Path $paths.State -State @{ Services = @{ Files = $record } }
             $owners[18189] = $mcpoListener
             Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith { if ($Record.Pid -eq 7950) { 'match' } else { 'other' } }
@@ -7465,8 +7551,10 @@ Describe 'Start-LocalAI' {
             }
         }
 
-        It 'stops an mcpo an earlier start left serving another root, warns once and starts Open WebUI without the file tools' {
-            $record = @{ Pid = 4500; StartTicks = 111; Path = 'C:\WINDOWS\system32\cmd.exe'; Port = 18189; Listener = @{ Pid = 7950; StartTicks = 555; Path = $mcpoListener.Path } }
+        It 'stops an mcpo an earlier start left serving another root under matching hashes, warns once and starts Open WebUI without the file tools' {
+            $hashes = Get-TestMcpoHash -Settings $settings -Paths $paths -Stamp $complete -Key $tool.Key
+            $record = @{ Pid = 4500; StartTicks = 111; Path = 'C:\WINDOWS\system32\cmd.exe'; Port = 18189; Listener = @{ Pid = 7950; StartTicks = 555; Path = $mcpoListener.Path }
+                ConfigSha256 = $hashes.ConfigSha256; EnvironmentSha256 = $hashes.EnvironmentSha256 }
             Write-LocalAIState -Path $paths.State -State @{ Services = @{ Files = $record } }
             $owners[18189] = $mcpoListener
             Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith { if ($Record.Pid -eq 7950) { 'match' } else { 'other' } }
@@ -7543,6 +7631,260 @@ Describe 'Start-LocalAI' {
             Should -Invoke Stop-LocalAIService -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Name -eq 'Files' -and $Record.Pid -eq 4500 }
             Should -Invoke Stop-LocalAIService -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Name -eq 'OpenWebUI' }
             (Read-LocalAIState -Path $paths.State).Services.Count | Should -Be 0
+        }
+
+        Context 'and an mcpo an earlier start left running' {
+            BeforeEach {
+                $hashes = Get-TestMcpoHash -Settings $settings -Paths $paths -Stamp $complete -Key $tool.Key
+                $mcpoRecord = @{ Pid = 4500; StartTicks = 111; Path = 'C:\WINDOWS\system32\cmd.exe'; Port = 18189
+                    Listener = @{ Pid = 7950; StartTicks = 555; Path = $mcpoListener.Path }
+                    ConfigSha256 = $hashes.ConfigSha256; EnvironmentSha256 = $hashes.EnvironmentSha256 }
+                $webRecord = @{ Pid = 4242; StartTicks = 111; Path = $exe; Port = 18431
+                    Listener = @{ Pid = 1624; StartTicks = 222; Path = $python.Path }; EnvironmentSha256 = $hashes.OpenWebUI }
+                Write-LocalAIState -Path $paths.State -State @{ Services = @{ Files = $mcpoRecord; OpenWebUI = $webRecord } }
+                $owners[18189] = $mcpoListener
+                $owners[18431] = $python
+                $pids.Files = 4600
+                $leaf = Split-Path $paths.Root -Leaf
+                $pin = $settings.Files.ServerVersion
+                $restartLine = "The file tools' settings changed since mcpo started, so start restarts it. A file-tool call running right now fails; ask again."
+                Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith { if (@(7950, 1624) -contains $Record.Pid) { 'match' } else { 'other' } }
+                Mock Get-OpenWebUIVersion -ModuleName LocalAI -MockWith { '0.12.4' }
+                Mock Get-FilesServerVersion -ModuleName LocalAI -MockWith { $pin }
+                Mock Stop-LocalAIService -ModuleName LocalAI -MockWith { $events.Add("stop $Name"); $owners.Remove([int]$Record.Port); 'stopped' }
+            }
+
+            It 'stops and launches nothing while its settings are the same' {
+                $run = Invoke-StartVerb -Context $context
+                $run.Code | Should -Be @(0)
+                $run.Warnings | Should -BeNullOrEmpty
+                $events.Count | Should -Be 0
+                $run.Printed | Should -Not -BeLike "*$restartLine*"
+                $run.Printed | Should -BeLike '*File tools server-filesystem * is already running at http://127.0.0.1:18189; reusing it.*'
+            }
+
+            It 'records the hash of a new mcpo without its key, so a second start reuses it' {
+                Write-LocalAIState -Path $paths.State -State @{}
+                $owners.Clear()
+                $pids.Files = 4500
+                (Invoke-StartVerb -Context $context).Code | Should -Be @(0)
+                $state = Read-LocalAIState -Path $paths.State
+                $state.Services.Files.ConfigSha256 | Should -BeExactly $hashes.ConfigSha256
+                [IO.File]::ReadAllText($paths.State) | Should -Not -BeLike "*$($tool.Key)*"
+                $events.Clear()
+                $second = Invoke-StartVerb -Context $context
+                $second.Code | Should -Be @(0)
+                $second.Warnings | Should -BeNullOrEmpty
+                $events.Count | Should -Be 0
+            }
+
+            It 'restarts it once, leaves a reused Open WebUI alone and returns 0 when <Case> changed' -ForEach @(
+                @{ Case = 'Files.Root'; Change = 'root' }
+                @{ Case = 'Files.DisabledTools'; Change = 'hidden' }
+                @{ Case = 'the Node.js path'; Change = 'node' }
+                @{ Case = 'the server script'; Change = 'script' }
+            ) {
+                switch ($Change) {
+                    'root' {
+                        $null = Write-TestFile "$leaf-other\notes.txt" 'notes'
+                        $settings.Files.Root = Join-Path $TestDrive "$leaf-other"
+                    }
+                    'hidden' { $settings.Files.DisabledTools = @($settings.Files.DisabledTools) + 'made_up_tool' }
+                    'node' { $complete.Files.Node.Path = Write-TestFile "$leaf\other-nodejs\node.exe" 'program' }
+                    'script' { $complete.Files.Script = Write-TestFile "$leaf\other-server\index.js" 'script' }
+                }
+                Write-LocalAIState -Path $paths.InstallStamp -State $complete
+                $run = Invoke-StartVerb -Context $context
+                $run.Code | Should -Be @(0)
+                $run.Warnings | Should -BeNullOrEmpty
+                $run.Printed | Should -BeLike "*$restartLine*"
+                $events | Should -Be @('stop Files', 'start Files', 'wait Files')
+                Should -Invoke Stop-LocalAIService -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Name -eq 'Files' -and $Record.Pid -eq 4500 }
+                Should -Invoke Get-FilesServerVersion -ModuleName LocalAI -Times 0 -Exactly
+                $state = Read-LocalAIState -Path $paths.State
+                $state.Services.Files.Pid | Should -Be 4600
+                $state.Services.Files.ConfigSha256 | Should -Not -BeExactly $hashes.ConfigSha256
+                $state.Services.OpenWebUI.Pid | Should -Be 4242
+                $run.Printed | Should -BeLike '*File tools:*'
+            }
+
+            It 'restarts it on a changed Ports.Files, and warns that a reused Open WebUI keeps the old address' {
+                $settings.Ports.Files = 18199
+                Mock Wait-LocalAIService -ModuleName LocalAI -ParameterFilter { $Service.Name -eq 'Files' } -MockWith {
+                    $events.Add('wait Files')
+                    $owners[18199] = $mcpoListener
+                    @{ Version = $pin; Listener = $mcpoListener }
+                }
+                $run = Invoke-StartVerb -Context $context
+                $run.Code | Should -Be @(2)
+                $events | Should -Be @('stop Files', 'start Files', 'wait Files')
+                Should -Invoke Start-LocalAIService -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Service.Name -eq 'Files' -and $Service.Port -eq 18199 }
+                $run.Warnings | Should -BeLike 'Open WebUI, which an earlier start left running, keeps the settings it started with*'
+            }
+
+            It 'restarts it when the names of the variables it inherits changed' {
+                $mcpoRecord.EnvironmentSha256 = 'f' * 64
+                Write-LocalAIState -Path $paths.State -State @{ Services = @{ Files = $mcpoRecord; OpenWebUI = $webRecord } }
+                $run = Invoke-StartVerb -Context $context
+                $run.Code | Should -Be @(0)
+                $run.Printed | Should -BeLike "*$restartLine*"
+                $events | Should -Be @('stop Files', 'start Files', 'wait Files')
+            }
+
+            It 'restarts it when install changed <Case> under it, and leaves a reused Open WebUI alone' -ForEach @(
+                @{ Case = 'the files server version'; Field = 'ServerVersion'; Older = '2.2.0' }
+                @{ Case = 'the files server lockfile'; Field = 'LockSha256'; Older = 'a' * 64 }
+            ) {
+                # The running mcpo was recorded with the older value; the stamp on disk holds what install put in since.
+                $current = $complete.Files[$Field]
+                $complete.Files[$Field] = $Older
+                $mcpoRecord.ConfigSha256 = (Get-TestMcpoHash -Settings $settings -Paths $paths -Stamp $complete -Key $tool.Key).ConfigSha256
+                $complete.Files[$Field] = $current
+                Write-LocalAIState -Path $paths.State -State @{ Services = @{ Files = $mcpoRecord; OpenWebUI = $webRecord } }
+                $run = Invoke-StartVerb -Context $context
+                $run.Code | Should -Be @(0)
+                $run.Warnings | Should -BeNullOrEmpty
+                $run.Printed | Should -BeLike "*$restartLine*"
+                $events | Should -Be @('stop Files', 'start Files', 'wait Files')
+                Should -Invoke Get-FilesServerVersion -ModuleName LocalAI -Times 0 -Exactly
+                $state = Read-LocalAIState -Path $paths.State
+                $state.Services.Files.ConfigSha256 | Should -BeExactly $hashes.ConfigSha256
+                $state.Services.OpenWebUI.Pid | Should -Be 4242
+            }
+
+            It 'launches nothing when another program takes a changed port right after the stop, and says the reused Open WebUI still offers the tools' {
+                $settings.Ports.Files = 18199
+                $other = [pscustomobject]@{ Id = 9200; Name = 'node'; Path = 'C:\tools\node.exe'; StartTicks = 5 }
+                Mock Stop-LocalAIService -ModuleName LocalAI -MockWith { $events.Add("stop $Name"); $owners.Remove([int]$Record.Port); $owners[18199] = $other; 'stopped' }
+                $run = Invoke-StartVerb -Context $context
+                $run.Code | Should -Be @(2)
+                $run.Warnings | Should -BeLike '*The file tools are off for this start: Port 18199, which File tools needs, is held by node (PID 9200*'
+                $run.Warnings | Should -BeLike '*still offers the file tools, but the mcpo they call is stopped*'
+                $events | Should -Be @('stop Files')
+                Should -Invoke Start-LocalAIService -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $Service.Name -eq 'Files' }
+                Should -Invoke Stop-LocalAIService -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $Record.Pid -eq 9200 }
+                (Read-LocalAIState -Path $paths.State).Services.ContainsKey('Files') | Should -BeFalse
+            }
+
+            It 'names the other program and says the reused Open WebUI still offers the tools when it took the same port as mcpo ended' {
+                $settings.Files.DisabledTools = @($settings.Files.DisabledTools) + 'made_up_tool'
+                $other = [pscustomobject]@{ Id = 9200; Name = 'node'; Path = 'C:\tools\node.exe'; StartTicks = 5 }
+                $gone = @{ Mcpo = $false }
+                Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith {
+                    if ($Record.Pid -eq 1624 -or ($Record.Pid -eq 7950 -and -not $gone.Mcpo)) { 'match' } else { 'other' }
+                }
+                # As the real one: mcpo has ended, but the port it waits on stays held, so the first stop reports 'failed' and the next finds it gone.
+                Mock Stop-LocalAIService -ModuleName LocalAI -MockWith {
+                    $events.Add("stop $Name")
+                    if ($gone.Mcpo) { return 'stale' }
+                    $gone.Mcpo = $true
+                    $owners[[int]$Record.Port] = $other
+                    'failed'
+                }
+                $run = Invoke-StartVerb -Context $context
+                $run.Code | Should -Be @(2)
+                $run.Warnings | Should -BeLike '*The file tools are off for this start: Port 18189, which File tools needs, is held by node (PID 9200*'
+                $run.Warnings | Should -Not -BeLike '*did not stop for its restart*'
+                $run.Warnings | Should -BeLike '*still offers the file tools, but the mcpo they call is stopped*'
+                $events | Should -Be @('stop Files', 'stop Files')
+                Should -Invoke Start-LocalAIService -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $Service.Name -eq 'Files' }
+                Should -Invoke Stop-LocalAIService -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $Record.Pid -eq 9200 }
+                (Read-LocalAIState -Path $paths.State).Services.ContainsKey('Files') | Should -BeFalse
+            }
+
+            It 'still reports a failed restart when a failed stop leaves an mcpo this window cannot inspect' {
+                $settings.Files.DisabledTools = @($settings.Files.DisabledTools) + 'made_up_tool'
+                $after = @{ Stop = $false }
+                Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith {
+                    if ($Record.Pid -eq 1624) { 'match' } elseif ($Record.Pid -eq 7950) { if ($after.Stop) { 'unreadable' } else { 'match' } } else { 'other' }
+                }
+                Mock Stop-LocalAIService -ModuleName LocalAI -MockWith { $after.Stop = $true; 'failed' }
+                $run = Invoke-StartVerb -Context $context
+                $run.Code | Should -Be @(2)
+                $run.Warnings | Should -BeLike '*The file tools are off for this start: mcpo did not stop for its restart, so its new settings do not apply.*'
+                Should -Invoke Start-LocalAIService -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $Service.Name -eq 'Files' }
+                (Read-LocalAIState -Path $paths.State).Services.Files.Pid | Should -Be 4500
+            }
+
+            It 'restarts a record without ConfigSha256, from an older launcher, once, and reuses it on the next start' {
+                $mcpoRecord.Remove('ConfigSha256')
+                Write-LocalAIState -Path $paths.State -State @{ Services = @{ Files = $mcpoRecord; OpenWebUI = $webRecord } }
+                $run = Invoke-StartVerb -Context $context
+                $run.Code | Should -Be @(0)
+                $run.Printed | Should -BeLike "*An older launcher started mcpo, so start restarts it once with this launcher's settings. A file-tool call running right now fails; ask again.*"
+                $run.Printed | Should -Not -BeLike "*$restartLine*"
+                $events | Should -Be @('stop Files', 'start Files', 'wait Files')
+                $events.Clear()
+                (Invoke-StartVerb -Context $context).Code | Should -Be @(0)
+                $events.Count | Should -Be 0
+            }
+
+            It 'launches no new mcpo and keeps the file tools off when it cannot be stopped' {
+                $settings.Files.DisabledTools = @($settings.Files.DisabledTools) + 'made_up_tool'
+                Mock Stop-LocalAIService -ModuleName LocalAI -MockWith { 'failed' }
+                $run = Invoke-StartVerb -Context $context
+                $run.Code | Should -Be @(2)
+                Should -Invoke Start-LocalAIService -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $Service.Name -eq 'Files' }
+                Should -Invoke Get-FilesServerVersion -ModuleName LocalAI -Times 0 -Exactly
+                $run.Warnings | Should -BeLike '*The file tools are off for this start: mcpo did not stop for its restart, so its new settings do not apply.*'
+                $run.Warnings | Should -BeLike '*still serves the file tools, since it could not be stopped*'
+                (Read-LocalAIState -Path $paths.State).Services.Files.Pid | Should -Be 4500
+                $run.Printed | Should -Not -BeLike '*File tools:*'
+            }
+
+            It 'keeps the file tools off and says the reused Open WebUI still offers them when the restarted mcpo <Case>' -ForEach @(
+                @{ Case = 'does not come up'; Fail = 'wait' }
+                @{ Case = 'cannot be launched'; Fail = 'start' }
+            ) {
+                $settings.Files.DisabledTools = @($settings.Files.DisabledTools) + 'made_up_tool'
+                if ($Fail -eq 'wait') {
+                    Mock Wait-LocalAIService -ModuleName LocalAI -ParameterFilter { $Service.Name -eq 'Files' } -MockWith { throw 'File tools exited with code 1 before it answered.' }
+                } else {
+                    Mock Start-LocalAIService -ModuleName LocalAI -ParameterFilter { $Service.Name -eq 'Files' } -MockWith { throw 'mcpo.exe cannot be launched.' }
+                }
+                $run = Invoke-StartVerb -Context $context
+                $run.Code | Should -Be @(2)
+                $run.Warnings | Should -BeLike '*The file tools are off for this start:*'
+                $run.Warnings | Should -BeLike '*Open WebUI, which an earlier start left running, still offers the file tools, but the mcpo they call is stopped*'
+                $state = Read-LocalAIState -Path $paths.State
+                $state.Services.ContainsKey('Files') | Should -BeFalse
+                $state.Services.OpenWebUI.Pid | Should -Be 4242
+                $run.Printed | Should -Not -BeLike '*File tools:*'
+            }
+
+            It 'stops it and restarts nothing when the changed folder is refused' {
+                $null = Write-TestFile "$leaf-refused\server.key" 'secret'
+                $settings.Files.Root = Join-Path $TestDrive "$leaf-refused"
+                $run = Invoke-StartVerb -Context $context
+                $run.Code | Should -Be @(2)
+                $run.Printed | Should -Not -BeLike "*$restartLine*"
+                $events | Should -Be @('stop Files')
+                Should -Invoke Start-LocalAIService -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $Service.Name -eq 'Files' }
+            }
+
+            It 'restarts nothing and never stops another program that holds a changed port' {
+                $settings.Ports.Files = 18199
+                $owners[18199] = [pscustomobject]@{ Id = 9200; Name = 'node'; Path = 'C:\tools\node.exe'; StartTicks = 5 }
+                $run = Invoke-StartVerb -Context $context
+                $run.Code | Should -Be @(2)
+                $run.Warnings | Should -BeLike '*Port 18199, which File tools needs, is held by node (PID 9200*'
+                $run.Printed | Should -Not -BeLike "*$restartLine*"
+                Should -Invoke Start-LocalAIService -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $Service.Name -eq 'Files' }
+                Should -Invoke Stop-LocalAIService -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $Record.Pid -eq 9200 }
+                Should -Invoke Stop-LocalAIService -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Name -eq 'Files' -and $Record.Pid -eq 4500 }
+            }
+
+            It 'does not restart it for a new files.key, since a reused Open WebUI holds the old one, and keeps the file tools off' {
+                Remove-Item -LiteralPath $paths.FilesKey
+                $null = Get-FilesKey -Path $paths.FilesKey -Create
+                Mock Get-FilesServerVersion -ModuleName LocalAI -MockWith { throw 'The remote server returned an error: (401) Unauthorized.' }
+                $run = Invoke-StartVerb -Context $context
+                $run.Code | Should -Be @(2)
+                $run.Printed | Should -Not -BeLike "*$restartLine*"
+                $events | Should -Be @('stop Files')
+                Should -Invoke Start-LocalAIService -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $Service.Name -eq 'Files' }
+                $run.Warnings | Should -BeLike '*The file tools are off for this start:*'
+            }
         }
 
         It 'warns once and returns 2 when the stamped mcpo differs from Files.McpoVersion' {
