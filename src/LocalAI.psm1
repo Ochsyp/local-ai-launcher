@@ -3251,16 +3251,18 @@ function Get-McpoServerEntry {
     }
 }
 
-# Return the SHA-256 (lowercase hex) of what a running mcpo keeps from its start: the program $FilePath, $ArgumentList without the --api-key value, and
-# the mcpo.json entry $Server with its hidden tools in any order. The key stays out because this hash is saved in state.json, and because a new key
-# needs a new Open WebUI too, so restarting mcpo alone would not help. Pure.
+# Return the SHA-256 (lowercase hex) of what a running mcpo keeps from its start: the program $FilePath, $ArgumentList without the --api-key value, the
+# mcpo.json entry $Server with its hidden tools in any order, and the files server's $ServerVersion and $LockSha256, since install can replace the server
+# under a running mcpo. The key stays out because this hash is saved in state.json, and because a new key needs a new Open WebUI too. Pure.
 function Get-McpoConfigHash {
     [CmdletBinding()]
     [OutputType([string])]
     param(
         [Parameter(Mandatory)][string]$FilePath,
         [Parameter(Mandatory)][string[]]$ArgumentList,
-        [Parameter(Mandatory)][hashtable]$Server
+        [Parameter(Mandatory)][hashtable]$Server,
+        [string]$ServerVersion,
+        [string]$LockSha256
     )
     $arguments = New-Object System.Collections.Generic.List[string]
     for ($index = 0; $index -lt $ArgumentList.Count; $index++) {
@@ -3277,16 +3279,19 @@ function Get-McpoConfigHash {
         ServerCommand = [string]$Server.command
         ServerArgs    = @($Server.args) -join "`0"
         DisabledTools = @($Server.disabledTools | Sort-Object -CaseSensitive -Unique) -join "`0"
+        ServerVersion = $ServerVersion
+        LockSha256    = $LockSha256
     }
     return Get-LocalAIEnvironmentHash -Environment $values
 }
 
-# Write mcpo's config, the entry Get-McpoServerEntry returns, to $Path, replacing it in one step. ASCII with \u escapes and no BOM, as mcpo 0.0.20 reads
-# it with the ANSI code page.
+# Write mcpo's config, the entry Get-McpoServerEntry returns, to $Path, replacing it in one step, and return that entry, so start hashes what mcpo reads.
+# ASCII with \u escapes and no BOM, as mcpo 0.0.20 reads it with the ANSI code page.
 function New-McpoConfig {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'Called by the start verb, which offers no -WhatIf.')]
     [CmdletBinding()]
+    [OutputType([hashtable])]
     param(
         [Parameter(Mandatory)][hashtable]$Settings,
         [Parameter(Mandatory)][string]$Path,
@@ -3295,6 +3300,7 @@ function New-McpoConfig {
     )
     $server = Get-McpoServerEntry -Settings $Settings -NodePath $NodePath -ServerScript $ServerScript
     Write-LocalAIState -Path $Path -State @{ mcpServers = @{ files = $server } } -Ascii
+    return $server
 }
 
 # Return the files server version mcpo at the base URL serves: GET /files/openapi.json with the Bearer $Key must answer within 5 s as
@@ -3610,9 +3616,10 @@ function Get-LocalAIInheritedName {
 }
 
 # Return the service table in start order: optional ComfyUI from $ComfyUI (stamp: Commit, Python) for Images.Enabled and an $ImageWorkflow, with
-# Images.UnloadChat the image gate, for Files.Root mcpo from $Files (McpoPath, McpoVersion, Key), then required Open WebUI from $OpenWebUI. Identity
-# takes the entry and returns the version to show or throws; Pin and Repair name the pin and the install; InheritEnvironment names the variables
-# each may inherit from this window. Warns for dropped Args or gate.
+# Images.UnloadChat the image gate, for Files.Root mcpo from $Files (McpoPath, McpoVersion, Key; the start verb adds Server, ServerVersion and
+# LockSha256, which set the entry's ConfigSha256), then required Open WebUI from $OpenWebUI. Identity takes the entry and returns the version to show
+# or throws; Pin and Repair name the pin and the install; InheritEnvironment names the variables each may inherit from this window. Warns for dropped
+# Args or gate.
 function Get-LocalAIService {
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -3800,9 +3807,13 @@ function Get-LocalAIService {
             FilePath         = $Files.McpoPath
             ArgumentList     = $mcpoArguments
             # Set only for the start verb, which passes Files.Server and restarts an mcpo whose recorded hash differs.
-            ConfigSha256     = $(if ($Files.Server) { Get-McpoConfigHash -FilePath $Files.McpoPath -ArgumentList $mcpoArguments -Server $Files.Server })
+            ConfigSha256     = $(if ($Files.Server) {
+                    Get-McpoConfigHash -FilePath $Files.McpoPath -ArgumentList $mcpoArguments -Server $Files.Server -ServerVersion $Files.ServerVersion `
+                        -LockSha256 $Files.LockSha256
+                })
             RestartNote      = "The file tools' settings changed since mcpo started, so start restarts it. A file-tool call running right now fails; ask again."
-            RestartFailed    = 'mcpo could not be stopped, so it keeps the settings it started with.'
+            # Start-LocalAI tries the stop once more after this, so it must stay true when that second try works.
+            RestartFailed    = 'mcpo did not stop for its restart, so its new settings do not apply.'
             # Launcher-owned and empty; the node server inherits it, as mcpo ignores a cwd in its config.
             WorkingDirectory = Join-Path $Paths.Root 'mcpo'
             Environment      = [ordered]@{}
@@ -4321,8 +4332,8 @@ function Stop-RecordedFilesService {
 
 # The start verb: install first when install-stamp.json lacks Ollama, Model or OpenWebUI, else wait for Ollama; record in state.json at once an Ollama app
 # either started (Save-OllamaRecord); check Ollama has Model.Alias; stop a recorded mcpo this start leaves out; launch ComfyUI, the image gate and mcpo,
-# restarting an mcpo whose settings changed, and waiting for the last two at once, then Open WebUI using those that answered; open the browser, then check ComfyUI. Adds each service it launched to
-# Context.Launched (a List[string]). Returns 0; 2 on warnings; 1 when Open WebUI fails.
+# restarting an mcpo whose settings changed and waiting for the last two at once, then Open WebUI using those that answered; open the browser, then
+# check ComfyUI. Adds each service it launched to Context.Launched (a List[string]). Returns 0; 2 on warnings; 1 when Open WebUI fails.
 function Start-LocalAI {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'A launcher verb, which offers no -WhatIf.')]
@@ -4398,9 +4409,10 @@ function Start-LocalAI {
                     if (@($warned | Where-Object { "$_" -ceq "$warning" }).Count -eq 0) { Write-Warning "$warning" -WarningVariable +warned }
                 }
                 if ($served) {
-                    $files = @{ McpoPath = $record.McpoPath; McpoVersion = $record.McpoVersion; Key = (Get-FilesKey -Path $paths.FilesKey)
-                        Server = (Get-McpoServerEntry -Settings $settings -NodePath $record.Node.Path -ServerScript $record.Script) }
-                    New-McpoConfig -Settings $settings -Path $paths.McpoConfig -NodePath $record.Node.Path -ServerScript $record.Script
+                    $mcpoKey = Get-FilesKey -Path $paths.FilesKey
+                    $server = New-McpoConfig -Settings $settings -Path $paths.McpoConfig -NodePath $record.Node.Path -ServerScript $record.Script
+                    $files = @{ McpoPath = $record.McpoPath; McpoVersion = $record.McpoVersion; Key = $mcpoKey; Server = $server
+                        ServerVersion = $record.ServerVersion; LockSha256 = $record.LockSha256 }
                 }
             }
         } catch {
