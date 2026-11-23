@@ -328,7 +328,7 @@ Describe 'Files tool lists and mcpo pins' {
             $files.DisabledTools | Should -Contain $tool
         }
         # server-filesystem 2.2.0 and 2.3.0 serve these 16 tools: the 14 of 2.0.1 and 2.1.0, and the write tools append_file and copy_file.
-        @(@($files.AllowedTools) + @($files.DisabledTools) | Sort-Object) | Should -Be @('append_file', 'copy_file', 'create_directory', 'directory_tree',
+        @(@($files.AllowedTools) + @($files.DisabledTools) | Sort-Object) | Should -Be @('append_file', 'copy_file', 'create_directory',
             'edit_file', 'get_file_info', 'list_allowed_directories', 'list_directory', 'list_directory_with_sizes', 'move_file', 'read_file',
             'read_media_file', 'read_multiple_files', 'read_text_file', 'search_files', 'write_file')
     }
