@@ -5,6 +5,11 @@
     Justification = 'Pester shares BeforeAll variables with the It blocks.')]
 param()
 
+BeforeDiscovery {
+    # Pester builds -ForEach data here, before BeforeAll runs.
+    $discoveredTools = @((Import-PowerShellDataFile -LiteralPath (Join-Path $PSScriptRoot '..\config\defaults.psd1')).Files.AllowedTools)
+}
+
 BeforeAll {
     $repoRoot = Split-Path $PSScriptRoot -Parent
     $liveScript = Join-Path $repoRoot 'ci\files-server-live.ps1'
@@ -84,7 +89,7 @@ Describe 'Invoke-LiveDownload' {
         $script:calls | Should -Be 2
     }
 
-    It 'never retries a failure that is no download' {
+    It 'never retries a failure that is no download, and reports it as a setup failure' {
         $thrown = {
             Invoke-LiveDownload -What 'the files server' -DelaySeconds 0 -Action {
                 $script:calls++
@@ -92,7 +97,8 @@ Describe 'Invoke-LiveDownload' {
             }
         } | Should -Throw -PassThru
         $script:calls | Should -Be 1
-        $thrown.Exception.Data['LiveKind'] | Should -Be 'Difference'
+        $thrown.Exception.Data['LiveKind'] | Should -Be 'Setup'
+        $thrown.Exception.Message | Should -Match 'Make them agree'
     }
 }
 
@@ -101,11 +107,22 @@ Describe 'Get-LiveFailureText' {
         Get-LiveFailureText -Kind 'Download' -Message 'uv failed.' | Should -Match 'Re-run the failed job'
     }
 
+    It 'names the pins as the next place to look when a re-run fails the same way' {
+        Get-LiveFailureText -Kind 'Download' -Message 'uv failed.' | Should -Match 'if it fails the same way, look at the pins'
+    }
+
     It 'sends a real difference to the upgrade, not to a re-run' {
         $text = Get-LiveFailureText -Kind 'Difference' -Message 'mcpo serves write_file.'
         $text | Should -Match 'write_file'
         $text | Should -Match 'version change'
         $text | Should -Not -Match 'Re-run'
+    }
+
+    It 'does not call a failed setup step a difference in the files server' {
+        $text = Get-LiveFailureText -Kind 'Setup' -Message 'Drive C: has 0.1 GB free.'
+        $text | Should -Match 'Drive C:'
+        $text | Should -Not -Match 'differs'
+        $text | Should -Not -Match 'version change'
     }
 }
 
@@ -193,6 +210,7 @@ public static class McpoStandIn {
             return @{
                 Code    = $code
                 Said    = ($script:said -join "`n")
+                Last    = $script:said[$script:said.Count - 1]
                 Work    = $work
                 Started = @(if (Test-Path -LiteralPath $startedFile) { Get-Content -LiteralPath $startedFile })
             }
@@ -234,8 +252,8 @@ public static class McpoStandIn {
     }
 
     It 'fails naming <Name>, and cleans up' -ForEach @(
-        @{ Name = 'an extra tool'; Change = @{ Tools = @($defaults.Files.AllowedTools) + 'write_file' }; Expected = 'write_file' }
-        @{ Name = 'a missing tool'; Change = @{ Tools = @($defaults.Files.AllowedTools | Where-Object { $_ -ne 'search_files' }) }; Expected = 'search_files' }
+        @{ Name = 'an extra tool'; Change = @{ Tools = @($discoveredTools) + 'write_file' }; Expected = "/search_files, /write_file', not '" }
+        @{ Name = 'a missing tool'; Change = @{ Tools = @($discoveredTools | Where-Object { $_ -ne 'search_files' }) }; Expected = "routes '[^']*/read_text_file', not '.*/search_files" }
         @{ Name = 'a second folder'; Change = @{ ExtraFolders = @('D:\Second-Folder') }; Expected = 'Second-Folder' }
         @{ Name = 'a wrong version'; Change = @{ Version = '9.9.9' }; Expected = '9\.9\.9' }
     ) {
@@ -279,10 +297,21 @@ public static class McpoStandIn {
         # taskkill exits 255 when a process of the tree ended by itself first, as uv's mcpo.exe does once its Python is gone.
         Mock Stop-LocalAIService {
             $null = & taskkill.exe /PID $Record.Pid /T /F 2>&1
+            Write-Host 'Could not stop Files.'
             'failed'
         }
         $run = Invoke-StandInCheck
         $run.Code | Should -Be 0 -Because $run.Said
+        $run.Last | Should -Match '^LIVE CHECK: passed' -Because 'the verdict is the last line'
+        Test-StandInGone $run.Started | Should -BeTrue
+        Test-Path -LiteralPath $run.Work | Should -BeFalse
+    }
+
+    It 'still ends mcpo and removes its folder when the stop throws' {
+        Mock Stop-LocalAIService { throw 'Get-NetTCPConnection failed.' }
+        $run = Invoke-StandInCheck -StopTimeoutSeconds 1
+        $run.Code | Should -Be 1
+        $run.Last | Should -Match 'could not be stopped'
         Test-StandInGone $run.Started | Should -BeTrue
         Test-Path -LiteralPath $run.Work | Should -BeFalse
     }
@@ -291,9 +320,23 @@ public static class McpoStandIn {
         Mock Stop-LocalAIService { 'failed' }
         $run = Invoke-StandInCheck -StopTimeoutSeconds 1
         $run.Code | Should -Be 1
-        $run.Said | Should -Match 'could not be stopped'
+        $run.Last | Should -Match 'could not be stopped'
+        $run.Last | Should -Not -Match 'passed'
         Test-StandInGone $run.Started | Should -BeTrue
         Test-Path -LiteralPath $run.Work | Should -BeFalse
+    }
+
+    It 'keeps the reason of a failed check in the last line when mcpo also cannot be stopped' {
+        Mock Stop-LocalAIService { 'failed' }
+        $run = Invoke-StandInCheck -Change @{ Version = '9.9.9' } -StopTimeoutSeconds 1
+        $run.Code | Should -Be 1
+        $run.Last | Should -Match '9\.9\.9'
+        $run.Last | Should -Match 'could not be stopped'
+    }
+
+    It 'handles a folder path that holds an apostrophe' {
+        $settings = Get-LiveSetting -RepoRoot $repoRoot -Paths (Get-LocalAIPaths -Root (Join-Path $TestDrive "quote'd\local-ai")) -Root "C:\quote'd\root" -Port 18189
+        $settings.Files.Root | Should -BeExactly "C:\quote'd\root"
     }
 }
 
@@ -314,7 +357,7 @@ Describe 'Invoke-LiveWithLimit' {
         $marker = Join-Path $TestDrive ('grandchild-' + [guid]::NewGuid().ToString('N') + '.txt')
         Set-Content -LiteralPath $child -Value @"
 `$grandchild = Start-Process -FilePath 'ping.exe' -ArgumentList '-n 120 127.0.0.1' -WindowStyle Hidden -PassThru
-Set-Content -LiteralPath '$marker' -Value `$grandchild.Id
+Set-Content -LiteralPath '$($marker -replace "'", "''")' -Value `$grandchild.Id
 Start-Sleep -Seconds 120
 "@
         # Ends the tree as taskkill does and exits 255, its code when a process of the tree ended by itself first.
@@ -323,12 +366,24 @@ Start-Sleep -Seconds 120
             if ($SuccessCode -notcontains 255) { throw "'taskkill' failed with exit code 255." }
             255
         }
-        $code = Invoke-LiveWithLimit -ScriptPath $child -WorkRoot $work -TimeoutSeconds 15
+        # Long enough for a child PowerShell to start on a slow runner.
+        $code = Invoke-LiveWithLimit -ScriptPath $child -WorkRoot $work -TimeoutSeconds 25
         $code | Should -Be 1
-        Should -Invoke Write-Host -ParameterFilter { $Object -like '*did not finish within 15 s*' }
+        Should -Invoke Write-Host -ParameterFilter { $Object -like '*did not finish within 25 s*' }
         Test-Path -LiteralPath $work | Should -BeFalse
         Test-Path -LiteralPath $marker | Should -BeTrue -Because 'the child must have started its own child before the limit'
         Get-Process -Id ([int](Get-Content -LiteralPath $marker)) -ErrorAction SilentlyContinue | Should -BeNullOrEmpty
+    }
+
+    It 'ends what taskkill left behind, also when taskkill itself fails' {
+        Set-Content -LiteralPath $child -Value 'Start-Sleep -Seconds 120'
+        Mock Invoke-Native { throw "'taskkill' failed with exit code 1." }
+        # The child's command line names $work from its first moment, so it need not have finished starting.
+        $code = Invoke-LiveWithLimit -ScriptPath $child -WorkRoot $work -TimeoutSeconds 1 -StopTimeoutSeconds 1
+        $code | Should -Be 1
+        Should -Invoke Write-Host -ParameterFilter { $Object -like '*did not finish within 1 s*' }
+        Wait-LiveProcessEnd -WorkRoot $work -TimeoutSeconds 5 | Should -BeTrue
+        Test-Path -LiteralPath $work | Should -BeFalse
     }
 }
 

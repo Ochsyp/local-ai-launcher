@@ -10,7 +10,7 @@ param(
     [string]$WorkRoot
 )
 
-# Return an exception whose $Kind (Download, Difference or Start) picks the advice in Get-LiveFailureText.
+# Return an exception whose $Kind (Download, Setup, Difference or Start) picks the advice in Get-LiveFailureText.
 function Get-LiveFailure {
     [CmdletBinding()]
     [OutputType([Exception])]
@@ -32,7 +32,9 @@ function Get-LiveFailureText {
         [Parameter(Mandatory)][string]$Message
     )
     switch ($Kind) {
-        'Download' { return "LIVE CHECK: a download failed, so nothing was checked. $Message Re-run the failed job." }
+        # uv and npm end the same way for a lost connection and for a pin that cannot be installed.
+        'Download' { return "LIVE CHECK: an install step failed, so nothing was checked. $Message Re-run the failed job; if it fails the same way, look at the pins in this pull request." }
+        'Setup' { return "LIVE CHECK: a setup step failed, so nothing was checked. $Message" }
         'Difference' { return "LIVE CHECK: the real files server differs from what the launcher expects. $Message Look at the version change in this pull request." }
         'Start' { return "LIVE CHECK: mcpo did not start. $Message Its log is printed above." }
         default { return "LIVE CHECK: the check stopped. $Message" }
@@ -84,7 +86,7 @@ function Get-LiveFreePort {
 }
 
 # Return what $Action returns, trying it up to $Tries times while a program it runs fails, as a download does.
-# Any other failure is a real difference, such as pins that disagree, and is thrown at once.
+# Any other failure, such as pins that disagree or a full disk, is thrown at once as a setup failure.
 function Invoke-LiveDownload {
     [CmdletBinding()]
     param(
@@ -99,7 +101,7 @@ function Invoke-LiveDownload {
         } catch {
             $message = $_.Exception.Message
             # The words Invoke-Native throws when uv, npm or pip ends with an error.
-            if ($message -notmatch 'failed with exit code') { throw (Get-LiveFailure -Kind 'Difference' -Message $message) }
+            if ($message -notmatch 'failed with exit code') { throw (Get-LiveFailure -Kind 'Setup' -Message $message) }
             if ($try -ge $Tries) { throw (Get-LiveFailure -Kind 'Download' -Message "$What failed $Tries times: $message") }
             Write-Host "$What failed (try $try of $Tries): $message Trying again."
             Start-Sleep -Seconds $DelaySeconds
@@ -135,7 +137,8 @@ function Get-LiveSetting {
         [Parameter(Mandatory)][int]$Port
     )
     $null = [IO.Directory]::CreateDirectory($Paths.Root)
-    [IO.File]::WriteAllText($Paths.Settings, "@{ Files = @{ Root = '$Root' }; Ports = @{ Files = $Port } }")
+    $quoted = $Root -replace "'", "''"
+    [IO.File]::WriteAllText($Paths.Settings, "@{ Files = @{ Root = '$quoted' }; Ports = @{ Files = $Port } }")
     return Get-LocalAISettings -DefaultsPath (Join-Path $RepoRoot 'config\defaults.psd1') -UserPath $Paths.Settings
 }
 
@@ -263,22 +266,30 @@ function Invoke-LiveCheck {
         } catch {
             throw (Get-LiveFailure -Kind 'Difference' -Message $_.Exception.Message)
         }
-        Write-Host "LIVE CHECK: passed. mcpo serves $version with exactly the tools $(@($settings.Files.AllowedTools) -join ', ') and one folder."
+        $verdict = "LIVE CHECK: passed. mcpo serves $version with exactly the tools $(@($settings.Files.AllowedTools) -join ', ') and one folder."
         $code = 0
     } catch {
         $code = 1
-        Write-Host (Get-LiveFailureText -Kind ([string]$_.Exception.Data['LiveKind']) -Message $_.Exception.Message)
+        $verdict = Get-LiveFailureText -Kind ([string]$_.Exception.Data['LiveKind']) -Message $_.Exception.Message
     } finally {
         foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $savedVariables[$name], 'Process') }
         # What still runs decides, not the stop's result: taskkill also reports a failure when a process of the tree ended by
         # itself first, as uv's mcpo.exe does once its Python is gone.
-        if ($launched) { $null = Stop-LocalAIService -Name 'Files' -Record $launched }
+        if ($launched) {
+            try {
+                $null = Stop-LocalAIService -Name 'Files' -Record $launched
+            } catch {
+                Write-Host "The stop failed: $($_.Exception.Message)"
+            }
+        }
         if (-not (Wait-LiveProcessEnd -WorkRoot $WorkRoot -TimeoutSeconds $StopTimeoutSeconds)) {
+            $verdict = if ($code -eq 0) { 'LIVE CHECK: mcpo answered correctly, but could not be stopped.' } else { "$verdict mcpo could not be stopped either." }
             $code = 1
-            Write-Host 'LIVE CHECK: mcpo could not be stopped.'
         }
         Clear-LiveFolder -Path $WorkRoot
     }
+    # Last, because the stop prints its own lines and a reader looks at the end of the log.
+    Write-Host $verdict
     return $code
 }
 
@@ -290,7 +301,8 @@ function Invoke-LiveWithLimit {
     param(
         [Parameter(Mandatory)][string]$ScriptPath,
         [Parameter(Mandatory)][string]$WorkRoot,
-        [int]$TimeoutSeconds = 300
+        [int]$TimeoutSeconds = 300,
+        [int]$StopTimeoutSeconds = 10
     )
     $startInfo = New-Object Diagnostics.ProcessStartInfo -ArgumentList (Join-Path $PSHOME 'powershell.exe')
     $startInfo.UseShellExecute = $false
@@ -300,9 +312,14 @@ function Invoke-LiveWithLimit {
     try {
         if ($process.WaitForExit($TimeoutSeconds * 1000)) { return $process.ExitCode }
         $said = New-Object System.Collections.Generic.List[string]
-        # 128: the process ended before taskkill reached it. 255: a process of its tree did.
-        $null = Invoke-Native -FilePath 'taskkill' -ArgumentList '/PID', ([string]$process.Id), '/T', '/F' -SuccessCode 0, 128, 255 -Capture $said
-        $null = $process.WaitForExit(10000)
+        try {
+            # 128: the process ended before taskkill reached it. 255: a process of its tree did.
+            $null = Invoke-Native -FilePath 'taskkill' -ArgumentList '/PID', ([string]$process.Id), '/T', '/F' -SuccessCode 0, 128, 255 -Capture $said
+        } catch {
+            Write-Host "taskkill failed: $($_.Exception.Message) $($said -join ' ')"
+        }
+        # The child's own arguments name the folder, so this also ends a child that taskkill missed.
+        $null = Wait-LiveProcessEnd -WorkRoot $WorkRoot -TimeoutSeconds $StopTimeoutSeconds
         Clear-LiveFolder -Path $WorkRoot
         Write-Host "LIVE CHECK: it did not finish within $TimeoutSeconds s and was stopped. Re-run the failed job; if it fails again, look at the last step above."
         return 1
