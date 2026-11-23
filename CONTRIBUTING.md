@@ -115,6 +115,10 @@ that changes the release tooling, `.gitattributes` or `VERSION`. CI fails on any
 test. A Pester test skips only where the runner lacks what it needs, such as 8.3 short names;
 the Pester summary line shows how many skipped.
 
+On a CI runner, `ci/test.ps1` ends with `ci/files-server-live.ps1`, which installs the pinned mcpo
+and files server and fails unless they offer exactly `Files.AllowedTools` and one folder. Its last
+line says whether to re-run the job (a failed download) or look at the change (a real difference).
+
 ## Test data
 
 The tests use made-up values only: the Windows homes of users `User` and `Test`, addresses from

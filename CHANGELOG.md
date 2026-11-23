@@ -9,6 +9,10 @@ All notable changes to this project are listed here. The format follows
 
 ### Added
 
+- CI now installs the pinned mcpo and files server on a clean Windows runner, starts them with the
+  launcher's settings on a temporary folder, and fails unless they offer exactly the five read
+  tools and that one folder. It uses uv 0.13.7, pinned with a hash in
+  `tests/requirements-live.txt`, only in CI. Nothing changes in what the launcher does or ships.
 - The Start menu shortcut Update Local AI, which runs `local-ai.cmd update`. `local-ai
   shortcuts` creates it beside Start, Stop and Status Local AI, and `uninstall` and
   `shortcuts -Remove` remove it with them. The refusal inside a packaged app and its line in

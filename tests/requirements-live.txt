@@ -1,0 +1,3 @@
+# uv for the live check of the files server (ci\files-server-live.ps1). Only CI installs it, with
+# --require-hashes; the hash is that of the Windows x64 wheel. Dependabot proposes updates.
+uv==0.13.7 --hash=sha256:2835e2ab397d0db86323b9975dce75ecd76aa9cfa0d6a2aea84734aae7f8c9b3
