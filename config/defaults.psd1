@@ -325,7 +325,7 @@
         # most likely to flood a 32K context. --read-only already withholds the write tools; listing
         # them here keeps them hidden should the server ever start without it.
         DisabledTools        = @('read_file', 'write_file', 'edit_file', 'create_directory', 'move_file', 'append_file', 'copy_file', 'read_multiple_files',
-            'read_media_file', 'list_directory_with_sizes')
+            'read_media_file', 'directory_tree', 'list_directory_with_sizes')
         # mcpo is not started while Root holds a file or folder whose name matches one of these, in
         # any case, because server-filesystem has no deny list of its own; a matching folder, such as
         # .git or .ssh, counts as a whole. Root must also hold no folder start cannot list. The check
