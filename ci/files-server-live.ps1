@@ -160,8 +160,9 @@ function Clear-LiveFolder {
     }
 }
 
-# Return $true once no process names $WorkRoot on its command line, which covers cmd, mcpo, its Python and the node server. After
-# $TimeoutSeconds, ends those that remain and returns $false. Leaves out this process, whose own arguments name the folder.
+# Return $true once no process runs from $WorkRoot or names it on its command line, which covers cmd, uv, mcpo, its Python and the
+# node server. A listing that fails is tried again. After $TimeoutSeconds, ends those last seen and returns $false. Leaves out this
+# process, whose own arguments name the folder.
 function Wait-LiveProcessEnd {
     [CmdletBinding()]
     [OutputType([bool])]
@@ -170,23 +171,55 @@ function Wait-LiveProcessEnd {
         [int]$TimeoutSeconds = 10
     )
     $timer = [Diagnostics.Stopwatch]::StartNew()
+    $left = @()
     while ($true) {
+        $problem = ''
         try {
             $all = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
+            $left = @($all | Where-Object {
+                    $_.ProcessId -ne $PID -and "$($_.ExecutablePath) $($_.CommandLine)".IndexOf($WorkRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0
+                })
+            if ($left.Count -eq 0) { return $true }
         } catch {
-            Write-Host "Cannot list the running processes: $($_.Exception.Message)"
-            return $false
+            $problem = $_.Exception.Message
         }
-        $left = @($all | Where-Object {
-                $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.IndexOf($WorkRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0
-            })
-        if ($left.Count -eq 0) { return $true }
         if ($timer.Elapsed.TotalSeconds -ge $TimeoutSeconds) { break }
         Start-Sleep -Milliseconds 500
     }
-    Write-Host "Still running after the stop: $(@($left | ForEach-Object { "$($_.Name) (PID $($_.ProcessId))" }) -join ', ')."
+    if ($problem) { Write-Host "Cannot list the running processes: $problem" }
+    if ($left.Count -gt 0) { Write-Host "Still running after the stop: $(@($left | ForEach-Object { "$($_.Name) (PID $($_.ProcessId))" }) -join ', ')." }
     foreach ($process in $left) { Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue }
     return $false
+}
+
+# Stop mcpo through the launcher. A stop that throws only prints, as Wait-LiveProcessEnd judges what still runs.
+function Invoke-LiveStop {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Record
+    )
+    try {
+        $null = Stop-LocalAIService -Name 'Files' -Record $Record
+    } catch {
+        Write-Host "The stop failed: $($_.Exception.Message)"
+    }
+}
+
+# Print the last $Lines lines of both logs of $Service, which the removal of the work folder would lose.
+function Write-LiveLog {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Service,
+        [int]$Lines = 30
+    )
+    foreach ($log in $Service.ErrLog, $Service.OutLog) {
+        Write-Host "--- Last $Lines lines of $(Split-Path -Path $log -Leaf) ---"
+        try {
+            foreach ($line in @(Get-Content -LiteralPath $log -Tail $Lines -ErrorAction Stop)) { Write-Host $line }
+        } catch {
+            Write-Host "It cannot be read: $($_.Exception.Message)"
+        }
+    }
 }
 
 # Install and start the real parts under $WorkRoot and check once what mcpo offers, with Get-FilesServerVersion, the check 'start' makes.
@@ -253,11 +286,15 @@ function Invoke-LiveCheck {
                 $why = $_.Exception.Message
                 # The likely cause is another program taking the port after Get-LiveFreePort looked.
                 if ($launched.Process.HasExited -and $attempt -eq 1) {
-                    $null = Stop-LocalAIService -Name 'Files' -Record $launched
+                    Invoke-LiveStop -Record $launched
                     $launched = $null
                     Write-Host "mcpo ended on port $port, so it gets one more try on a new port. $why"
                     continue
                 }
+                # Wait-LocalAIService prints the logs only for a process that ended.
+                if ($why -notlike '*exited with code*') { Write-LiveLog -Service $service }
+                # Its message names the log files, which are gone by the time the verdict prints.
+                $why = $why.Replace("Its logs are $($service.ErrLog) and $($service.OutLog).", '').Trim()
                 throw (Get-LiveFailure -Kind 'Start' -Message $why)
             }
         }
@@ -275,13 +312,7 @@ function Invoke-LiveCheck {
         foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $savedVariables[$name], 'Process') }
         # What still runs decides, not the stop's result: taskkill also reports a failure when a process of the tree ended by
         # itself first, as uv's mcpo.exe does once its Python is gone.
-        if ($launched) {
-            try {
-                $null = Stop-LocalAIService -Name 'Files' -Record $launched
-            } catch {
-                Write-Host "The stop failed: $($_.Exception.Message)"
-            }
-        }
+        if ($launched) { Invoke-LiveStop -Record $launched }
         if (-not (Wait-LiveProcessEnd -WorkRoot $WorkRoot -TimeoutSeconds $StopTimeoutSeconds)) {
             $verdict = if ($code -eq 0) { 'LIVE CHECK: mcpo answered correctly, but could not be stopped.' } else { "$verdict mcpo could not be stopped either." }
             $code = 1
@@ -318,7 +349,7 @@ function Invoke-LiveWithLimit {
         } catch {
             Write-Host "taskkill failed: $($_.Exception.Message) $($said -join ' ')"
         }
-        # The child's own arguments name the folder, so this also ends a child that taskkill missed.
+        # The child names the folder and uv runs from it, so this also ends what taskkill missed.
         $null = Wait-LiveProcessEnd -WorkRoot $WorkRoot -TimeoutSeconds $StopTimeoutSeconds
         Clear-LiveFolder -Path $WorkRoot
         Write-Host "LIVE CHECK: it did not finish within $TimeoutSeconds s and was stopped. Re-run the failed job; if it fails again, look at the last step above."

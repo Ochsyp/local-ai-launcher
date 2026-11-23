@@ -150,6 +150,7 @@ public static class McpoStandIn {
         File.AppendAllText(started, port + " " + System.Diagnostics.Process.GetCurrentProcess().Id + Environment.NewLine);
         string mode = File.ReadAllText(Path.Combine(folder, "mode.txt")).Trim();
         if (mode == "ExitAlways" || (mode == "ExitFirst" && earlier == 0)) { return 3; }
+        if (mode == "NoRoutes") { Console.Error.WriteLine("The node server did not start."); }
         byte[] spec = File.ReadAllBytes(Path.Combine(folder, "spec.json"));
         byte[] listed = File.ReadAllBytes(Path.Combine(folder, "listed.json"));
         TcpListener listener = new TcpListener(IPAddress.Loopback, port);
@@ -189,7 +190,7 @@ public static class McpoStandIn {
         # Run the live check against the stand-in with the answer $Change makes from the correct one.
         # Returns @{ Code; Said; Work; Started (one 'port PID' line per start) }.
         function Invoke-StandInCheck {
-            param([hashtable]$Change = @{}, [int]$StopTimeoutSeconds = 10)
+            param([hashtable]$Change = @{}, [int]$StopTimeoutSeconds = 10, [int]$StartTimeoutSeconds = 30)
             $answer = @{ Version = $serverVersion; Tools = $allowedTools; ExtraFolders = @(); Mode = 'Serve' }
             foreach ($key in $Change.Keys) { $answer[$key] = $Change[$key] }
             $work = Join-Path $TestDrive ('work-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -206,7 +207,7 @@ public static class McpoStandIn {
             Remove-Item -LiteralPath $startedFile -Force -ErrorAction SilentlyContinue
             $script:said = New-Object System.Collections.Generic.List[string]
             Mock Write-Host { $script:said.Add([string]$Object) }
-            $code = Invoke-LiveCheck -RepoRoot $repoRoot -WorkRoot $work -ToolCache 'unused' -StartTimeoutSeconds 30 -StopTimeoutSeconds $StopTimeoutSeconds
+            $code = Invoke-LiveCheck -RepoRoot $repoRoot -WorkRoot $work -ToolCache 'unused' -StartTimeoutSeconds $StartTimeoutSeconds -StopTimeoutSeconds $StopTimeoutSeconds
             return @{
                 Code    = $code
                 Said    = ($script:said -join "`n")
@@ -278,8 +279,36 @@ public static class McpoStandIn {
         $run = Invoke-StandInCheck -Change @{ Mode = 'ExitAlways' }
         $run.Code | Should -Be 1
         $run.Said | Should -Match 'mcpo did not start'
+        $run.Last | Should -Not -Match ([regex]::Escape($run.Work)) -Because 'the folder of its logs is gone by then'
         $run.Started.Count | Should -Be 2
         Test-Path -LiteralPath $run.Work | Should -BeFalse
+    }
+
+    It 'prints the logs of an mcpo that stays up without routes, and names no deleted log' {
+        $run = Invoke-StandInCheck -Change @{ Mode = 'NoRoutes'; Tools = @() } -StartTimeoutSeconds 3
+        $run.Code | Should -Be 1
+        $run.Said | Should -Match 'The node server did not start\.'
+        $run.Last | Should -Match 'mcpo did not start'
+        $run.Last | Should -Match 'offers no routes'
+        $run.Last | Should -Match 'printed above'
+        $run.Last | Should -Not -Match ([regex]::Escape($run.Work))
+        $run.Started.Count | Should -Be 1 -Because 'an mcpo that runs did not lose its port'
+        Test-StandInGone $run.Started | Should -BeTrue
+        Test-Path -LiteralPath $run.Work | Should -BeFalse
+    }
+
+    It 'still tries the new port when the stop of the first mcpo throws' {
+        $script:stops = 0
+        Mock Stop-LocalAIService {
+            $script:stops++
+            if ($script:stops -eq 1) { throw 'Get-NetTCPConnection failed.' }
+            $null = & taskkill.exe /PID $Record.Pid /T /F 2>&1
+            'stopped'
+        }
+        $run = Invoke-StandInCheck -Change @{ Mode = 'ExitFirst' }
+        $run.Code | Should -Be 0 -Because $run.Said
+        $run.Started.Count | Should -Be 2
+        Test-StandInGone $run.Started | Should -BeTrue
     }
 
     It 'reports a failed download with the advice to re-run, and starts nothing' {
@@ -337,6 +366,55 @@ public static class McpoStandIn {
     It 'handles a folder path that holds an apostrophe' {
         $settings = Get-LiveSetting -RepoRoot $repoRoot -Paths (Get-LocalAIPaths -Root (Join-Path $TestDrive "quote'd\local-ai")) -Root "C:\quote'd\root" -Port 18189
         $settings.Files.Root | Should -BeExactly "C:\quote'd\root"
+    }
+}
+
+Describe 'Wait-LiveProcessEnd' {
+    BeforeEach {
+        Mock Write-Host {}
+        $work = Join-Path $TestDrive ('end-' + [guid]::NewGuid().ToString('N'))
+        $null = New-Item -ItemType Directory -Path $work
+    }
+
+    It 'does not fail on one process listing that fails' {
+        $script:listings = 0
+        Mock Get-CimInstance {
+            $script:listings++
+            if ($script:listings -eq 1) { throw 'WMI is busy.' }
+        }
+        Wait-LiveProcessEnd -WorkRoot $work -TimeoutSeconds 5 | Should -BeTrue
+        $script:listings | Should -Be 2
+    }
+
+    It 'returns false, saying why, when no listing works within the limit' {
+        Mock Get-CimInstance { throw 'WMI is busy.' }
+        Wait-LiveProcessEnd -WorkRoot $work -TimeoutSeconds 1 | Should -BeFalse
+        Should -Invoke Write-Host -ParameterFilter { $Object -like '*WMI is busy*' }
+    }
+
+    It 'ends a process that runs from the folder without naming it on its command line, as uv can' {
+        # On disk, as Windows reports a program's path with long names and the runner's temp path can be an 8.3 name.
+        $long = & (Get-Module LocalAI) { param($Path) (Resolve-OnDiskPath -Path $Path).Path } $work
+        Add-Type -OutputType ConsoleApplication -OutputAssembly (Join-Path $long 'live-uv.exe') -TypeDefinition (
+            'public static class LiveUv { public static void Main() { System.Threading.Thread.Sleep(120000); } }')
+        $savedPath = $env:Path
+        try {
+            # A bare name on the command line, which Windows finds through the Path.
+            $env:Path = "$long;$env:Path"
+            $startInfo = New-Object Diagnostics.ProcessStartInfo -ArgumentList 'live-uv.exe'
+            $startInfo.UseShellExecute = $false
+            $startInfo.CreateNoWindow = $true
+            $running = [Diagnostics.Process]::Start($startInfo)
+        } finally {
+            $env:Path = $savedPath
+        }
+        try {
+            Wait-LiveProcessEnd -WorkRoot $long -TimeoutSeconds 1 | Should -BeFalse
+            $running.WaitForExit(5000) | Should -BeTrue
+        } finally {
+            if (-not $running.HasExited) { $running.Kill() }
+            $running.Dispose()
+        }
     }
 }
 
