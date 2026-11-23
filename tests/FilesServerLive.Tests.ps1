@@ -14,91 +14,6 @@ BeforeAll {
     $defaults = Get-LocalAISettings -DefaultsPath (Join-Path $repoRoot 'config\defaults.psd1')
     $allowedTools = @($defaults.Files.AllowedTools)
     $serverVersion = $defaults.Files.ServerVersion
-
-    # The stand-in takes mcpo's arguments, reads the folder from the config New-McpoConfig wrote, and
-    # answers as answer.json in its folder says. Every start adds its port and PID to started.txt.
-    $standInDir = Join-Path $TestDrive 'stand-in'
-    $null = New-Item -ItemType Directory -Path $standInDir
-    $standInCmd = Join-Path $standInDir 'mcpo.cmd'
-    Set-Content -LiteralPath $standInCmd -Encoding Ascii -Value (
-        '@"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0stand-in.ps1" %*')
-    Set-Content -LiteralPath (Join-Path $standInDir 'stand-in.ps1') -Encoding Ascii -Value @'
-$port = 0
-$config = ''
-for ($i = 0; $i -lt $args.Count; $i++) {
-    if ($args[$i] -eq '--port') { $port = [int]$args[$i + 1] }
-    if ($args[$i] -eq '--config') { $config = [string]$args[$i + 1] }
-}
-$started = Join-Path $PSScriptRoot 'started.txt'
-$earlier = @(if (Test-Path -LiteralPath $started) { Get-Content -LiteralPath $started }).Count
-Add-Content -LiteralPath $started -Value "$port $PID"
-$answer = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'answer.json') -Raw | ConvertFrom-Json
-if ($answer.ExitAlways -or ($answer.ExitFirst -and $earlier -eq 0)) { exit 3 }
-$root = @((Get-Content -LiteralPath $config -Raw | ConvertFrom-Json).mcpServers.files.args)[-1]
-$paths = @{}
-foreach ($tool in $answer.Tools) { $paths["/$tool"] = @{ post = @{ operationId = $tool } } }
-$spec = ConvertTo-Json -Depth 6 -InputObject @{ openapi = '3.1.0'; info = @{ title = 'secure-filesystem-server'; version = $answer.Version }; paths = $paths }
-$listed = ConvertTo-Json -InputObject ((@('Allowed directories:', $root) + @($answer.ExtraFolders)) -join "`n")
-$listener = New-Object Net.Sockets.TcpListener ([Net.IPAddress]::Loopback), $port
-$listener.Start()
-while ($true) {
-    $client = $listener.AcceptTcpClient()
-    try {
-        $stream = $client.GetStream()
-        $reader = New-Object IO.StreamReader -ArgumentList $stream, ([Text.Encoding]::ASCII)
-        $first = $reader.ReadLine()
-        $length = 0
-        $expect = $false
-        while ($line = $reader.ReadLine()) {
-            if ($line -match '^Content-Length:\s*(\d+)') { $length = [int]$Matches[1] }
-            if ($line -match '^Expect:\s*100') { $expect = $true }
-        }
-        if ($expect) {
-            $go = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 100 Continue`r`n`r`n")
-            $stream.Write($go, 0, $go.Length)
-        }
-        if ($length -gt 0) { $null = $reader.Read((New-Object char[] $length), 0, $length) }
-        $body = [Text.Encoding]::UTF8.GetBytes($(if ($first -like '*openapi.json*') { $spec } else { $listed }))
-        $head = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Type: application/json`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n")
-        $stream.Write($head, 0, $head.Length)
-        $stream.Write($body, 0, $body.Length)
-        $stream.Flush()
-    } catch {
-        Write-Output "The stand-in dropped a request: $($_.Exception.Message)"
-    } finally {
-        $client.Close()
-    }
-}
-'@
-
-    # Run the live check against the stand-in with the answer $Change makes from the correct one.
-    # Returns @{ Code; Said; Work; Started (one 'port PID' line per start) }.
-    function Invoke-StandInCheck {
-        param([hashtable]$Change = @{})
-        $answer = @{ Version = $serverVersion; Tools = $allowedTools; ExtraFolders = @(); ExitFirst = $false; ExitAlways = $false }
-        foreach ($key in $Change.Keys) { $answer[$key] = $Change[$key] }
-        Set-Content -LiteralPath (Join-Path $standInDir 'answer.json') -Encoding Ascii -Value (ConvertTo-Json -InputObject $answer -Depth 4)
-        Remove-Item -LiteralPath (Join-Path $standInDir 'started.txt') -Force -ErrorAction SilentlyContinue
-        $work = Join-Path $TestDrive ('work-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-        $script:said = New-Object System.Collections.Generic.List[string]
-        Mock Write-Host { $script:said.Add([string]$Object) }
-        $code = Invoke-LiveCheck -RepoRoot $repoRoot -WorkRoot $work -ToolCache 'unused' -StartTimeoutSeconds 30
-        $startedFile = Join-Path $standInDir 'started.txt'
-        return @{
-            Code    = $code
-            Said    = ($script:said -join "`n")
-            Work    = $work
-            Started = @(if (Test-Path -LiteralPath $startedFile) { Get-Content -LiteralPath $startedFile })
-        }
-    }
-
-    # $true when no stand-in of the 'port PID' lines $Started still runs.
-    function Test-StandInGone([string[]]$Started) {
-        foreach ($line in $Started) {
-            if (Get-Process -Id ([int]($line -split ' ')[1]) -ErrorAction SilentlyContinue) { return $false }
-        }
-        return $true
-    }
 }
 
 Describe 'Get-LiveNodePath' {
@@ -195,26 +110,124 @@ Describe 'Get-LiveFailureText' {
 }
 
 Describe 'Invoke-LiveCheck against a stand-in for mcpo' {
+    BeforeAll {
+        # A compiled program, as a PowerShell stand-in costs seconds per start on a CI runner. It answers with
+        # spec.json and listed.json from its folder, follows mode.txt, and adds its port and PID to started.txt.
+        $standInDir = Join-Path $TestDrive 'stand-in'
+        $null = New-Item -ItemType Directory -Path $standInDir
+        $standIn = Join-Path $standInDir 'mcpo.exe'
+        Add-Type -OutputType ConsoleApplication -OutputAssembly $standIn -TypeDefinition @'
+using System;
+using System.IO;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+
+public static class McpoStandIn {
+    public static int Main(string[] args) {
+        int port = 0;
+        for (int i = 0; i + 1 < args.Length; i++) { if (args[i] == "--port") { port = int.Parse(args[i + 1]); } }
+        string folder = AppDomain.CurrentDomain.BaseDirectory;
+        string started = Path.Combine(folder, "started.txt");
+        int earlier = File.Exists(started) ? File.ReadAllLines(started).Length : 0;
+        File.AppendAllText(started, port + " " + System.Diagnostics.Process.GetCurrentProcess().Id + Environment.NewLine);
+        string mode = File.ReadAllText(Path.Combine(folder, "mode.txt")).Trim();
+        if (mode == "ExitAlways" || (mode == "ExitFirst" && earlier == 0)) { return 3; }
+        byte[] spec = File.ReadAllBytes(Path.Combine(folder, "spec.json"));
+        byte[] listed = File.ReadAllBytes(Path.Combine(folder, "listed.json"));
+        TcpListener listener = new TcpListener(IPAddress.Loopback, port);
+        listener.Start();
+        while (true) {
+            using (TcpClient client = listener.AcceptTcpClient()) {
+                try { Answer(client.GetStream(), spec, listed); } catch (IOException) { }
+            }
+        }
+    }
+
+    static void Answer(NetworkStream stream, byte[] spec, byte[] listed) {
+        StreamReader reader = new StreamReader(stream, Encoding.ASCII);
+        string first = reader.ReadLine();
+        int length = 0;
+        bool expect = false;
+        string line;
+        while (!string.IsNullOrEmpty(line = reader.ReadLine())) {
+            if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase)) { length = int.Parse(line.Substring(15).Trim()); }
+            if (line.StartsWith("Expect:", StringComparison.OrdinalIgnoreCase)) { expect = true; }
+        }
+        if (expect) {
+            byte[] go = Encoding.ASCII.GetBytes("HTTP/1.1 100 Continue\r\n\r\n");
+            stream.Write(go, 0, go.Length);
+        }
+        char[] body = new char[length];
+        for (int read = 0, got = 1; read < length && got > 0; read += got) { got = reader.Read(body, read, length - read); }
+        byte[] answer = first.Contains("openapi.json") ? spec : listed;
+        byte[] head = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + answer.Length + "\r\nConnection: close\r\n\r\n");
+        stream.Write(head, 0, head.Length);
+        stream.Write(answer, 0, answer.Length);
+        stream.Flush();
+    }
+}
+'@
+
+        # Run the live check against the stand-in with the answer $Change makes from the correct one.
+        # Returns @{ Code; Said; Work; Started (one 'port PID' line per start) }.
+        function Invoke-StandInCheck {
+            param([hashtable]$Change = @{}, [int]$StopTimeoutSeconds = 10)
+            $answer = @{ Version = $serverVersion; Tools = $allowedTools; ExtraFolders = @(); Mode = 'Serve' }
+            foreach ($key in $Change.Keys) { $answer[$key] = $Change[$key] }
+            $work = Join-Path $TestDrive ('work-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+            # The folder as the launcher spells it to the server.
+            $root = & (Get-Module LocalAI) { param($Path) (Resolve-OnDiskPath -Path $Path).Path } (Join-Path $work 'root')
+            $routes = @{}
+            foreach ($tool in $answer.Tools) { $routes["/$tool"] = @{ post = @{ operationId = $tool } } }
+            $spec = ConvertTo-Json -Depth 6 -InputObject @{ openapi = '3.1.0'; info = @{ title = 'secure-filesystem-server'; version = $answer.Version }; paths = $routes }
+            $listed = ConvertTo-Json -InputObject ((@('Allowed directories:', $root) + @($answer.ExtraFolders)) -join "`n")
+            [IO.File]::WriteAllText((Join-Path $standInDir 'spec.json'), $spec)
+            [IO.File]::WriteAllText((Join-Path $standInDir 'listed.json'), $listed)
+            [IO.File]::WriteAllText((Join-Path $standInDir 'mode.txt'), $answer.Mode)
+            $startedFile = Join-Path $standInDir 'started.txt'
+            Remove-Item -LiteralPath $startedFile -Force -ErrorAction SilentlyContinue
+            $script:said = New-Object System.Collections.Generic.List[string]
+            Mock Write-Host { $script:said.Add([string]$Object) }
+            $code = Invoke-LiveCheck -RepoRoot $repoRoot -WorkRoot $work -ToolCache 'unused' -StartTimeoutSeconds 30 -StopTimeoutSeconds $StopTimeoutSeconds
+            return @{
+                Code    = $code
+                Said    = ($script:said -join "`n")
+                Work    = $work
+                Started = @(if (Test-Path -LiteralPath $startedFile) { Get-Content -LiteralPath $startedFile })
+            }
+        }
+
+        # $true when no stand-in of the 'port PID' lines $Started still runs.
+        function Test-StandInGone([string[]]$Started) {
+            foreach ($line in $Started) {
+                if (Get-Process -Id ([int]($line -split ' ')[1]) -ErrorAction SilentlyContinue) { return $false }
+            }
+            return $true
+        }
+    }
+
     BeforeEach {
         Mock Install-LiveUv { $TestDrive }
         Mock Get-LiveNodePath { 'X:\node\node.exe' }
-        Mock Install-Mcpo { @{ Version = '0.0.20'; Path = $standInCmd; Python = '3.12.0'; ToolDir = 'X:\tools' } }
+        Mock Install-Mcpo { @{ Version = '0.0.20'; Path = $standIn; Python = '3.12.0'; ToolDir = 'X:\tools' } }
         Mock Install-FilesServerPackage { @{ Script = 'X:\server\dist\index.js'; LockSha256 = 'ab'; Node = '24.22.3' } }
     }
 
-    It 'passes, and leaves no mcpo and no folder behind, when the server offers what the launcher expects' {
+    AfterEach {
+        # A failed test must not leave a stand-in that holds the test drive.
+        Get-Process -Name 'mcpo' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $standIn } | Stop-Process -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'passes, leaves no mcpo and no folder behind, and restores the variables it changed' {
+        $before = $env:LOCALAPPDATA
+        $path = $env:Path
         $run = Invoke-StandInCheck
         $run.Code | Should -Be 0 -Because $run.Said
         $run.Said | Should -Match ([regex]::Escape($serverVersion))
         $run.Started.Count | Should -Be 1
         Test-StandInGone $run.Started | Should -BeTrue
         Test-Path -LiteralPath $run.Work | Should -BeFalse
-    }
-
-    It 'restores the variables it changed' {
-        $before = $env:LOCALAPPDATA
-        $path = $env:Path
-        $null = Invoke-StandInCheck
         $env:LOCALAPPDATA | Should -Be $before
         $env:Path | Should -Be $path
         $env:UV_TOOL_DIR | Should -BeNullOrEmpty
@@ -236,7 +249,7 @@ Describe 'Invoke-LiveCheck against a stand-in for mcpo' {
     }
 
     It 'tries once more on a new port when mcpo cannot start on the first' {
-        $run = Invoke-StandInCheck -Change @{ ExitFirst = $true }
+        $run = Invoke-StandInCheck -Change @{ Mode = 'ExitFirst' }
         $run.Code | Should -Be 0 -Because $run.Said
         $run.Started.Count | Should -Be 2
         ($run.Started[0] -split ' ')[0] | Should -Not -Be ($run.Started[1] -split ' ')[0]
@@ -244,7 +257,7 @@ Describe 'Invoke-LiveCheck against a stand-in for mcpo' {
     }
 
     It 'fails after two starts when mcpo never starts, and cleans up' {
-        $run = Invoke-StandInCheck -Change @{ ExitAlways = $true }
+        $run = Invoke-StandInCheck -Change @{ Mode = 'ExitAlways' }
         $run.Code | Should -Be 1
         $run.Said | Should -Match 'mcpo did not start'
         $run.Started.Count | Should -Be 2
@@ -261,6 +274,27 @@ Describe 'Invoke-LiveCheck against a stand-in for mcpo' {
         $run.Started.Count | Should -Be 0
         Test-Path -LiteralPath $run.Work | Should -BeFalse
     }
+
+    It 'passes when the stop reports a failure although mcpo has ended' {
+        # taskkill exits 255 when a process of the tree ended by itself first, as uv's mcpo.exe does once its Python is gone.
+        Mock Stop-LocalAIService {
+            $null = & taskkill.exe /PID $Record.Pid /T /F 2>&1
+            'failed'
+        }
+        $run = Invoke-StandInCheck
+        $run.Code | Should -Be 0 -Because $run.Said
+        Test-StandInGone $run.Started | Should -BeTrue
+        Test-Path -LiteralPath $run.Work | Should -BeFalse
+    }
+
+    It 'fails, and ends mcpo itself, when mcpo still runs after the stop' {
+        Mock Stop-LocalAIService { 'failed' }
+        $run = Invoke-StandInCheck -StopTimeoutSeconds 1
+        $run.Code | Should -Be 1
+        $run.Said | Should -Match 'could not be stopped'
+        Test-StandInGone $run.Started | Should -BeTrue
+        Test-Path -LiteralPath $run.Work | Should -BeFalse
+    }
 }
 
 Describe 'Invoke-LiveWithLimit' {
@@ -273,24 +307,28 @@ Describe 'Invoke-LiveWithLimit' {
 
     It 'returns the exit code of the check' {
         Set-Content -LiteralPath $child -Value 'exit 7'
-        Invoke-LiveWithLimit -ScriptPath $child -WorkRoot $work -TimeoutSeconds 30 | Should -Be 7
+        Invoke-LiveWithLimit -ScriptPath $child -WorkRoot $work -TimeoutSeconds 60 | Should -Be 7
     }
 
-    It 'ends a check that passes the limit, with its children, and removes its folder' {
-        $pidFile = Join-Path $work 'grandchild.txt'
-        $outside = Join-Path $TestDrive ('grandchild-' + [guid]::NewGuid().ToString('N') + '.txt')
+    It 'ends a check past the limit with its children and removes its folder, also when taskkill finds one already gone' {
+        $marker = Join-Path $TestDrive ('grandchild-' + [guid]::NewGuid().ToString('N') + '.txt')
         Set-Content -LiteralPath $child -Value @"
-`$grandchild = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 60' -WindowStyle Hidden -PassThru
-Set-Content -LiteralPath '$outside' -Value `$grandchild.Id
-Set-Content -LiteralPath '$pidFile' -Value `$grandchild.Id
-Start-Sleep -Seconds 60
+`$grandchild = Start-Process -FilePath 'ping.exe' -ArgumentList '-n 120 127.0.0.1' -WindowStyle Hidden -PassThru
+Set-Content -LiteralPath '$marker' -Value `$grandchild.Id
+Start-Sleep -Seconds 120
 "@
-        $code = Invoke-LiveWithLimit -ScriptPath $child -WorkRoot $work -TimeoutSeconds 6
+        # Ends the tree as taskkill does and exits 255, its code when a process of the tree ended by itself first.
+        Mock Invoke-Native {
+            $null = & taskkill.exe /PID $ArgumentList[1] /T /F 2>&1
+            if ($SuccessCode -notcontains 255) { throw "'taskkill' failed with exit code 255." }
+            255
+        }
+        $code = Invoke-LiveWithLimit -ScriptPath $child -WorkRoot $work -TimeoutSeconds 15
         $code | Should -Be 1
-        Should -Invoke Write-Host -ParameterFilter { $Object -like '*did not finish within 6 s*' }
+        Should -Invoke Write-Host -ParameterFilter { $Object -like '*did not finish within 15 s*' }
         Test-Path -LiteralPath $work | Should -BeFalse
-        Test-Path -LiteralPath $outside | Should -BeTrue -Because 'the child must have started its own child before the limit'
-        Get-Process -Id ([int](Get-Content -LiteralPath $outside)) -ErrorAction SilentlyContinue | Should -BeNullOrEmpty
+        Test-Path -LiteralPath $marker | Should -BeTrue -Because 'the child must have started its own child before the limit'
+        Get-Process -Id ([int](Get-Content -LiteralPath $marker)) -ErrorAction SilentlyContinue | Should -BeNullOrEmpty
     }
 }
 
@@ -309,16 +347,19 @@ Describe 'files-server-live.ps1 outside CI' {
 
 Describe 'ci\test.ps1' {
     BeforeAll {
-        # A copy of ci\test.ps1 with stand-ins for what it runs: each writes its name to calls.txt and exits with
-        # the code in its STAND_IN_ variable.
+        # A copy of ci\test.ps1 with cmd stand-ins for powershell and python, which start in milliseconds. Each
+        # writes what it was asked to run to calls.txt and exits with the code in its STAND_IN_ variable.
         $stage = Join-Path $TestDrive 'stage'
         $bin = Join-Path $TestDrive 'stage-bin'
         $calls = Join-Path $TestDrive 'stage-calls.txt'
         foreach ($folder in (Join-Path $stage 'ci'), (Join-Path $stage 'tests'), $bin) { $null = New-Item -ItemType Directory -Path $folder }
         Copy-Item -LiteralPath (Join-Path $repoRoot 'ci\test.ps1') -Destination (Join-Path $stage 'ci\test.ps1')
         Set-Content -LiteralPath (Join-Path $stage 'tests\requirements.txt') -Value ''
-        Set-Content -LiteralPath (Join-Path $stage 'tests\run-checks.ps1') -Value "Add-Content -LiteralPath '$calls' -Value 'pester'; exit [int]`$env:STAND_IN_PESTER"
-        Set-Content -LiteralPath (Join-Path $stage 'ci\files-server-live.ps1') -Value "Add-Content -LiteralPath '$calls' -Value 'live'; exit [int]`$env:STAND_IN_LIVE"
+        Set-Content -LiteralPath (Join-Path $bin 'powershell.cmd') -Encoding Ascii -Value @"
+@echo %~n5>>"$calls"
+@if "%~n5"=="run-checks" exit /b %STAND_IN_PESTER%
+@exit /b %STAND_IN_LIVE%
+"@
         Set-Content -LiteralPath (Join-Path $bin 'python.cmd') -Encoding Ascii -Value @"
 @echo python>>"$calls"
 @if "%2"=="pip" exit /b 0
@@ -333,11 +374,12 @@ Describe 'ci\test.ps1' {
             Remove-Item -LiteralPath $calls -Force -ErrorAction SilentlyContinue
             try {
                 $env:GITHUB_ACTIONS = $Actions
-                $env:Path = "$bin;$env:Path"
                 $env:STAND_IN_PESTER = $Pester
                 $env:STAND_IN_UNITTEST = $Unittest
                 $env:STAND_IN_LIVE = $Live
-                $null = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $stage 'ci\test.ps1') 2>&1
+                $real = Join-Path $PSHOME 'powershell.exe'
+                $env:Path = "$bin;$env:Path"
+                $null = & $real -NoProfile -ExecutionPolicy Bypass -File (Join-Path $stage 'ci\test.ps1') 2>&1
                 $code = $LASTEXITCODE
             } finally {
                 $env:GITHUB_ACTIONS = $savedActions
@@ -353,33 +395,26 @@ Describe 'ci\test.ps1' {
     It 'does not run the live check on a PC' {
         $run = Invoke-TestStage -Actions ''
         $run.Code | Should -Be 0
-        $run.Calls | Should -Not -Contain 'live'
+        $run.Calls | Should -Contain 'run-checks'
+        $run.Calls | Should -Not -Contain 'files-server-live'
     }
 
-    It 'does not run it for a GITHUB_ACTIONS that is not exactly true' {
-        (Invoke-TestStage -Actions 'false').Calls | Should -Not -Contain 'live'
-    }
-
-    It 'runs it last on a CI runner' {
-        $run = Invoke-TestStage -Actions 'true'
-        $run.Code | Should -Be 0
-        $run.Calls[-1] | Should -Be 'live'
-    }
-
-    It 'exits with the code of a failed live check' {
-        (Invoke-TestStage -Actions 'true' -Live 5).Code | Should -Be 5
+    It 'runs it last on a CI runner and exits with its code' {
+        $run = Invoke-TestStage -Actions 'true' -Live 5
+        $run.Code | Should -Be 5
+        $run.Calls[-1] | Should -Be 'files-server-live'
     }
 
     It 'does not run it after a failed Pester run' {
         $run = Invoke-TestStage -Actions 'true' -Pester 1
         $run.Code | Should -Be 1
-        $run.Calls | Should -Not -Contain 'live'
+        $run.Calls | Should -Not -Contain 'files-server-live'
     }
 
     It 'does not run it after failed image gate tests' {
         $run = Invoke-TestStage -Actions 'true' -Unittest 4
         $run.Code | Should -Be 4
-        $run.Calls | Should -Not -Contain 'live'
+        $run.Calls | Should -Not -Contain 'files-server-live'
     }
 }
 

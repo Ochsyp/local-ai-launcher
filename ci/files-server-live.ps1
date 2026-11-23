@@ -157,6 +157,35 @@ function Clear-LiveFolder {
     }
 }
 
+# Return $true once no process names $WorkRoot on its command line, which covers cmd, mcpo, its Python and the node server. After
+# $TimeoutSeconds, ends those that remain and returns $false. Leaves out this process, whose own arguments name the folder.
+function Wait-LiveProcessEnd {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][string]$WorkRoot,
+        [int]$TimeoutSeconds = 10
+    )
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    while ($true) {
+        try {
+            $all = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
+        } catch {
+            Write-Host "Cannot list the running processes: $($_.Exception.Message)"
+            return $false
+        }
+        $left = @($all | Where-Object {
+                $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.IndexOf($WorkRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0
+            })
+        if ($left.Count -eq 0) { return $true }
+        if ($timer.Elapsed.TotalSeconds -ge $TimeoutSeconds) { break }
+        Start-Sleep -Milliseconds 500
+    }
+    Write-Host "Still running after the stop: $(@($left | ForEach-Object { "$($_.Name) (PID $($_.ProcessId))" }) -join ', ')."
+    foreach ($process in $left) { Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue }
+    return $false
+}
+
 # Install and start the real parts under $WorkRoot and check once what mcpo offers, with Get-FilesServerVersion, the check 'start' makes.
 # Returns the exit code: 0 for a pass, else 1 after a last line that says what to do. Ends mcpo, removes $WorkRoot and restores the variables.
 function Invoke-LiveCheck {
@@ -166,7 +195,8 @@ function Invoke-LiveCheck {
         [Parameter(Mandatory)][string]$RepoRoot,
         [Parameter(Mandatory)][string]$WorkRoot,
         [string]$ToolCache = $env:RUNNER_TOOL_CACHE,
-        [int]$StartTimeoutSeconds = 60
+        [int]$StartTimeoutSeconds = 60,
+        [int]$StopTimeoutSeconds = 10
     )
     $names = 'LOCALAPPDATA', 'Path', 'UV_CACHE_DIR', 'UV_TOOL_DIR', 'UV_TOOL_BIN_DIR', 'UV_PYTHON_INSTALL_DIR', 'UV_PYTHON_BIN_DIR'
     $savedVariables = @{}
@@ -239,14 +269,14 @@ function Invoke-LiveCheck {
         $code = 1
         Write-Host (Get-LiveFailureText -Kind ([string]$_.Exception.Data['LiveKind']) -Message $_.Exception.Message)
     } finally {
-        if ($launched) {
-            $result = Stop-LocalAIService -Name 'Files' -Record $launched
-            if ($result -eq 'failed') {
-                $code = 1
-                Write-Host 'LIVE CHECK: mcpo could not be stopped.'
-            }
-        }
         foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $savedVariables[$name], 'Process') }
+        # What still runs decides, not the stop's result: taskkill also reports a failure when a process of the tree ended by
+        # itself first, as uv's mcpo.exe does once its Python is gone.
+        if ($launched) { $null = Stop-LocalAIService -Name 'Files' -Record $launched }
+        if (-not (Wait-LiveProcessEnd -WorkRoot $WorkRoot -TimeoutSeconds $StopTimeoutSeconds)) {
+            $code = 1
+            Write-Host 'LIVE CHECK: mcpo could not be stopped.'
+        }
         Clear-LiveFolder -Path $WorkRoot
     }
     return $code
@@ -270,8 +300,8 @@ function Invoke-LiveWithLimit {
     try {
         if ($process.WaitForExit($TimeoutSeconds * 1000)) { return $process.ExitCode }
         $said = New-Object System.Collections.Generic.List[string]
-        # 128: the process ended before taskkill reached it.
-        $null = Invoke-Native -FilePath 'taskkill' -ArgumentList '/PID', ([string]$process.Id), '/T', '/F' -SuccessCode 0, 128 -Capture $said
+        # 128: the process ended before taskkill reached it. 255: a process of its tree did.
+        $null = Invoke-Native -FilePath 'taskkill' -ArgumentList '/PID', ([string]$process.Id), '/T', '/F' -SuccessCode 0, 128, 255 -Capture $said
         $null = $process.WaitForExit(10000)
         Clear-LiveFolder -Path $WorkRoot
         Write-Host "LIVE CHECK: it did not finish within $TimeoutSeconds s and was stopped. Re-run the failed job; if it fails again, look at the last step above."
