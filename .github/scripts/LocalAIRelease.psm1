@@ -2,7 +2,7 @@
 #                 LOCAL AI RELEASE TOOLS
 # -------------------------------------------------------
 #
-# Functions behind .github\workflows\release.yml and the version check in ci.yml: the rules for
+# Functions behind .github\workflows\release.yml and the version check run by hand: the rules for
 # VERSION and CHANGELOG.md, the release notes, the release zip with its manifest, the check of
 # that zip, the asset install.ps1 taken from it, and SHA256SUMS. CONTRIBUTING.md describes the
 # release contract they keep, and tests\Release.Tests.ps1 tests them. They run in Windows
@@ -19,7 +19,8 @@ $script:ManifestName = 'local-ai-release.json'
 # The version a dry run builds when there is no VERSION file.
 $script:DryRunVersion = '0.0.0'
 # What .gitattributes marks export-ignore, folders with a trailing '/'. tests\Release.Tests.ps1 checks that the two agree.
-$script:DevPaths = @('.github/', '.githooks/', 'tests/', '.editorconfig', '.gitattributes', '.gitignore', 'PSScriptAnalyzerSettings.psd1', 'CONTRIBUTING.md')
+$script:DevPaths = @('.github/', '.githooks/', 'ci/', 'tests/', '.editorconfig', '.gitattributes', '.gitignore', '.gitleaksignore', '.shellcheckrc',
+    'PSScriptAnalyzerSettings.psd1', 'CONTRIBUTING.md')
 # The extensions .gitattributes gives CRLF and those it marks binary. Every other file of a release has LF line ends only.
 $script:CrlfExtensions = @('.ps1', '.psm1', '.psd1', '.cmd', '.bat')
 $script:BinaryExtensions = @('.ico', '.lnk', '.gguf', '.safetensors')
@@ -821,7 +822,7 @@ function Assert-ReleaseVersionBump {
     Write-Host "VERSION goes $($from)to $version, and tag v$version does not exist yet."
 }
 
-# The version check of ci.yml on the checkout $RepositoryPath: Get-ReleaseVersion, with a notice when there is no VERSION, and with
+# The version check, run by hand (CI runs the standard's release-meta), on the checkout $RepositoryPath: Get-ReleaseVersion, with a notice when there is no VERSION, and with
 # -PullRequest also Assert-ReleaseVersionBump against HEAD^1, the base branch side of the pull request's merge commit.
 function Invoke-ReleaseVersionCheck {
     [CmdletBinding()]

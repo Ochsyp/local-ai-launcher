@@ -4849,6 +4849,54 @@ Describe 'Test-FilesRoot' {
                 Warnings = @($output | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message })
             }
         }
+
+        # Turns a privilege of this process's token on or off and returns whether it was on. Git Bash turns on
+        # SeBackupPrivilege for an administrator, as on CI's runner, and its children inherit it; with it on, a folder
+        # opens for listing despite a Deny rule, so the test of such a folder turns it off first.
+        if (-not ('LocalAITestTokenPrivilege' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+public static class LocalAITestTokenPrivilege
+{
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
+    private struct TokenPrivilege { public uint Count; public uint LuidLow; public int LuidHigh; public uint Attributes; }
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LookupPrivilegeValue(string system, string name, out long luid);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TokenPrivilege state, uint length, ref TokenPrivilege previous, out uint returned);
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    public static bool Set(string name, bool enable)
+    {
+        IntPtr token;
+        // TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY
+        if (!OpenProcessToken(GetCurrentProcess(), 0x0028, out token)) { throw new Win32Exception(); }
+        try
+        {
+            long luid;
+            if (!LookupPrivilegeValue(null, name, out luid)) { throw new Win32Exception(); }
+            TokenPrivilege state = new TokenPrivilege { Count = 1, LuidLow = (uint)luid, LuidHigh = (int)(luid >> 32), Attributes = enable ? 2u : 0u };
+            TokenPrivilege previous = new TokenPrivilege();
+            uint returned;
+            if (!AdjustTokenPrivileges(token, false, ref state, (uint)Marshal.SizeOf(previous), ref previous, out returned)) { throw new Win32Exception(); }
+            // previous lists the privilege only when its state changed; ERROR_NOT_ALL_ASSIGNED means the token lacks it.
+            if (previous.Count == 0) { return Marshal.GetLastWin32Error() == 1300 ? false : enable; }
+            return (previous.Attributes & 2u) != 0;
+        }
+        finally { CloseHandle(token); }
+    }
+}
+'@
+        }
     }
 
     BeforeEach {
@@ -4879,6 +4927,7 @@ Describe 'Test-FilesRoot' {
         # Removes the links only, never what they lead to.
         foreach ($link in $links) { if ([IO.Directory]::Exists($link)) { [IO.Directory]::Delete($link, $false) } }
         if ($denied) {
+            if ($denied.Backup) { $null = [LocalAITestTokenPrivilege]::Set('SeBackupPrivilege', $true) }
             $security = $denied.Folder.GetAccessControl()
             $null = $security.RemoveAccessRule($denied.Rule)
             $denied.Folder.SetAccessControl($security)
@@ -4978,7 +5027,8 @@ Describe 'Test-FilesRoot' {
         $security = $folder.GetAccessControl()
         $security.AddAccessRule($rule)
         $folder.SetAccessControl($security)
-        $denied = @{ Folder = $folder; Rule = $rule }
+        $denied = @{ Folder = $folder; Rule = $rule; Backup = [LocalAITestTokenPrivilege]::Set('SeBackupPrivilege', $false) }
+        { [IO.Directory]::GetFileSystemEntries($locked) } | Should -Throw -Because 'this account must be unable to list the folder'
         $run = Invoke-RootTest -Settings $settings -Paths $paths -UserProfile $userProfile
         $run.Result | Should -Be @($false)
         $run.Warnings.Count | Should -Be 1
