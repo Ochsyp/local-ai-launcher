@@ -447,8 +447,9 @@ folder** whether `start` would serve the folder.
 
 When mcpo is already running and its settings changed, such as `Files.Root`, or `install`
 replaced the files server, `start` restarts it and says so, so the change applies in that start.
-A file-tool call running at that moment fails; ask again. Open WebUI keeps running, so after a new `Ports.Files` or `files.key` run
-`local-ai stop`, then `local-ai start`: Open WebUI still holds the old address or key.
+A file-tool call running at that moment fails; ask again. Open WebUI keeps running, so after a
+new `Ports.Files` or `files.key` run `local-ai stop`, then `local-ai start`: Open WebUI still
+holds the old address or key.
 
 Know these limits:
 

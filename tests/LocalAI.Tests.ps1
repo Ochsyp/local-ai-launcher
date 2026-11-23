@@ -7752,13 +7752,13 @@ Describe 'Start-LocalAI' {
                 $state.Services.OpenWebUI.Pid | Should -Be 4242
             }
 
-            It 'launches nothing when another program takes the port right after the stop, and says the reused Open WebUI still offers the tools' {
-                $settings.Files.DisabledTools = @($settings.Files.DisabledTools) + 'made_up_tool'
+            It 'launches nothing when another program takes a changed port right after the stop, and says the reused Open WebUI still offers the tools' {
+                $settings.Ports.Files = 18199
                 $other = [pscustomobject]@{ Id = 9200; Name = 'node'; Path = 'C:\tools\node.exe'; StartTicks = 5 }
-                Mock Stop-LocalAIService -ModuleName LocalAI -MockWith { $events.Add("stop $Name"); $owners[[int]$Record.Port] = $other; 'stopped' }
+                Mock Stop-LocalAIService -ModuleName LocalAI -MockWith { $events.Add("stop $Name"); $owners.Remove([int]$Record.Port); $owners[18199] = $other; 'stopped' }
                 $run = Invoke-StartVerb -Context $context
                 $run.Code | Should -Be @(2)
-                $run.Warnings | Should -BeLike '*The file tools are off for this start: Port 18189, which File tools needs, is held by node (PID 9200*'
+                $run.Warnings | Should -BeLike '*The file tools are off for this start: Port 18199, which File tools needs, is held by node (PID 9200*'
                 $run.Warnings | Should -BeLike '*still offers the file tools, but the mcpo they call is stopped*'
                 $events | Should -Be @('stop Files')
                 Should -Invoke Start-LocalAIService -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $Service.Name -eq 'Files' }
@@ -7766,10 +7766,53 @@ Describe 'Start-LocalAI' {
                 (Read-LocalAIState -Path $paths.State).Services.ContainsKey('Files') | Should -BeFalse
             }
 
+            It 'names the other program and says the reused Open WebUI still offers the tools when it took the same port as mcpo ended' {
+                $settings.Files.DisabledTools = @($settings.Files.DisabledTools) + 'made_up_tool'
+                $other = [pscustomobject]@{ Id = 9200; Name = 'node'; Path = 'C:\tools\node.exe'; StartTicks = 5 }
+                $gone = @{ Mcpo = $false }
+                Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith {
+                    if ($Record.Pid -eq 1624 -or ($Record.Pid -eq 7950 -and -not $gone.Mcpo)) { 'match' } else { 'other' }
+                }
+                # As the real one: mcpo has ended, but the port it waits on stays held, so the first stop reports 'failed' and the next finds it gone.
+                Mock Stop-LocalAIService -ModuleName LocalAI -MockWith {
+                    $events.Add("stop $Name")
+                    if ($gone.Mcpo) { return 'stale' }
+                    $gone.Mcpo = $true
+                    $owners[[int]$Record.Port] = $other
+                    'failed'
+                }
+                $run = Invoke-StartVerb -Context $context
+                $run.Code | Should -Be @(2)
+                $run.Warnings | Should -BeLike '*The file tools are off for this start: Port 18189, which File tools needs, is held by node (PID 9200*'
+                $run.Warnings | Should -Not -BeLike '*did not stop for its restart*'
+                $run.Warnings | Should -BeLike '*still offers the file tools, but the mcpo they call is stopped*'
+                $events | Should -Be @('stop Files', 'stop Files')
+                Should -Invoke Start-LocalAIService -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $Service.Name -eq 'Files' }
+                Should -Invoke Stop-LocalAIService -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $Record.Pid -eq 9200 }
+                (Read-LocalAIState -Path $paths.State).Services.ContainsKey('Files') | Should -BeFalse
+            }
+
+            It 'still reports a failed restart when a failed stop leaves an mcpo this window cannot inspect' {
+                $settings.Files.DisabledTools = @($settings.Files.DisabledTools) + 'made_up_tool'
+                $after = @{ Stop = $false }
+                Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith {
+                    if ($Record.Pid -eq 1624) { 'match' } elseif ($Record.Pid -eq 7950) { if ($after.Stop) { 'unreadable' } else { 'match' } } else { 'other' }
+                }
+                Mock Stop-LocalAIService -ModuleName LocalAI -MockWith { $after.Stop = $true; 'failed' }
+                $run = Invoke-StartVerb -Context $context
+                $run.Code | Should -Be @(2)
+                $run.Warnings | Should -BeLike '*The file tools are off for this start: mcpo did not stop for its restart, so its new settings do not apply.*'
+                Should -Invoke Start-LocalAIService -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $Service.Name -eq 'Files' }
+                (Read-LocalAIState -Path $paths.State).Services.Files.Pid | Should -Be 4500
+            }
+
             It 'restarts a record without ConfigSha256, from an older launcher, once, and reuses it on the next start' {
                 $mcpoRecord.Remove('ConfigSha256')
                 Write-LocalAIState -Path $paths.State -State @{ Services = @{ Files = $mcpoRecord; OpenWebUI = $webRecord } }
-                (Invoke-StartVerb -Context $context).Code | Should -Be @(0)
+                $run = Invoke-StartVerb -Context $context
+                $run.Code | Should -Be @(0)
+                $run.Printed | Should -BeLike "*An older launcher started mcpo, so start restarts it once with this launcher's settings. A file-tool call running right now fails; ask again.*"
+                $run.Printed | Should -Not -BeLike "*$restartLine*"
                 $events | Should -Be @('stop Files', 'start Files', 'wait Files')
                 $events.Clear()
                 (Invoke-StartVerb -Context $context).Code | Should -Be @(0)

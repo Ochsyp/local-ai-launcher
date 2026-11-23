@@ -3812,6 +3812,8 @@ function Get-LocalAIService {
                         -LockSha256 $Files.LockSha256
                 })
             RestartNote      = "The file tools' settings changed since mcpo started, so start restarts it. A file-tool call running right now fails; ask again."
+            # For a record without ConfigSha256, where start cannot tell whether anything changed.
+            RestartNoteOlder = "An older launcher started mcpo, so start restarts it once with this launcher's settings. A file-tool call running right now fails; ask again."
             # Start-LocalAI tries the stop once more after this, so it must stay true when that second try works.
             RestartFailed    = 'mcpo did not stop for its restart, so its new settings do not apply.'
             # Launcher-owned and empty; the node server inherits it, as mcpo ignores a cwd in its config.
@@ -4094,8 +4096,8 @@ function Use-LocalAIService {
         [Parameter(Mandatory)][hashtable]$State,
         [Parameter(Mandatory)][string]$StatePath,
         [ValidateRange(1, 20)][int]$Keep = 5,
-        [System.Collections.Generic.List[string]]$Started,
-        [System.Collections.Generic.List[string]]$Restarted
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Started,
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Restarted
     )
     $name = $Service.Name
     $display = $Service.DisplayName
@@ -4117,12 +4119,17 @@ function Use-LocalAIService {
     if ($Service.ConfigSha256 -and $ours.Count -gt 0 -and -not $foreign) {
         $environment = Get-LocalAIEnvironmentHash -Environment $Service.Environment -InheritEnvironment $Service.InheritEnvironment
         if ([string]$record['ConfigSha256'] -cne $Service.ConfigSha256 -or [string]$record['EnvironmentSha256'] -cne $environment) {
-            Write-Host $Service.RestartNote
-            if ($null -eq $Started) { $Started = New-Object System.Collections.Generic.List[string] }
-            if ((Stop-StartedLocalAIService -Name $name -State $State -StatePath $StatePath -Started $Started -AnyStart) -eq 'failed') {
-                throw $Service.RestartFailed
+            Write-Host $(if ($record['ConfigSha256']) { $Service.RestartNote } else { $Service.RestartNoteOlder })
+            $stopped = Stop-StartedLocalAIService -Name $name -State $State -StatePath $StatePath -Started $Started -AnyStart
+            if ($stopped -eq 'failed') {
+                # Stop-LocalAIService also fails when another program took the port as the service ended. A second call then finds it gone and drops its record.
+                $left = Get-LiveRecord -Record $record
+                if ($left.Match.Count -eq 0 -and $left.Unreadable.Count -eq 0) {
+                    $stopped = Stop-StartedLocalAIService -Name $name -State $State -StatePath $StatePath -Started $Started -AnyStart
+                }
             }
-            if ($null -ne $Restarted) { $Restarted.Add($name) }
+            if ($stopped -eq 'failed') { throw $Service.RestartFailed }
+            $Restarted.Add($name)
             $ours = @()
             $owner = Get-PortOwner -Port $port
         }
@@ -4158,7 +4165,7 @@ function Use-LocalAIService {
     if ($Service.ConfigSha256) { $record['ConfigSha256'] = $Service.ConfigSha256 }
     # Registered before the save, so the caller can still stop it when the save fails.
     $State.Services[$name] = $record
-    if ($null -ne $Started) { $Started.Add($name) }
+    $Started.Add($name)
     Write-LocalAIState -Path $StatePath -State $State
     return @{ Version = $null; Process = $launched.Process }
 }
