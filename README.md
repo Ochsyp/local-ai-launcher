@@ -445,6 +445,11 @@ The check does not follow links inside the folder; the files server refuses thos
 outside it. Files added while mcpo runs are not checked. `status` shows under **File tools
 folder** whether `start` would serve the folder.
 
+When mcpo is already running and its settings changed, such as `Files.Root`, `start` restarts
+it and says so, so the new settings apply in that start. A file-tool call running at that moment
+fails; ask again. Open WebUI keeps running, so after a new `Ports.Files` or `files.key` run
+`local-ai stop`, then `local-ai start`: Open WebUI still holds the old address or key.
+
 Know these limits:
 
 - The model may quote any file in the folder.

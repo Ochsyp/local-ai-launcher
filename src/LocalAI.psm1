@@ -3229,10 +3229,60 @@ function Test-FilesRoot {
     return $true
 }
 
-# Write mcpo's config to $Path, replacing it in one step: the one stdio server 'files', which runs $NodePath on $ServerScript with --read-only and
-# Files.Root (full, spelled as on disk as Test-FilesRoot checked it, without a trailing '\') as its only folder, and hides Files.DisabledTools. ASCII with
-# \u escapes and no BOM, as mcpo 0.0.20 reads it with the ANSI code page. No env entry: mcpo hands the server its own environment, which
-# Start-LocalAIService limits.
+# Return mcpo.json's entry for the one stdio server 'files', which runs $NodePath on $ServerScript with --read-only and Files.Root (full, spelled as on
+# disk as Test-FilesRoot checked it, without a trailing '\') as its only folder, and hides Files.DisabledTools. No env entry: mcpo hands the server its
+# own environment, which Start-LocalAIService limits.
+function Get-McpoServerEntry {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$Settings,
+        [Parameter(Mandatory)][string]$NodePath,
+        [Parameter(Mandatory)][string]$ServerScript
+    )
+    return @{
+        command       = $NodePath
+        # --read-only (2.2.0 and later) withholds every tool not marked read-only, a write tool a later version adds included, before mcpo
+        # connects; Files.DisabledTools and start's route check stay a second guard. One folder: a second would widen what the tools read, and
+        # with none the server exits. The server lists a root given in another spelling twice, as given and as on disk, so it gets the on-disk
+        # one. From 2.1.0 on, it also serves a path that spells it in another case.
+        args          = @($ServerScript, '--read-only', (Resolve-OnDiskPath -Path $Settings.Files.Root).Path)
+        disabledTools = @($Settings.Files.DisabledTools)
+    }
+}
+
+# Return the SHA-256 (lowercase hex) of what a running mcpo keeps from its start: the program $FilePath, $ArgumentList without the --api-key value, and
+# the mcpo.json entry $Server with its hidden tools in any order. The key stays out because this hash is saved in state.json, and because a new key
+# needs a new Open WebUI too, so restarting mcpo alone would not help. Pure.
+function Get-McpoConfigHash {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [Parameter(Mandatory)][string[]]$ArgumentList,
+        [Parameter(Mandatory)][hashtable]$Server
+    )
+    $arguments = New-Object System.Collections.Generic.List[string]
+    for ($index = 0; $index -lt $ArgumentList.Count; $index++) {
+        if ($ArgumentList[$index] -ceq '--api-key') {
+            $index++
+            continue
+        }
+        $arguments.Add($ArgumentList[$index])
+    }
+    # NUL separates list items because no argument or path can hold it.
+    $values = [ordered]@{
+        Program       = $FilePath
+        Arguments     = $arguments.ToArray() -join "`0"
+        ServerCommand = [string]$Server.command
+        ServerArgs    = @($Server.args) -join "`0"
+        DisabledTools = @($Server.disabledTools | Sort-Object -CaseSensitive -Unique) -join "`0"
+    }
+    return Get-LocalAIEnvironmentHash -Environment $values
+}
+
+# Write mcpo's config, the entry Get-McpoServerEntry returns, to $Path, replacing it in one step. ASCII with \u escapes and no BOM, as mcpo 0.0.20 reads
+# it with the ANSI code page.
 function New-McpoConfig {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'Called by the start verb, which offers no -WhatIf.')]
@@ -3243,15 +3293,7 @@ function New-McpoConfig {
         [Parameter(Mandatory)][string]$NodePath,
         [Parameter(Mandatory)][string]$ServerScript
     )
-    $server = @{
-        command       = $NodePath
-        # --read-only (2.2.0 and later) withholds every tool not marked read-only, a write tool a later version adds included, before mcpo
-        # connects; Files.DisabledTools and start's route check stay a second guard. One folder: a second would widen what the tools read, and
-        # with none the server exits. The server lists a root given in another spelling twice, as given and as on disk, so it gets the on-disk
-        # one. From 2.1.0 on, it also serves a path that spells it in another case.
-        args          = @($ServerScript, '--read-only', (Resolve-OnDiskPath -Path $Settings.Files.Root).Path)
-        disabledTools = @($Settings.Files.DisabledTools)
-    }
+    $server = Get-McpoServerEntry -Settings $Settings -NodePath $NodePath -ServerScript $ServerScript
     Write-LocalAIState -Path $Path -State @{ mcpServers = @{ files = $server } } -Ascii
 }
 
@@ -3732,6 +3774,12 @@ function Get-LocalAIService {
         $with = @(foreach ($requirement in @($tools.McpoWith)) { "--with `"$requirement`"" })
         $exclude = if ($tools.McpoExcludeNewer) { @('--exclude-newer', $tools.McpoExcludeNewer) } else { @() }
         $reinstall = @('uv tool install --python', $tools.Python, '--managed-python', "mcpo==$($tools.McpoVersion)") + $with + $exclude + @('--reinstall')
+        # Long flags only, since -h is --host and -v the served API's version. mcpo 0.0.20 reads its key from no variable or file,
+        # so it goes on the command line; --strict-auth puts the specs behind it too. Open WebUI calls mcpo from its backend only,
+        # so the two origins it allows serve as a limit, not as a need. At INFO mcpo would log every call with its file paths.
+        $mcpoArguments = @('--host', '127.0.0.1', '--port', [string]$filesPort, '--api-key', $Files.Key, '--strict-auth',
+            '--cors-allow-origins', "http://127.0.0.1:$webPort", '--cors-allow-origins', "http://localhost:$webPort",
+            '--config', $Paths.McpoConfig, '--log-level', 'WARNING')
         @{
             Name             = 'Files'
             DisplayName      = 'File tools'
@@ -3750,12 +3798,11 @@ function Get-LocalAIService {
             # As New-McpoConfig hands it to the server.
             Root             = (Resolve-OnDiskPath -Path $tools.Root).Path
             FilePath         = $Files.McpoPath
-            # Long flags only, since -h is --host and -v the served API's version. mcpo 0.0.20 reads its key from no variable or file,
-            # so it goes on the command line; --strict-auth puts the specs behind it too. Open WebUI calls mcpo from its backend only,
-            # so the two origins it allows serve as a limit, not as a need. At INFO mcpo would log every call with its file paths.
-            ArgumentList     = @('--host', '127.0.0.1', '--port', [string]$filesPort, '--api-key', $Files.Key, '--strict-auth',
-                '--cors-allow-origins', "http://127.0.0.1:$webPort", '--cors-allow-origins', "http://localhost:$webPort",
-                '--config', $Paths.McpoConfig, '--log-level', 'WARNING')
+            ArgumentList     = $mcpoArguments
+            # Set only for the start verb, which passes Files.Server and restarts an mcpo whose recorded hash differs.
+            ConfigSha256     = $(if ($Files.Server) { Get-McpoConfigHash -FilePath $Files.McpoPath -ArgumentList $mcpoArguments -Server $Files.Server })
+            RestartNote      = "The file tools' settings changed since mcpo started, so start restarts it. A file-tool call running right now fails; ask again."
+            RestartFailed    = 'mcpo could not be stopped, so it keeps the settings it started with.'
             # Launcher-owned and empty; the node server inherits it, as mcpo ignores a cwd in its config.
             WorkingDirectory = Join-Path $Paths.Root 'mcpo'
             Environment      = [ordered]@{}
@@ -4024,9 +4071,10 @@ function Get-LocalAIEnvironmentHash {
 }
 
 # Launch $Service for the start verb without waiting: reuse it when the process $State.Services records holds its port and Identity answers for
-# $Service, else start it, recording it with Get-LocalAIEnvironmentHash in $State and $Started and saving $StatePath. Returns @{ Version; Stale } when
+# $Service, else start it, recording it with Get-LocalAIEnvironmentHash and any ConfigSha256 in $State and $Started and saving $StatePath. A running
+# service with a ConfigSha256 whose recorded hashes differ is stopped first and added to $Restarted, then started anew. Returns @{ Version; Stale } when
 # reused, Stale when it has an Environment or an InheritEnvironment whose hash it was not started with, else @{ Process }; throws when another program
-# holds the port or a record is unreadable.
+# holds the port, a record is unreadable or a service to restart cannot be stopped.
 function Use-LocalAIService {
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -4035,7 +4083,8 @@ function Use-LocalAIService {
         [Parameter(Mandatory)][hashtable]$State,
         [Parameter(Mandatory)][string]$StatePath,
         [ValidateRange(1, 20)][int]$Keep = 5,
-        [System.Collections.Generic.List[string]]$Started
+        [System.Collections.Generic.List[string]]$Started,
+        [System.Collections.Generic.List[string]]$Restarted
     )
     $name = $Service.Name
     $display = $Service.DisplayName
@@ -4051,6 +4100,22 @@ function Use-LocalAIService {
         }
     }
     $owner = Get-PortOwner -Port $port
+    # Another program on the port is refused below, before anything stops. A record without a hash comes from an older launcher: nothing proves what
+    # that service runs with, so it restarts once.
+    $foreign = $owner -and @($ours | Where-Object { [int]$_.Pid -eq $owner.Id }).Count -eq 0
+    if ($Service.ConfigSha256 -and $ours.Count -gt 0 -and -not $foreign) {
+        $environment = Get-LocalAIEnvironmentHash -Environment $Service.Environment -InheritEnvironment $Service.InheritEnvironment
+        if ([string]$record['ConfigSha256'] -cne $Service.ConfigSha256 -or [string]$record['EnvironmentSha256'] -cne $environment) {
+            Write-Host $Service.RestartNote
+            if ($null -eq $Started) { $Started = New-Object System.Collections.Generic.List[string] }
+            if ((Stop-StartedLocalAIService -Name $name -State $State -StatePath $StatePath -Started $Started -AnyStart) -eq 'failed') {
+                throw $Service.RestartFailed
+            }
+            if ($null -ne $Restarted) { $Restarted.Add($name) }
+            $ours = @()
+            $owner = Get-PortOwner -Port $port
+        }
+    }
     if ($owner) {
         if (@($ours | Where-Object { [int]$_.Pid -eq $owner.Id }).Count -eq 0) {
             $hint = if ($ours.Count -gt 0) { " If it is the $display an earlier start left running, run 'local-ai stop' first." } else { '' }
@@ -4079,6 +4144,7 @@ function Use-LocalAIService {
     $record = @{}
     foreach ($key in 'Pid', 'StartTicks', 'Path', 'Port', 'OutLog', 'ErrLog') { $record[$key] = $launched[$key] }
     $record['EnvironmentSha256'] = Get-LocalAIEnvironmentHash -Environment $Service.Environment -InheritEnvironment $Service.InheritEnvironment
+    if ($Service.ConfigSha256) { $record['ConfigSha256'] = $Service.ConfigSha256 }
     # Registered before the save, so the caller can still stop it when the save fails.
     $State.Services[$name] = $record
     if ($null -ne $Started) { $Started.Add($name) }
@@ -4255,7 +4321,7 @@ function Stop-RecordedFilesService {
 
 # The start verb: install first when install-stamp.json lacks Ollama, Model or OpenWebUI, else wait for Ollama; record in state.json at once an Ollama app
 # either started (Save-OllamaRecord); check Ollama has Model.Alias; stop a recorded mcpo this start leaves out; launch ComfyUI, the image gate and mcpo,
-# waiting for the last two at once, then Open WebUI using those that answered; open the browser, then check ComfyUI. Adds each service it launched to
+# restarting an mcpo whose settings changed, and waiting for the last two at once, then Open WebUI using those that answered; open the browser, then check ComfyUI. Adds each service it launched to
 # Context.Launched (a List[string]). Returns 0; 2 on warnings; 1 when Open WebUI fails.
 function Start-LocalAI {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
@@ -4332,7 +4398,8 @@ function Start-LocalAI {
                     if (@($warned | Where-Object { "$_" -ceq "$warning" }).Count -eq 0) { Write-Warning "$warning" -WarningVariable +warned }
                 }
                 if ($served) {
-                    $files = @{ McpoPath = $record.McpoPath; McpoVersion = $record.McpoVersion; Key = (Get-FilesKey -Path $paths.FilesKey) }
+                    $files = @{ McpoPath = $record.McpoPath; McpoVersion = $record.McpoVersion; Key = (Get-FilesKey -Path $paths.FilesKey)
+                        Server = (Get-McpoServerEntry -Settings $settings -NodePath $record.Node.Path -ServerScript $record.Script) }
                     New-McpoConfig -Settings $settings -Path $paths.McpoConfig -NodePath $record.Node.Path -ServerScript $record.Script
                 }
             }
@@ -4356,6 +4423,7 @@ function Start-LocalAI {
     $gate = @($services | Where-Object { $_.Name -eq 'ImageGate' })
     $tools = @($services | Where-Object { $_.Name -eq 'Files' })
     $started = New-Object System.Collections.Generic.List[string]
+    $restarted = New-Object System.Collections.Generic.List[string]
     # mcpo serves Files.Root to any program with the key, a reused Open WebUI included, so one an earlier start left running stops when this
     # start leaves the file tools out: it would go on serving a folder the checks above refused, or one Files.Root no longer names.
     $filesStopped = $false
@@ -4386,7 +4454,8 @@ function Start-LocalAI {
                     -FilesKey $filesKey -WarningAction SilentlyContinue
             }
             try {
-                $launched[$service.Name] = Use-LocalAIService -Service $service -State $state -StatePath $paths.State -Keep $settings.Logs.Keep -Started $started -WarningVariable +warned
+                $launched[$service.Name] = Use-LocalAIService -Service $service -State $state -StatePath $paths.State -Keep $settings.Logs.Keep -Started $started `
+                    -Restarted $restarted -WarningVariable +warned
             } catch {
                 if ($service.Required) {
                     $failure = $_.Exception.Message
@@ -4423,8 +4492,9 @@ function Start-LocalAI {
             $null = Test-LoopbackListener -Port $service.Port -Name $service.DisplayName -Fix $fix -WarningVariable +warned
         }
         if (-not $failure) {
-            # Open WebUI reads COMFYUI_BASE_URL and TOOL_SERVER_CONNECTIONS only when it starts.
-            if ($filesStopped -and -not $launched['OpenWebUI'].Process) {
+            # Open WebUI reads COMFYUI_BASE_URL and TOOL_SERVER_CONNECTIONS only when it starts. A restarted mcpo that did not come back is as gone
+            # for it as one this start stopped.
+            if (($filesStopped -or ($restarted.Contains('Files') -and -not $up.Contains('Files'))) -and -not $launched['OpenWebUI'].Process) {
                 Write-Warning ("Open WebUI, which an earlier start left running, still offers the file tools, but the mcpo they call is stopped, " +
                     "so calls to them fail. Run 'local-ai stop', then start again.") -WarningVariable +warned
             } elseif ($launched['OpenWebUI'].Stale) {
