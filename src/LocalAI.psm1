@@ -3829,8 +3829,7 @@ function Get-LocalAIService {
             RestartNote      = "The file tools' settings changed since mcpo started, so start restarts it. A file-tool call running right now fails; ask again."
             # For a record without ConfigSha256, where start cannot tell whether anything changed.
             RestartNoteOlder = "An older launcher started mcpo, so start restarts it once with this launcher's settings. A file-tool call running right now fails; ask again."
-            # Start-LocalAI tries the stop once more after this, so it must stay true when that second try works.
-            RestartFailed    = 'mcpo did not stop for its restart, so its new settings do not apply.'
+            RestartFailed    ='mcpo did not stop for its restart, so its new settings do not apply.'
             # Launcher-owned and empty; the node server inherits it, as mcpo ignores a cwd in its config.
             WorkingDirectory = Join-Path $Paths.Root 'mcpo'
             Environment      = [ordered]@{}
@@ -4019,7 +4018,8 @@ function Wait-LocalAIService {
 
 # Stop service $Name from its state.json $Record with 'taskkill /PID <pid> /T /F' when Get-LiveRecord proves the PID
 # (or its recorded Listener) is still that process, then wait up to $TimeoutSeconds for it to exit and free Record.Port.
-# Returns 'stopped', 'stale' (nothing killed) or 'failed', also when the process runs but cannot be inspected.
+# A port held by a program that started after taskkill counts as freed, and the line names that program. Returns 'stopped',
+# 'stale' (nothing killed) or 'failed', also when the process runs but cannot be inspected.
 function Stop-LocalAIService {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'Called by the stop and start verbs, which offer no -WhatIf.')]
@@ -4049,6 +4049,8 @@ function Stop-LocalAIService {
     }
     $target = $live[0]
     $said = New-Object System.Collections.Generic.List[string]
+    # A program on the port that started after this moment cannot belong to the tree taskkill ends.
+    $killedTicks = [DateTime]::UtcNow.Ticks
     try {
         # 128: the process ended before taskkill reached it. 255: a process of the tree ended by itself first, as uv's mcpo.exe does once its
         # Python is killed. The wait below decides for both whether the process and its port are really gone.
@@ -4059,7 +4061,17 @@ function Stop-LocalAIService {
         return 'failed'
     }
     $timer = [Diagnostics.Stopwatch]::StartNew()
-    while ((Test-RecordedProcess -Record $target) -or ($port -gt 0 -and (Get-PortOwner -Port $port))) {
+    $taken = ''
+    while ($true) {
+        $running = Test-RecordedProcess -Record $target
+        $owner = if ($port -gt 0) { Get-PortOwner -Port $port } else { $null }
+        if (-not $running -and -not $owner) { break }
+        # The service is gone and another program took its port. One that started earlier, or whose start time cannot be read, may be a
+        # surviving part of the tree, so it is waited for.
+        if (-not $running -and $owner.StartTicks -and [long]$owner.StartTicks -gt $killedTicks) {
+            $taken = " Port $port is now held by another program, $($owner.Name) (PID $($owner.Id), $($owner.Path))."
+            break
+        }
         if ($timer.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
             Write-Host "$Name (PID $($target.Pid)) still runs, or port $port is still held, $TimeoutSeconds s after taskkill." -ForegroundColor Red
             return 'failed'
@@ -4068,9 +4080,9 @@ function Stop-LocalAIService {
     }
     # Get-LiveRecord lists the record before its Listener, so another target is the server that the recorded process left running.
     if ([object]::ReferenceEquals($target, $Record)) {
-        Write-Host "Stopped $Name (PID $($target.Pid))."
+        Write-Host "Stopped $Name (PID $($target.Pid)).$taken"
     } else {
-        Write-Host "Stopped the server (PID $($target.Pid)) that $Name (PID $($Record.Pid)) left running."
+        Write-Host "Stopped the server (PID $($target.Pid)) that $Name (PID $($Record.Pid)) left running.$taken"
     }
     return 'stopped'
 }
@@ -4136,14 +4148,8 @@ function Use-LocalAIService {
         $environment = Get-LocalAIEnvironmentHash -Environment $Service.Environment -InheritEnvironment $Service.InheritEnvironment
         if ([string]$record['ConfigSha256'] -cne $Service.ConfigSha256 -or [string]$record['EnvironmentSha256'] -cne $environment) {
             Write-Host $(if ($record['ConfigSha256']) { $Service.RestartNote } else { $Service.RestartNoteOlder })
+            # A program that took the port as the service ended counts as stopped; the port check below then names it.
             $stopped = Stop-StartedLocalAIService -Name $name -State $State -StatePath $StatePath -Started $Started -AnyStart
-            if ($stopped -eq 'failed') {
-                # Stop-LocalAIService also fails when another program took the port as the service ended. A second call then finds it gone and drops its record.
-                $left = Get-LiveRecord -Record $record
-                if ($left.Match.Count -eq 0 -and $left.Unreadable.Count -eq 0) {
-                    $stopped = Stop-StartedLocalAIService -Name $name -State $State -StatePath $StatePath -Started $Started -AnyStart
-                }
-            }
             if ($stopped -eq 'failed') { throw $Service.RestartFailed }
             $Restarted.Add($name)
             $ours = @()

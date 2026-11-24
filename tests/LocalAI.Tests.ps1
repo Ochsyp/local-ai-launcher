@@ -7773,20 +7773,19 @@ Describe 'Start-LocalAI' {
                 Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith {
                     if ($Record.Pid -eq 1624 -or ($Record.Pid -eq 7950 -and -not $gone.Mcpo)) { 'match' } else { 'other' }
                 }
-                # As the real one: mcpo has ended, but the port it waits on stays held, so the first stop reports 'failed' and the next finds it gone.
+                # As the real one: mcpo has ended and a program that started since holds its port, which counts as stopped.
                 Mock Stop-LocalAIService -ModuleName LocalAI -MockWith {
                     $events.Add("stop $Name")
-                    if ($gone.Mcpo) { return 'stale' }
                     $gone.Mcpo = $true
                     $owners[[int]$Record.Port] = $other
-                    'failed'
+                    'stopped'
                 }
                 $run = Invoke-StartVerb -Context $context
                 $run.Code | Should -Be @(2)
                 $run.Warnings | Should -BeLike '*The file tools are off for this start: Port 18189, which File tools needs, is held by node (PID 9200*'
                 $run.Warnings | Should -Not -BeLike '*did not stop for its restart*'
                 $run.Warnings | Should -BeLike '*still offers the file tools, but the mcpo they call is stopped*'
-                $events | Should -Be @('stop Files', 'stop Files')
+                $events | Should -Be @('stop Files')
                 Should -Invoke Start-LocalAIService -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $Service.Name -eq 'Files' }
                 Should -Invoke Stop-LocalAIService -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $Record.Pid -eq 9200 }
                 (Read-LocalAIState -Path $paths.State).Services.ContainsKey('Files') | Should -BeFalse
@@ -8502,6 +8501,49 @@ Describe 'Stop-LocalAI and Stop-LocalAIService' {
         $printed | Should -Be 'OpenWebUI (PID 4242) still runs, or port 18431 is still held, 1 s after taskkill.'
     }
 
+    It 'returns 1, keeps the record and prints in red when taskkill exits 255 but the process still runs after the wait' {
+        Mock Invoke-Native -ModuleName LocalAI -ParameterFilter { $FilePath -eq 'taskkill' } -MockWith {
+            $Capture.Add('Reason: There is no running instance of the task.')
+            if ($SuccessCode -notcontains 255) { throw "'taskkill /PID 4242 /T /F' failed with exit code 255." }
+            255
+        }
+        # The verb waits its full 10 s.
+        $run = Invoke-StopVerb -Context $context
+        $run.Code | Should -Be @(1)
+        $run.Printed | Should -BeLike '*OpenWebUI (PID 4242) still runs, or port 18431 is still held, 10 s after taskkill.*'
+        $run.Printed | Should -BeLike '*could not be stopped*'
+        $run.Printed | Should -Not -BeLike '*Stopped OpenWebUI*'
+        (Read-LocalAIState -Path $paths.State).Services.OpenWebUI.Pid | Should -Be 4242
+    }
+
+    It 'reports stopped, names the program that took the port after taskkill, returns 0 and drops the record' {
+        $other = [pscustomobject]@{ Id = 9100; Name = 'nginx'; Path = 'C:\nginx\nginx.exe'; StartTicks = $null }
+        Mock Invoke-Native -ModuleName LocalAI -ParameterFilter { $FilePath -eq 'taskkill' } -MockWith {
+            $world.Alive = $false
+            # It started a second after taskkill ran.
+            $other.StartTicks = [DateTime]::UtcNow.AddSeconds(1).Ticks
+            $world.Other = $other
+            0
+        }
+        $run = Invoke-StopVerb -Context $context
+        $run.Code | Should -Be @(0)
+        $run.Printed | Should -BeLike '*Stopped OpenWebUI (PID 4242). Port 18431 is now held by another program, nginx (PID 9100, C:\nginx\nginx.exe).*'
+        $run.Printed | Should -Not -BeLike '*still runs*'
+        (Read-LocalAIState -Path $paths.State).Services.ContainsKey('OpenWebUI') | Should -BeFalse
+    }
+
+    It 'still reports failed after the wait when the process ended but the program on the port <Case>' -ForEach @(
+        @{ Case = 'started before taskkill ran, so it may belong to the tree it killed'; Owner = @{ Id = 9100; Name = 'nginx'; Path = 'C:\nginx\nginx.exe'; StartTicks = 5 } }
+        @{ Case = 'has a start time that cannot be read'; Owner = @{ Id = 9100; Name = $null; Path = $null; StartTicks = $null } }
+        @{ Case = 'is the recorded listener'; Owner = @{ Id = 1624; Name = 'python'; Path = 'C:\uv\python\python.exe'; StartTicks = 222 } }
+    ) {
+        $world.Other = [pscustomobject]$Owner
+        $output = @(Stop-LocalAIService -Name 'OpenWebUI' -Record $record -TimeoutSeconds 1 6>&1)
+        @($output | Where-Object { $_ -is [string] }) | Should -Be @('failed')
+        $printed = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$($_.MessageData)" }) -join "`n"
+        $printed | Should -Be 'OpenWebUI (PID 4242) still runs, or port 18431 is still held, 1 s after taskkill.'
+    }
+
     It 'returns 1, kills nothing and keeps the record when the process runs but cannot be inspected' {
         Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith { 'unreadable' }
         $run = Invoke-StopVerb -Context $context
@@ -8654,6 +8696,23 @@ Describe 'Stop-OllamaApp' {
         Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'taskkill' }
         Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'taskkill' -and ($ArgumentList -join ' ') -eq '/PID 100 /T /F' }
         Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $ArgumentList -contains '/IM' }
+    }
+
+    It 'reports it forced and names the program that took the port after taskkill ended the app and its server' {
+        $world.Quits = $false
+        $other = [pscustomobject]@{ Id = 9300; Name = 'llama-server'; Path = 'C:\llama\llama-server.exe'; StartTicks = $null }
+        Mock Invoke-Native -ModuleName LocalAI -ParameterFilter { $FilePath -eq 'taskkill' } -MockWith {
+            $world.Alive = $false
+            $world.Held = $false
+            $other.StartTicks = [DateTime]::UtcNow.AddSeconds(1).Ticks
+            $world.Other = $other
+            0
+        }
+        Mock Get-PortOwner -ModuleName LocalAI -MockWith { if ($world.Held) { $serve } elseif ($world.Other) { $world.Other } }
+        $run = & $quit
+        $run.Result.Result | Should -Be 'forced'
+        $run.Printed | Should -BeLike ('Stopped Ollama app (PID 100). Port 11434 is now held by another program, llama-server (PID 9300, C:\llama\llama-server.exe).*' +
+            'taskkill /T /F ended it, its server and the models it held.')
     }
 
     It 'goes straight to taskkill for the verified PID when <Case>' -ForEach @(
