@@ -7791,6 +7791,29 @@ Describe 'Start-LocalAI' {
                 (Read-LocalAIState -Path $paths.State).Services.ContainsKey('Files') | Should -BeFalse
             }
 
+            It 'stops once more and names the other program when its start time cannot be read, as for an elevated one' {
+                $settings.Files.DisabledTools = @($settings.Files.DisabledTools) + 'made_up_tool'
+                $other = [pscustomobject]@{ Id = 9200; Name = 'node'; Path = 'C:\tools\node.exe'; StartTicks = $null }
+                $gone = @{ Mcpo = $false }
+                Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith {
+                    if ($Record.Pid -eq 1624 -or ($Record.Pid -eq 7950 -and -not $gone.Mcpo)) { 'match' } else { 'other' }
+                }
+                # As the real one: mcpo has ended, but a program it cannot judge holds the port, so the first stop reports 'failed' and the next finds it gone.
+                Mock Stop-LocalAIService -ModuleName LocalAI -MockWith {
+                    $events.Add("stop $Name")
+                    if ($gone.Mcpo) { return 'stale' }
+                    $gone.Mcpo = $true
+                    $owners[[int]$Record.Port] = $other
+                    'failed'
+                }
+                $run = Invoke-StartVerb -Context $context
+                $run.Code | Should -Be @(2)
+                $run.Warnings | Should -BeLike '*The file tools are off for this start: Port 18189, which File tools needs, is held by node (PID 9200*'
+                $run.Warnings | Should -Not -BeLike '*did not stop for its restart*'
+                $events | Should -Be @('stop Files', 'stop Files')
+                (Read-LocalAIState -Path $paths.State).Services.ContainsKey('Files') | Should -BeFalse
+            }
+
             It 'still reports a failed restart when a failed stop leaves an mcpo this window cannot inspect' {
                 $settings.Files.DisabledTools = @($settings.Files.DisabledTools) + 'made_up_tool'
                 $after = @{ Stop = $false }

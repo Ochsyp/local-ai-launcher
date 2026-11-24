@@ -3829,7 +3829,8 @@ function Get-LocalAIService {
             RestartNote      = "The file tools' settings changed since mcpo started, so start restarts it. A file-tool call running right now fails; ask again."
             # For a record without ConfigSha256, where start cannot tell whether anything changed.
             RestartNoteOlder = "An older launcher started mcpo, so start restarts it once with this launcher's settings. A file-tool call running right now fails; ask again."
-            RestartFailed    ='mcpo did not stop for its restart, so its new settings do not apply.'
+            # Use-LocalAIService tries the stop once more after this, so it must stay true when that second try works.
+            RestartFailed    = 'mcpo did not stop for its restart, so its new settings do not apply.'
             # Launcher-owned and empty; the node server inherits it, as mcpo ignores a cwd in its config.
             WorkingDirectory = Join-Path $Paths.Root 'mcpo'
             Environment      = [ordered]@{}
@@ -4150,6 +4151,14 @@ function Use-LocalAIService {
             Write-Host $(if ($record['ConfigSha256']) { $Service.RestartNote } else { $Service.RestartNoteOlder })
             # A program that took the port as the service ended counts as stopped; the port check below then names it.
             $stopped = Stop-StartedLocalAIService -Name $name -State $State -StatePath $StatePath -Started $Started -AnyStart
+            if ($stopped -eq 'failed') {
+                # Stop-LocalAIService still fails when that program's start time cannot be read, as for an elevated one. Once the service is gone,
+                # a second call finds nothing to stop and drops the record.
+                $left = Get-LiveRecord -Record $record
+                if ($left.Match.Count -eq 0 -and $left.Unreadable.Count -eq 0) {
+                    $stopped = Stop-StartedLocalAIService -Name $name -State $State -StatePath $StatePath -Started $Started -AnyStart
+                }
+            }
             if ($stopped -eq 'failed') { throw $Service.RestartFailed }
             $Restarted.Add($name)
             $ours = @()
