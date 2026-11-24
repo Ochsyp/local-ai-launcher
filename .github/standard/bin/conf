@@ -33,7 +33,7 @@ set -eu
 
 # The keys, in the order --print prints them.
 keys="NAME VISIBILITY ROLE LICENSE CI_RUNNER CI_STAGES CI_WEEKLY PYTHON PS_MODULES \
-IMAGE_PLATFORMS RELEASE_KIND RELEASE_RUNNER RELEASE_MANIFEST RELEASE_ASSETS VERSION_COPY \
+IMAGE_PLATFORMS RELEASE_KIND RELEASE_RUNNER RELEASE_MANIFEST RELEASE_ASSETS VERSION_COPY SEAL \
 PRIVACY_RULES PRIVACY_ALLOW PRIVACY_HISTORY_ACCEPT MAX_BLOB_KB"
 
 usage() {
@@ -228,7 +228,7 @@ if [ "$mode" != --defaults ]; then
             form["LICENSE"] = "MIT or none"
             form["CI_RUNNER"] = form["RELEASE_RUNNER"] = "ubuntu or windows"
             form["CI_STAGES"] = "lint, test or system, each once"
-            form["CI_WEEKLY"] = "yes or no"
+            form["CI_WEEKLY"] = form["SEAL"] = "yes or no"
             form["PYTHON"] = "3.N or empty"
             form["PS_MODULES"] = "pester or psscriptanalyzer, each once, or empty"
             form["IMAGE_PLATFORMS"] = "linux/amd64 or linux/arm64, each once, or empty"
@@ -263,7 +263,7 @@ if [ "$mode" != --defaults ]; then
             else if (k == "LICENSE") ok = v == "MIT" || v == "none"
             else if (k == "CI_RUNNER" || k == "RELEASE_RUNNER") ok = v == "ubuntu" || v == "windows"
             else if (k == "CI_STAGES") ok = words(v, "lint test system")
-            else if (k == "CI_WEEKLY") ok = v == "yes" || v == "no"
+            else if (k == "CI_WEEKLY" || k == "SEAL") ok = v == "yes" || v == "no"
             else if (k == "PYTHON") ok = v == "" || v ~ /^3\.[0-9]+$/
             else if (k == "PS_MODULES") ok = words(v, "pester psscriptanalyzer")
             else if (k == "IMAGE_PLATFORMS") ok = words(v, "linux/amd64 linux/arm64")
@@ -291,11 +291,18 @@ if [ "$mode" != --defaults ]; then
             } else if (k == "MAX_BLOB_KB") ok = v ~ /^[1-9][0-9]*$/ && length(v) <= 7
             if (!ok) { problem(k ": expected " form[k]); next }
             print FNR us k us v
+            got[k] = v
         }
         END {
             if (!("NAME" in seen)) { print "conf: NAME is required" > "/dev/stderr"; bad = 1 }
             if (!("VISIBILITY" in seen)) { print "conf: VISIBILITY is required" > "/dev/stderr"; bad = 1 }
             if (!("RELEASE_KIND" in seen)) { print "conf: RELEASE_KIND is required" > "/dev/stderr"; bad = 1 }
+            # A seal follows a release of the standard flow, and only its releasing block has the
+            # Seal step.
+            if (got["SEAL"] == "yes" && got["RELEASE_KIND"] == "legacy") {
+                print "conf: SEAL=yes needs a RELEASE_KIND other than legacy" > "/dev/stderr"
+                bad = 1
+            }
             exit bad
         }' "$tmp/kinds" "$tmp/in" > "$tmp/values" || status=$?
     [ "$status" -le 1 ] || fail "cannot parse the config"
@@ -353,7 +360,7 @@ print_values() {
             repeat["VERSION_COPY"] = repeat["PRIVACY_ALLOW"] = repeat["PRIVACY_HISTORY_ACCEPT"] = 1
             d["ROLE"] = "consumer"; d["LICENSE"] = "MIT"; d["CI_RUNNER"] = "ubuntu"
             d["CI_STAGES"] = "test"; d["CI_WEEKLY"] = "no"; d["RELEASE_RUNNER"] = "ubuntu"
-            d["MAX_BLOB_KB"] = "1024"
+            d["MAX_BLOB_KB"] = "1024"; d["SEAL"] = "no"
         }
         {
             if ($2 in repeat) list[$2] = list[$2] (want == "" ? $2 "=" : "") $3 "\n"

@@ -242,7 +242,7 @@ assert_problem() {
     changelog_first
     sed -i 's|keepachangelog.com/en/1.1.0/|keepachangelog.com/en/1.0.0/|' "$FAKE/CHANGELOG.md"
     check
-    assert_problem "CHANGELOG.md: the header must name Keep a Changelog 1.1.0 and Semantic Versioning 2.0.0, as spec 3.8 writes them"
+    assert_problem "CHANGELOG.md: the header must name Keep a Changelog 1.1.0 and Semantic Versioning 2.0.0, as templates/CHANGELOG.md in repo-standard writes them"
     changelog_first
     sed -i 's/Each version is the GitHub release `vX.Y.Z`./There are no releases yet./' "$FAKE/CHANGELOG.md"
     check

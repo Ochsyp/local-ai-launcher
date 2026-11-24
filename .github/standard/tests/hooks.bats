@@ -747,6 +747,57 @@ named_home() {
     refute_term_shown
 }
 
+@test "pre-push finds a denylist term in a blob that a release tag points at directly" {
+    local blob
+    make_repo
+    add_remote
+    write_denylist
+    git -C "$REPO" switch -q -c feat/example
+    commit_config RELEASE_KIND=legacy
+    blob=$(printf 'notes by %s\n' "$DENY_TERM" | git -C "$REPO" hash-object -w --stdin)
+    git -C "$REPO" tag v1.0.0 "$blob"
+    run sh -c 'cd "$1" && exec sh .githooks/pre-push origin https://example.invalid/r.git' sh "$REPO" \
+        <<< "refs/tags/v1.0.0 $blob refs/tags/v1.0.0 $ZERO_OID"
+    [[ $status -ne 0 && $output == *": denylist"* ]] ||
+        { printf 'exit %s\n%s\n' "$status" "$output" >&2; return 1; }
+    refute_term_shown
+}
+
+@test "pre-push finds a denylist term in a blob that a ref outside heads and tags points at" {
+    local blob
+    make_repo
+    add_remote
+    write_denylist
+    git -C "$REPO" switch -q -c feat/example
+    commit_config RELEASE_KIND=tar
+    blob=$(printf 'notes by %s\n' "$DENY_TERM" | git -C "$REPO" hash-object -w --stdin)
+    git -C "$REPO" update-ref refs/example/notes "$blob"
+    run sh -c 'cd "$1" && exec sh .githooks/pre-push origin https://example.invalid/r.git' sh "$REPO" \
+        <<< "refs/example/notes $blob refs/example/notes $ZERO_OID"
+    [[ $status -ne 0 && $output == *": denylist"* ]] ||
+        { printf 'exit %s\n%s\n' "$status" "$output" >&2; return 1; }
+    refute_term_shown
+}
+
+@test "pre-push still finds a term in a committed file whose blob a pushed tag also points at" {
+    local blob
+    make_repo
+    add_remote
+    write_denylist
+    git -C "$REPO" switch -q -c feat/example
+    commit_config RELEASE_KIND=legacy
+    stage notes.txt "notes by $DENY_TERM"
+    commit_unchecked "docs: add notes"
+    blob=$(git -C "$REPO" rev-parse HEAD:notes.txt)
+    git -C "$REPO" tag v1.0.0 "$blob"
+    run sh -c 'cd "$1" && exec sh .githooks/pre-push origin https://example.invalid/r.git' sh "$REPO" \
+        <<< "refs/tags/v1.0.0 $blob refs/tags/v1.0.0 $ZERO_OID
+refs/heads/feat/example $(git -C "$REPO" rev-parse HEAD) refs/heads/feat/example $ZERO_OID"
+    [[ $status -ne 0 && $output == *": denylist"* ]] ||
+        { printf 'exit %s\n%s\n' "$status" "$output" >&2; return 1; }
+    refute_term_shown
+}
+
 @test "a relative list named like an awk assignment or an option is still read" {
     local name
     make_repo
