@@ -118,6 +118,12 @@ Describe 'Get-LiveFailureText' {
         $text | Should -Not -Match 'Re-run'
     }
 
+    It 'sends a failed restart to the start and stop code' {
+        $text = Get-LiveFailureText -Kind 'Restart' -Message 'start did not restart mcpo.'
+        $text | Should -Match '^LIVE CHECK: the restart after a settings change failed\. start did not restart mcpo\.'
+        $text | Should -Match 'start and stop code'
+    }
+
     It 'does not call a failed setup step a difference in the files server' {
         $text = Get-LiveFailureText -Kind 'Setup' -Message 'Drive C: has 0.1 GB free.'
         $text | Should -Match 'Drive C:'
@@ -129,21 +135,29 @@ Describe 'Get-LiveFailureText' {
 Describe 'Invoke-LiveCheck against a stand-in for mcpo' {
     BeforeAll {
         # A compiled program, as a PowerShell stand-in costs seconds per start on a CI runner. It answers with
-        # spec.json and listed.json from its folder, follows mode.txt, and adds its port and PID to started.txt.
+        # spec.json from its folder, follows mode.txt, and adds its port and PID to started.txt. As the real server
+        # does, it lists the folder that the mcpo.json named by --config gives, then those in extra.txt; with mode
+        # KeepFolder it lists the folder of its first start instead, as an mcpo that kept its old settings would.
         $standInDir = Join-Path $TestDrive 'stand-in'
         $null = New-Item -ItemType Directory -Path $standInDir
         $standIn = Join-Path $standInDir 'mcpo.exe'
-        Add-Type -OutputType ConsoleApplication -OutputAssembly $standIn -TypeDefinition @'
+        Add-Type -OutputType ConsoleApplication -OutputAssembly $standIn -ReferencedAssemblies 'System.Web.Extensions' -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Web.Script.Serialization;
 
 public static class McpoStandIn {
     public static int Main(string[] args) {
         int port = 0;
-        for (int i = 0; i + 1 < args.Length; i++) { if (args[i] == "--port") { port = int.Parse(args[i + 1]); } }
+        string config = null;
+        for (int i = 0; i + 1 < args.Length; i++) {
+            if (args[i] == "--port") { port = int.Parse(args[i + 1]); }
+            if (args[i] == "--config") { config = args[i + 1]; }
+        }
         string folder = AppDomain.CurrentDomain.BaseDirectory;
         string started = Path.Combine(folder, "started.txt");
         int earlier = File.Exists(started) ? File.ReadAllLines(started).Length : 0;
@@ -151,8 +165,20 @@ public static class McpoStandIn {
         string mode = File.ReadAllText(Path.Combine(folder, "mode.txt")).Trim();
         if (mode == "ExitAlways" || (mode == "ExitFirst" && earlier == 0)) { return 3; }
         if (mode == "NoRoutes") { Console.Error.WriteLine("The node server did not start."); }
+        JavaScriptSerializer json = new JavaScriptSerializer();
+        Dictionary<string, object> servers = (Dictionary<string, object>)((Dictionary<string, object>)json.DeserializeObject(File.ReadAllText(config)))["mcpServers"];
+        Dictionary<string, object> files = (Dictionary<string, object>)servers["files"];
+        object[] serverArgs = (object[])files["args"];
+        string root = (string)serverArgs[serverArgs.Length - 1];
+        string roots = Path.Combine(folder, "folders.txt");
+        File.AppendAllText(roots, root + Environment.NewLine);
+        if (mode == "KeepFolder") { root = File.ReadAllLines(roots)[0]; }
+        List<string> lines = new List<string>();
+        lines.Add("Allowed directories:");
+        lines.Add(root);
+        foreach (string extra in File.ReadAllLines(Path.Combine(folder, "extra.txt"))) { if (extra.Trim().Length > 0) { lines.Add(extra); } }
         byte[] spec = File.ReadAllBytes(Path.Combine(folder, "spec.json"));
-        byte[] listed = File.ReadAllBytes(Path.Combine(folder, "listed.json"));
+        byte[] listed = Encoding.UTF8.GetBytes(json.Serialize(string.Join("\n", lines.ToArray())));
         TcpListener listener = new TcpListener(IPAddress.Loopback, port);
         listener.Start();
         while (true) {
@@ -188,23 +214,20 @@ public static class McpoStandIn {
 '@
 
         # Run the live check against the stand-in with the answer $Change makes from the correct one.
-        # Returns @{ Code; Said; Work; Started (one 'port PID' line per start) }.
+        # Returns @{ Code; Said; Last; Work; Started (one 'port PID' line per start); Folders (one per start that served) }.
         function Invoke-StandInCheck {
             param([hashtable]$Change = @{}, [int]$StopTimeoutSeconds = 10, [int]$StartTimeoutSeconds = 30)
             $answer = @{ Version = $serverVersion; Tools = $allowedTools; ExtraFolders = @(); Mode = 'Serve' }
             foreach ($key in $Change.Keys) { $answer[$key] = $Change[$key] }
             $work = Join-Path $TestDrive ('work-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-            # The folder as the launcher spells it to the server.
-            $root = & (Get-Module LocalAI) { param($Path) (Resolve-OnDiskPath -Path $Path).Path } (Join-Path $work 'root')
             $routes = @{}
             foreach ($tool in $answer.Tools) { $routes["/$tool"] = @{ post = @{ operationId = $tool } } }
             $spec = ConvertTo-Json -Depth 6 -InputObject @{ openapi = '3.1.0'; info = @{ title = 'secure-filesystem-server'; version = $answer.Version }; paths = $routes }
-            $listed = ConvertTo-Json -InputObject ((@('Allowed directories:', $root) + @($answer.ExtraFolders)) -join "`n")
             [IO.File]::WriteAllText((Join-Path $standInDir 'spec.json'), $spec)
-            [IO.File]::WriteAllText((Join-Path $standInDir 'listed.json'), $listed)
+            [IO.File]::WriteAllText((Join-Path $standInDir 'extra.txt'), (@($answer.ExtraFolders) -join "`r`n"))
             [IO.File]::WriteAllText((Join-Path $standInDir 'mode.txt'), $answer.Mode)
             $startedFile = Join-Path $standInDir 'started.txt'
-            Remove-Item -LiteralPath $startedFile -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $startedFile, (Join-Path $standInDir 'folders.txt') -Force -ErrorAction SilentlyContinue
             $script:said = New-Object System.Collections.Generic.List[string]
             Mock Write-Host { $script:said.Add([string]$Object) }
             $code = Invoke-LiveCheck -RepoRoot $repoRoot -WorkRoot $work -ToolCache 'unused' -StartTimeoutSeconds $StartTimeoutSeconds -StopTimeoutSeconds $StopTimeoutSeconds
@@ -214,6 +237,7 @@ public static class McpoStandIn {
                 Last    = $script:said[$script:said.Count - 1]
                 Work    = $work
                 Started = @(if (Test-Path -LiteralPath $startedFile) { Get-Content -LiteralPath $startedFile })
+                Folders = @(if (Test-Path -LiteralPath (Join-Path $standInDir 'folders.txt')) { Get-Content -LiteralPath (Join-Path $standInDir 'folders.txt') })
             }
         }
 
@@ -244,7 +268,7 @@ public static class McpoStandIn {
         $run = Invoke-StandInCheck
         $run.Code | Should -Be 0 -Because $run.Said
         $run.Said | Should -Match ([regex]::Escape($serverVersion))
-        $run.Started.Count | Should -Be 1
+        $run.Started.Count | Should -Be 2 -Because 'the restart starts mcpo once more'
         Test-StandInGone $run.Started | Should -BeTrue
         Test-Path -LiteralPath $run.Work | Should -BeFalse
         $env:LOCALAPPDATA | Should -Be $before
@@ -270,7 +294,7 @@ public static class McpoStandIn {
     It 'tries once more on a new port when mcpo cannot start on the first' {
         $run = Invoke-StandInCheck -Change @{ Mode = 'ExitFirst' }
         $run.Code | Should -Be 0 -Because $run.Said
-        $run.Started.Count | Should -Be 2
+        $run.Started.Count | Should -Be 3 -Because 'two first starts and the restart'
         ($run.Started[0] -split ' ')[0] | Should -Not -Be ($run.Started[1] -split ' ')[0]
         Test-StandInGone $run.Started | Should -BeTrue
     }
@@ -307,7 +331,7 @@ public static class McpoStandIn {
         }
         $run = Invoke-StandInCheck -Change @{ Mode = 'ExitFirst' }
         $run.Code | Should -Be 0 -Because $run.Said
-        $run.Started.Count | Should -Be 2
+        $run.Started.Count | Should -Be 3 -Because 'two first starts and the restart'
         Test-StandInGone $run.Started | Should -BeTrue
     }
 
@@ -366,6 +390,90 @@ public static class McpoStandIn {
     It 'handles a folder path that holds an apostrophe' {
         $settings = Get-LiveSetting -RepoRoot $repoRoot -Paths (Get-LocalAIPaths -Root (Join-Path $TestDrive "quote'd\local-ai")) -Root "C:\quote'd\root" -Port 18189
         $settings.Files.Root | Should -BeExactly "C:\quote'd\root"
+    }
+
+    Context 'the restart after a settings change' {
+        It 'restarts mcpo through start''s own code on the same port, and the new one serves only the new folder' {
+            $run = Invoke-StandInCheck
+            $run.Code | Should -Be 0 -Because $run.Said
+            $run.Started.Count | Should -Be 2
+            ($run.Started[1] -split ' ')[0] | Should -Be ($run.Started[0] -split ' ')[0] -Because 'only Files.Root changed'
+            $run.Folders[0] | Should -BeLike '*\root'
+            $run.Folders[1] | Should -BeLike '*\root2'
+            $run.Said | Should -Match "The file tools' settings changed since mcpo started, so start restarts it\."
+            $run.Last | Should -Match 'restarted'
+            Test-StandInGone $run.Started | Should -BeTrue
+            Test-Path -LiteralPath $run.Work | Should -BeFalse
+        }
+
+        It 'fails naming the restart when start reuses mcpo, as it does when the second mcpo.json is the first' {
+            $script:configs = 0
+            Mock New-McpoConfig {
+                $script:configs++
+                if ($script:configs -eq 1) {
+                    $given = @{ Settings = $Settings; Path = $Path; NodePath = $NodePath; ServerScript = $ServerScript }
+                    $script:firstEntry = & (Get-Module LocalAI) { param($Given) New-McpoConfig @Given } $given
+                }
+                $script:firstEntry
+            }
+            $run = Invoke-StandInCheck
+            $run.Code | Should -Be 1
+            $run.Last | Should -Match '^LIVE CHECK: the restart after a settings change failed\.'
+            $run.Last | Should -Match 'did not restart mcpo'
+            $run.Started.Count | Should -Be 1
+            Test-StandInGone $run.Started | Should -BeTrue
+            Test-Path -LiteralPath $run.Work | Should -BeFalse
+        }
+
+        It 'fails naming the restart when the old mcpo does not stop' {
+            Mock -ModuleName LocalAI Stop-LocalAIService { 'failed' }
+            $run = Invoke-StandInCheck
+            $run.Code | Should -Be 1
+            $run.Last | Should -Match '^LIVE CHECK: the restart after a settings change failed\.'
+            $run.Last | Should -Match 'mcpo did not stop for its restart'
+            $run.Started.Count | Should -Be 1
+            Test-StandInGone $run.Started | Should -BeTrue
+            Test-Path -LiteralPath $run.Work | Should -BeFalse
+        }
+
+        It 'fails when the stop for the restart says in red that it failed, although a second try worked' {
+            $script:moduleStops = 0
+            Mock -ModuleName LocalAI Stop-LocalAIService {
+                $script:moduleStops++
+                if ($script:moduleStops -gt 1) { return 'stale' }
+                $null = & taskkill.exe /PID $Record.Pid /T /F 2>&1
+                Wait-Process -Id $Record.Pid -Timeout 5 -ErrorAction SilentlyContinue
+                # In the module, where this test's own stand-in for Write-Host does not reach, as for the real stop.
+                & (Get-Module LocalAI) { Write-Host 'Files (PID 1) still runs, or port 1 is still held, 10 s after taskkill.' -ForegroundColor Red }
+                'failed'
+            }
+            $run = Invoke-StandInCheck
+            $run.Code | Should -Be 1
+            $run.Last | Should -Match '^LIVE CHECK: the restart after a settings change failed\.'
+            $run.Last | Should -Match 'said in red: Files \(PID 1\) still runs'
+            Test-StandInGone $run.Started | Should -BeTrue
+            Test-Path -LiteralPath $run.Work | Should -BeFalse
+        }
+
+        It 'fails when the new mcpo still lists the old folder' {
+            $run = Invoke-StandInCheck -Change @{ Mode = 'KeepFolder' }
+            $run.Code | Should -Be 1
+            $run.Last | Should -Match '^LIVE CHECK: the restart after a settings change failed\.'
+            $run.Last | Should -Match "folders '[^']*\\root', not Files\.Root [^ ]*\\root2 alone"
+            $run.Started.Count | Should -Be 2
+            Test-StandInGone $run.Started | Should -BeTrue
+            Test-Path -LiteralPath $run.Work | Should -BeFalse
+        }
+
+        It 'fails when the old mcpo still runs after a restart that start reported' {
+            Mock Test-RecordedProcess { $true }
+            $run = Invoke-StandInCheck
+            $run.Code | Should -Be 1
+            $run.Last | Should -Match '^LIVE CHECK: the restart after a settings change failed\.'
+            $run.Last | Should -Match 'The old mcpo \(PID \d+\) still runs'
+            Test-StandInGone $run.Started | Should -BeTrue
+            Test-Path -LiteralPath $run.Work | Should -BeFalse
+        }
     }
 }
 

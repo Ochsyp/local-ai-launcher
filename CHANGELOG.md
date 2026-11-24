@@ -19,6 +19,9 @@ All notable changes to this project are listed here. The format follows
   launcher's settings on a temporary folder, and fails unless they offer exactly the five read
   tools and that one folder. It uses uv 0.13.7, pinned with a hash in
   `tests/requirements-live.txt`, only in CI. Nothing changes in what the launcher does or ships.
+- The CI live check also restarts the real mcpo: it changes `Files.Root` to a second folder and
+  fails unless `start`'s own code stops the running mcpo without an error, starts it again, and
+  the new mcpo serves only the new folder.
 - The Start menu shortcut Update Local AI, which runs `local-ai.cmd update`. `local-ai
   shortcuts` creates it beside Start, Stop and Status Local AI, and `uninstall` and
   `shortcuts -Remove` remove it with them. The refusal inside a packaged app and its line in
