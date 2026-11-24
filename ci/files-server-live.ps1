@@ -243,8 +243,11 @@ function Invoke-LiveRestart {
         $why = if ($restarted.Contains('Files')) { "start restarted mcpo, but then: $($_.Exception.Message)" } else { "start did not restart mcpo: $($_.Exception.Message)" }
         throw (Get-LiveFailure -Kind 'Restart' -Message $why)
     }
+    # When start reused mcpo, its note and the old mcpo that still runs only repeat that.
+    if (-not $restarted.Contains('Files')) {
+        throw (Get-LiveFailure -Kind 'Restart' -Message 'start did not restart mcpo, although Files.Root changed; it reused the running one.')
+    }
     $problems = @(
-        if (-not $restarted.Contains('Files')) { "start did not restart mcpo, although Files.Root changed; it reused the running one." }
         if (-not $said.Contains($Service.RestartNote)) { "start did not print the file tools' restart note, so the first start recorded no ConfigSha256 or another one." }
         if ($red.Count -gt 0) { "The stop for the restart said in red: $($red -join ' ')" }
         foreach ($part in @($old, $(if ($old -is [hashtable]) { $old.Listener }))) {

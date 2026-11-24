@@ -492,6 +492,23 @@ public static class McpoStandIn {
             Test-Path -LiteralPath $run.Work | Should -BeFalse
         }
 
+        It 'fails naming only the missing restart when start reuses mcpo for unchanged settings' {
+            # As Get-LiveSetting, but the restart's second folder becomes the first again.
+            Mock Get-LiveSetting {
+                $null = [IO.Directory]::CreateDirectory($Paths.Root)
+                $first = ($Root -replace 'root2$', 'root') -replace "'", "''"
+                [IO.File]::WriteAllText($Paths.Settings, "@{ Files = @{ Root = '$first' }; Ports = @{ Files = $Port } }")
+                Get-LocalAISettings -DefaultsPath (Join-Path $repoRoot 'config\defaults.psd1') -UserPath $Paths.Settings
+            }
+            $run = Invoke-StandInCheck
+            $run.Code | Should -Be 1
+            $run.Last | Should -BeExactly ("LIVE CHECK: the restart after a settings change failed. start did not restart mcpo, although Files.Root changed; it " +
+                'reused the running one. Look at the start and stop code in this pull request.')
+            $run.Started.Count | Should -Be 1
+            Test-StandInGone $run.Started | Should -BeTrue
+            Test-Path -LiteralPath $run.Work | Should -BeFalse
+        }
+
         It 'fails naming the restart when the old mcpo does not stop' {
             Mock -ModuleName LocalAI Stop-LocalAIService { 'failed' }
             $run = Invoke-StandInCheck
