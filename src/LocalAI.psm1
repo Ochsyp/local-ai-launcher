@@ -3259,7 +3259,8 @@ function Get-McpoConfigHash {
     [OutputType([string])]
     param(
         [Parameter(Mandatory)][string]$FilePath,
-        [Parameter(Mandatory)][string[]]$ArgumentList,
+        # status passes '' as the key when files.key cannot be read; the key stays out of the hash either way.
+        [Parameter(Mandatory)][AllowEmptyString()][string[]]$ArgumentList,
         [Parameter(Mandatory)][hashtable]$Server,
         [string]$ServerVersion,
         [string]$LockSha256
@@ -3301,6 +3302,20 @@ function New-McpoConfig {
     $server = Get-McpoServerEntry -Settings $Settings -NodePath $NodePath -ServerScript $ServerScript
     Write-LocalAIState -Path $Path -State @{ mcpServers = @{ files = $server } } -Ascii
     return $server
+}
+
+# Return the $Files table Get-LocalAIService takes for mcpo: from install-stamp.json's Files entry $Record, the key $Key and mcpo.json's entry $Server.
+# start and status both build it here, so status hashes the same values start recorded. Pure.
+function Get-McpoServiceInput {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][hashtable]$Record,
+        [AllowEmptyString()][string]$Key = '',
+        [hashtable]$Server
+    )
+    return @{ McpoPath = $Record.McpoPath; McpoVersion = $Record.McpoVersion; Key = $Key; Server = $Server; ServerVersion = $Record.ServerVersion
+        LockSha256 = $Record.LockSha256 }
 }
 
 # Return the files server version mcpo at the base URL serves: GET /files/openapi.json with the Bearer $Key must answer within 5 s as
@@ -3616,8 +3631,8 @@ function Get-LocalAIInheritedName {
 }
 
 # Return the service table in start order: optional ComfyUI from $ComfyUI (stamp: Commit, Python) for Images.Enabled and an $ImageWorkflow, with
-# Images.UnloadChat the image gate, for Files.Root mcpo from $Files (McpoPath, McpoVersion, Key; the start verb adds Server, ServerVersion and
-# LockSha256, which set the entry's ConfigSha256), then required Open WebUI from $OpenWebUI. Identity takes the entry and returns the version to show
+# Images.UnloadChat the image gate, for Files.Root mcpo from $Files (McpoPath, McpoVersion, Key, and with Server also ServerVersion and LockSha256,
+# which set the entry's ConfigSha256), then required Open WebUI from $OpenWebUI. Identity takes the entry and returns the version to show
 # or throws; Pin and Repair name the pin and the install; InheritEnvironment names the variables each may inherit from this window. Warns for dropped
 # Args or gate.
 function Get-LocalAIService {
@@ -3806,7 +3821,7 @@ function Get-LocalAIService {
             Root             = (Resolve-OnDiskPath -Path $tools.Root).Path
             FilePath         = $Files.McpoPath
             ArgumentList     = $mcpoArguments
-            # Set only for the start verb, which passes Files.Server and restarts an mcpo whose recorded hash differs.
+            # Set when $Files has Server: start restarts an mcpo whose recorded hash differs, and status names that start.
             ConfigSha256     = $(if ($Files.Server) {
                     Get-McpoConfigHash -FilePath $Files.McpoPath -ArgumentList $mcpoArguments -Server $Files.Server -ServerVersion $Files.ServerVersion `
                         -LockSha256 $Files.LockSha256
@@ -4419,8 +4434,7 @@ function Start-LocalAI {
                 if ($served) {
                     $mcpoKey = Get-FilesKey -Path $paths.FilesKey
                     $server = New-McpoConfig -Settings $settings -Path $paths.McpoConfig -NodePath $record.Node.Path -ServerScript $record.Script
-                    $files = @{ McpoPath = $record.McpoPath; McpoVersion = $record.McpoVersion; Key = $mcpoKey; Server = $server
-                        ServerVersion = $record.ServerVersion; LockSha256 = $record.LockSha256 }
+                    $files = Get-McpoServiceInput -Record $record -Key $mcpoKey -Server $server
                 }
             }
         } catch {
@@ -5002,7 +5016,9 @@ function Get-OllamaIcon {
 }
 
 # Return Get-LocalAIService's table for $Settings from the install-stamp.json table $Stamp, with a stand-in for each part install has not recorded, so
-# every service the settings turn on is listed; mcpo gets the key in Paths.FilesKey, or '' when it cannot be read. Reads files only, and never prints the key.
+# every service the settings turn on is listed; mcpo gets the key in Paths.FilesKey, or '' when it cannot be read, and mcpo.json's entry as start
+# would write it, so its ConfigSha256 is what start records. With $RepoRoot, Open WebUI's environment holds the real image workflow; without it, or when
+# the workflow cannot be read, a stand-in, and the Open WebUI entry gets SettingsUnknown naming why. Reads files only, and never prints the key.
 function Get-LocalAIServicePlan {
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -5010,20 +5026,31 @@ function Get-LocalAIServicePlan {
         [Parameter(Mandatory)][hashtable]$Settings,
         [Parameter(Mandatory)][hashtable]$Paths,
         [Parameter(Mandatory)][hashtable]$Stamp,
-        [Parameter(Mandatory)][string]$OllamaUrl
+        [Parameter(Mandatory)][string]$OllamaUrl,
+        [string]$RepoRoot
     )
     $openWebUI = $Stamp['OpenWebUI']
     if ($openWebUI -isnot [hashtable]) { $openWebUI = @{ Version = $null; Path = $null; Python = $null } }
     $comfyUI = $null
     $workflow = $null
+    $unknown = $null
     if ($Settings.Images.Enabled) {
         $comfyUI = $Stamp['ComfyUI']
         if ($comfyUI -isnot [hashtable] -or -not $comfyUI.Python) {
             # GetFullPath and Combine, unlike the provider and Join-Path, do not refuse a drive this PC does not have now.
             $comfyUI = @{ Python = [IO.Path]::Combine([IO.Path]::GetFullPath([string]$Settings.ComfyUI.Dir), '.venv\Scripts\python.exe'); Commit = $null }
         }
-        # Only Open WebUI's image keys take it, and the callers do not start Open WebUI.
+        # Only Open WebUI's image keys take it.
         $workflow = @{ Workflow = ''; Nodes = '' }
+        $unknown = 'no repository folder was given to read the image workflow from'
+        if ($RepoRoot) {
+            try {
+                $workflow = Get-ImageWorkflow -Settings $Settings -RepoRoot $RepoRoot
+                $unknown = $null
+            } catch {
+                $unknown = $_.Exception.Message
+            }
+        }
     }
     $files = $null
     if ($Settings.Files.Root) {
@@ -5031,10 +5058,23 @@ function Get-LocalAIServicePlan {
         try { $key = Get-FilesKey -Path $Paths.FilesKey } catch { $key = '' }
         $record = $Stamp['Files']
         if ($record -isnot [hashtable]) { $record = @{} }
-        $files = @{ McpoPath = $record.McpoPath; McpoVersion = $record.McpoVersion; Key = $key }
+        # Without the node and script install recorded, start would not run mcpo, so there is nothing to hash.
+        $server = $null
+        if ($record.Node -is [hashtable] -and $record.Node.Path -and $record.Script) {
+            try {
+                $server = Get-McpoServerEntry -Settings $Settings -NodePath $record.Node.Path -ServerScript $record.Script
+            } catch {
+                Write-Verbose "mcpo.json's entry cannot be built, so mcpo's settings are not compared: $($_.Exception.Message)"
+            }
+        }
+        $files = Get-McpoServiceInput -Record $record -Key $key -Server $server
     }
-    Get-LocalAIService -Settings $Settings -Paths $Paths -OllamaUrl $OllamaUrl -OpenWebUI $openWebUI -ComfyUI $comfyUI -ImageWorkflow $workflow `
-        -Files $files -WarningAction SilentlyContinue
+    $services = @(Get-LocalAIService -Settings $Settings -Paths $Paths -OllamaUrl $OllamaUrl -OpenWebUI $openWebUI -ComfyUI $comfyUI -ImageWorkflow $workflow `
+            -Files $files -WarningAction SilentlyContinue)
+    if ($unknown) {
+        foreach ($service in $services) { if ($service.Name -eq 'OpenWebUI') { $service.SettingsUnknown = $unknown } }
+    }
+    $services
 }
 
 # Return a new, empty status section: Key names it in the -Json document, Title heads it on screen, Data holds its facts for -Json, and Lines
@@ -5199,9 +5239,41 @@ function Get-StatusOllamaSection {
     return $section
 }
 
+# Return whether $Service, an entry of the service table status builds, runs with the settings its state.json $Record holds: $true when the hashes start
+# would record now equal the record's, $false when they differ or the record has none, as an older launcher's, and $null for mcpo without a
+# ConfigSha256, which the table cannot build without what install recorded. As Use-LocalAIService compares them. Pure.
+function Test-LocalAIServiceSetting {
+    [CmdletBinding()]
+    [OutputType([object])]
+    param(
+        [Parameter(Mandatory)][hashtable]$Service,
+        [Parameter(Mandatory)][hashtable]$Record
+    )
+    if ($Service.Name -eq 'Files' -and -not $Service.ConfigSha256) { return $null }
+    $environment = Get-LocalAIEnvironmentHash -Environment $Service.Environment -InheritEnvironment $Service.InheritEnvironment
+    if ([string]$Record['EnvironmentSha256'] -cne $environment) { return $false }
+    if ($Service.Name -eq 'Files') { return [string]$Record['ConfigSha256'] -ceq $Service.ConfigSha256 }
+    return $true
+}
+
+# Return the advice line, without its level, that $DisplayName ($Name in the service table) runs with older settings, naming the command that fixes it:
+# start alone for mcpo, which start restarts by itself, else stop and then start. Pure.
+function Get-StatusSettingsAdvice {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$DisplayName
+    )
+    $fix = if ($Name -eq 'Files') { "Run 'local-ai start', which restarts it." } else { "Run 'local-ai stop', then 'local-ai start'." }
+    return "${DisplayName}: runs with older settings than this launcher would start it with. $fix"
+}
+
 # Add to status section $Section (Data.services and Lines) what holds for $Service, an entry of the service table, and its state.json $Record: whether
 # the recorded process runs, its PIDs and uptime, the addresses on its port and who holds it, the version Identity reports against the pin and, for
-# ComfyUI, the device. A problem is 'down' for a required service, 'degraded' for an optional one and 'info' when -Disabled. Reads only.
+# ComfyUI, the device. A problem is 'down' for a required service, 'degraded' for an optional one and 'info' when -Disabled. For a running mcpo or
+# ComfyUI, settingsCurrent says whether it runs with the settings start would give it now, with an 'advice' line when not; Open WebUI's is left $null,
+# for Get-StatusServiceSection to judge once it knows which parts are up. Reads only.
 function Add-StatusService {
     [CmdletBinding()]
     param(
@@ -5217,7 +5289,7 @@ function Add-StatusService {
     $item = [ordered]@{
         name = $Service.Name; displayName = $display; enabled = -not $Disabled; required = [bool]$Service.Required; port = $port; url = $Service.Url
         state = 'not running'; pid = $null; listenerPid = $null; uptimeSeconds = $null; listeners = @(); version = $null; error = $null
-        pinSetting = $null; pin = $null; installed = $null; cuda = $null; outLog = $Service.OutLog; errLog = $Service.ErrLog
+        pinSetting = $null; pin = $null; installed = $null; cuda = $null; outLog = $Service.OutLog; errLog = $Service.ErrLog; settingsCurrent = $null
     }
     $Section.Data.services.Add($item)
     $pin = $Service.Pin
@@ -5311,6 +5383,15 @@ function Add-StatusService {
         }
         & $add $problem $text
     }
+    # Whether it still answers does not matter: a changed root or port is exactly what makes mcpo stop answering as start would check it.
+    if (-not $Disabled -and $item.state -eq 'running' -and @('Files', 'ComfyUI') -contains $Service.Name) {
+        try {
+            $item.settingsCurrent = Test-LocalAIServiceSetting -Service $Service -Record $Record
+        } catch {
+            Write-Verbose "The settings $display runs with cannot be compared: $($_.Exception.Message)"
+        }
+        if ($item.settingsCurrent -eq $false) { & $add 'advice' (Get-StatusSettingsAdvice -Name $Service.Name -DisplayName $display) }
+    }
     if ($item.state -eq 'unreadable' -and -not $Disabled) {
         & $add 'degraded' ("${display}: runs ($ids), but this window may not inspect it, as when it was started from an elevated window, so 'local-ai stop' " +
             'must run in an elevated window too.')
@@ -5324,7 +5405,9 @@ function Add-StatusService {
 
 # Return the status section for the services. With $Settings: each entry of the table Get-LocalAIServicePlan builds from $Stamp, Open WebUI first, a line
 # for each the settings turn off, and as -Disabled any other service $State records. Without settings, or when the table cannot be built: the services
-# $State records, judged by what their records hold, with Open WebUI required even when it has no record. Reads only.
+# $State records, judged by what their records hold, with Open WebUI required even when it has no record. A running Open WebUI's settings are compared,
+# with the image workflow from $RepoRoot, only while every other service of the table runs and answers: start gives it the image and file tools only of
+# the parts that are up, so with one down a difference proves nothing. Its advice line follows its own lines. Reads only.
 function Get-StatusServiceSection {
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -5333,7 +5416,8 @@ function Get-StatusServiceSection {
         [Parameter(Mandatory)][hashtable]$Paths,
         [Parameter(Mandatory)][hashtable]$State,
         [Parameter(Mandatory)][hashtable]$Stamp,
-        [Parameter(Mandatory)][string]$OllamaUrl
+        [Parameter(Mandatory)][string]$OllamaUrl,
+        [string]$RepoRoot
     )
     $section = Get-StatusSection -Key 'services' -Title 'Services'
     $section.Data.services = New-Object System.Collections.Generic.List[object]
@@ -5344,16 +5428,30 @@ function Get-StatusServiceSection {
     $plan = $null
     if ($Settings) {
         try {
-            $plan = @(Get-LocalAIServicePlan -Settings $Settings -Paths $Paths -Stamp $Stamp -OllamaUrl $OllamaUrl)
+            $plan = @(Get-LocalAIServicePlan -Settings $Settings -Paths $Paths -Stamp $Stamp -OllamaUrl $OllamaUrl -RepoRoot $RepoRoot)
         } catch {
             & $add 'degraded' "The service table cannot be built from the settings, so the services are judged by their state.json records: $($_.Exception.Message)"
         }
     }
     if ($null -ne $plan) {
+        $web = $null
         foreach ($service in @($plan | Where-Object { $_.Required }) + @($plan | Where-Object { -not $_.Required })) {
             $record = if ($records[$service.Name] -is [hashtable]) { $records[$service.Name] } else { $null }
             Add-StatusService -Section $section -Service $service -Record $record
             $listed[$service.Name] = $true
+            if ($service.Name -eq 'OpenWebUI') { $web = @{ Service = $service; Record = $record; Item = $section.Data.services[$section.Data.services.Count - 1]; At = $section.Lines.Count } }
+        }
+        $parts = @($section.Data.services | Where-Object { $_.name -ne 'OpenWebUI' })
+        if ($web -and $web.Item.state -eq 'running' -and -not $web.Service.SettingsUnknown -and
+            @($parts | Where-Object { -not ($_.state -eq 'running' -and $_.version) }).Count -eq 0) {
+            try {
+                $web.Item.settingsCurrent = Test-LocalAIServiceSetting -Service $web.Service -Record $web.Record
+            } catch {
+                Write-Verbose "The settings Open WebUI runs with cannot be compared: $($_.Exception.Message)"
+            }
+            if ($web.Item.settingsCurrent -eq $false) {
+                $section.Lines.Insert($web.At, [ordered]@{ level = 'advice'; text = (Get-StatusSettingsAdvice -Name 'OpenWebUI' -DisplayName $web.Service.DisplayName) })
+            }
         }
         if (-not $Settings.Images.Enabled) {
             & $add 'fact' 'ComfyUI and the image gate are off: Images.Enabled is $false.'
@@ -5798,7 +5896,7 @@ function Get-LocalAIStatusReport {
     $sections.Add($launcher)
     $app = if ($recorded.App -is [hashtable]) { $recorded.App } else { $null }
     $sections.Add((Get-StatusOllamaSection -Url $url -Alias $alias -Superseded $superseded -Stamp $stamp -App $app))
-    $services = Get-StatusServiceSection -Settings $settings -Paths $paths -State $state -Stamp $stamp -OllamaUrl $url
+    $services = Get-StatusServiceSection -Settings $settings -Paths $paths -State $state -Stamp $stamp -OllamaUrl $url -RepoRoot $repoRoot
     $sections.Add($services)
     $sections.Add((Get-StatusSystemSection))
     if ($settings) {

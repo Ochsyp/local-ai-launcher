@@ -225,7 +225,10 @@ By verb:
 - **Ollama**: the version, whether the launcher started the Ollama app, so that `stop` quits
   it, whether it listens beyond loopback, the loaded models and their share of VRAM, whether
   `local-chat` exists, and superseded aliases it still holds.
-- **Services**: each service's process, port, version and pin.
+- **Services**: each service's process, port, version and pin. An advice line names a running
+  service that still uses older settings than `start` would give it now, with the command that
+  fixes it; Open WebUI is compared only while every other service runs. A change `start` does not
+  record, such as `ComfyUI.Args` or a new `files.key`, shows no line.
 - **GPU and Ollama environment**: what `nvidia-smi` reports, and `OLLAMA_KV_CACHE_TYPE`.
 - **File tools folder**: whether `start` would serve `Files.Root`, and why not.
 - **Pins**: what `install-stamp.json` records against the pins. A difference names

@@ -9340,6 +9340,29 @@ Describe 'Get-LocalAIStatus' {
 
         # Return the lowercase SHA-256 of the file $Path.
         function Get-TestHash([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+
+        # Return @{ <service name> = @{ EnvironmentSha256; ConfigSha256 } } as a start that brings every service up records them for $Settings, $Paths,
+        # the stamp $Stamp and the key $Key. Built the way Start-LocalAI builds its table, with the real image workflow and mcpo.json's entry, and not
+        # through status's own code, so a status that hashes anything else shows an advice line on a healthy stack.
+        function Get-TestStartHash([hashtable]$Settings, [hashtable]$Paths, [hashtable]$Stamp, [string]$Key) {
+            & (Get-Module LocalAI) {
+                param($Settings, $Paths, $Stamp, $Key, $RepoRoot)
+                $record = $Stamp.Files
+                $server = Get-McpoServerEntry -Settings $Settings -NodePath $record.Node.Path -ServerScript $record.Script
+                $files = @{ McpoPath = $record.McpoPath; McpoVersion = $record.McpoVersion; Key = $Key; Server = $server
+                    ServerVersion = $record.ServerVersion; LockSha256 = $record.LockSha256 }
+                $workflow = Get-ImageWorkflow -Settings $Settings -RepoRoot $RepoRoot
+                $hashes = @{}
+                foreach ($service in @(Get-LocalAIService -Settings $Settings -Paths $Paths -OllamaUrl (Resolve-OllamaUrl -Setting $Settings.Ollama.Url) `
+                            -OpenWebUI $Stamp.OpenWebUI -ComfyUI $Stamp.ComfyUI -ImageWorkflow $workflow -Files $files -WarningAction SilentlyContinue)) {
+                    $hashes[$service.Name] = @{
+                        EnvironmentSha256 = (Get-LocalAIEnvironmentHash -Environment $service.Environment -InheritEnvironment $service.InheritEnvironment)
+                        ConfigSha256      = $service.ConfigSha256
+                    }
+                }
+                $hashes
+            } $Settings $Paths $Stamp $Key $repoRoot
+        }
     }
 
     BeforeEach {
@@ -9365,7 +9388,9 @@ Describe 'Get-LocalAIStatus' {
             ComfyUI   = @{ Dir = $settings.ComfyUI.Dir; Commit = $settings.ComfyUI.Commit; Python = (Join-Path $settings.ComfyUI.Dir '.venv\Scripts\python.exe') }
             Files     = @{ McpoVersion = '0.0.20'; McpoPath = 'C:\uv\bin\mcpo.exe'; Python = '3.12'; With = @($settings.Files.McpoWith)
                 ExcludeNewer = $settings.Files.McpoExcludeNewer; ServerVersion = $settings.Files.ServerVersion; ToolDir = 'C:\uv\tools'
-                LockSha256 = (Get-TestHash (Join-Path $repoRoot 'config\files-server\package-lock.json')) }
+                LockSha256 = (Get-TestHash (Join-Path $repoRoot 'config\files-server\package-lock.json'))
+                Script = (Join-Path $root 'files-server\node_modules\@modelcontextprotocol\server-filesystem\dist\index.js')
+                Node = @{ Path = 'C:\nodejs\node.exe'; Version = '24.22.1' } }
         }
         Write-LocalAIState -Path $paths.InstallStamp -State $stamp
         # A checkout at the pin with origin ComfyUI.Repo, whose venv marker is what Install-ComfyUI writes for it (it holds no requirements.txt).
@@ -9383,6 +9408,10 @@ Describe 'Get-LocalAIStatus' {
                 OutLog = (Join-Path $paths.Logs "$name.log"); ErrLog = (Join-Path $paths.Logs "$name.err.log") }
         }
         $records.OpenWebUI.Listener = @{ Pid = 4101; StartTicks = $started; Path = 'C:\uv\python\python.exe' }
+        # What a start with these settings recorded, so no service runs with older settings.
+        $hashes = Get-TestStartHash -Settings $settings -Paths $paths -Stamp $stamp -Key $key
+        foreach ($name in $pids.Keys) { $records[$name].EnvironmentSha256 = $hashes[$name].EnvironmentSha256 }
+        $records.Files.ConfigSha256 = $hashes.Files.ConfigSha256
         Write-LocalAIState -Path $paths.State -State @{ Services = $records; Ollama = @{ Url = 'http://127.0.0.1:11434'; Alias = 'local-chat' } }
         $context = @{ Verb = 'status'; Paths = $paths; Settings = $settings; SettingsError = $null; RepoRoot = $repoRoot; Json = $false }
         $world = @{
@@ -10158,6 +10187,166 @@ Describe 'Get-LocalAIStatus' {
         $document.launcher.updateAvailable | Should -BeTrue
         Should -Invoke Get-LauncherStatus -ModuleName LocalAI -ParameterFilter { $RepoRoot -eq $checkout -and $DefaultRepo -ceq 'Ochsyp/local-ai-launcher' }
         Should -Invoke Invoke-RestMethod -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $Uri -like '*api.github.com*' }
+    }
+
+    Context 'with settings that changed since start' {
+        BeforeAll {
+            $filesLine = "File tools: runs with older settings than this launcher would start it with. Run 'local-ai start', which restarts it."
+            $comfyLine = "ComfyUI: runs with older settings than this launcher would start it with. Run 'local-ai stop', then 'local-ai start'."
+            $webLine = "Open WebUI: runs with older settings than this launcher would start it with. Run 'local-ai stop', then 'local-ai start'."
+
+            # Return status -Json's services as a table of settingsCurrent by name.
+            function Get-TestSettingsCurrent([hashtable]$Context) {
+                $Context.Json = $true
+                $document = ConvertFrom-LocalAIJson -Text ([string](Invoke-StatusVerb -Context $Context).Records[0].MessageData)
+                $Context.Json = $false
+                $current = @{}
+                foreach ($service in @($document.services.services)) { $current[$service.name] = $service.settingsCurrent }
+                return $current
+            }
+        }
+
+        It 'adds no line and gives settingsCurrent true while every service runs with what a start would record now, the real image workflow included' {
+            $run = Invoke-StatusVerb -Context $context
+            $run.Code | Should -Be @(0)
+            $run.Printed | Should -Not -BeLike '*older settings*'
+            $current = Get-TestSettingsCurrent -Context $context
+            $current.OpenWebUI | Should -BeTrue
+            $current.ComfyUI | Should -BeTrue
+            $current.Files | Should -BeTrue
+            # The gate's script reads none of its variables, and start never restarts it for them.
+            $current.ContainsKey('ImageGate') | Should -BeTrue
+            $current.ImageGate | Should -BeNullOrEmpty
+        }
+
+        It 'names local-ai start for the file tools, as advice that keeps the exit code, when <Case> changed' -ForEach @(
+            @{ Case = 'Files.Root'; Code = 0 }
+            @{ Case = 'Files.DisabledTools'; Code = 0 }
+            @{ Case = 'Ports.Files'; Code = 2 }
+        ) {
+            switch ($Case) {
+                'Files.Root' {
+                    $null = Write-TestFile "$leaf-other\notes.txt" 'notes'
+                    $settings.Files.Root = Join-Path $TestDrive "$leaf-other"
+                }
+                'Files.DisabledTools' { $settings.Files.DisabledTools = @($settings.Files.DisabledTools) + 'search_files' }
+                # Nothing listens on the new port, which status reports as it does today.
+                'Ports.Files' { $settings.Ports.Files = 18435 }
+            }
+            $run = Invoke-StatusVerb -Context $context
+            $run.Code | Should -Be @($Code)
+            $run.Printed | Should -BeLike "*  Advice: $filesLine*"
+            $run.Warnings | Should -Not -BeLike '*older settings*'
+            (Get-TestSettingsCurrent -Context $context).Files | Should -BeFalse
+        }
+
+        It 'names local-ai start for an mcpo record without ConfigSha256, which an older launcher wrote' {
+            $state = Read-LocalAIState -Path $paths.State
+            $state.Services.Files.Remove('ConfigSha256')
+            [IO.File]::WriteAllText($paths.State, (ConvertTo-Json -InputObject $state -Depth 6))
+            $run = Invoke-StatusVerb -Context $context
+            $run.Code | Should -Be @(0)
+            $run.Printed | Should -BeLike "*  Advice: $filesLine*"
+            (Get-TestSettingsCurrent -Context $context).Files | Should -BeFalse
+        }
+
+        It 'names local-ai stop, then local-ai start, for a ComfyUI whose inherited variables changed' {
+            $settings.ComfyUI.InheritEnvironment = @('HIP_VISIBLE_DEVICES')
+            $run = Invoke-StatusVerb -Context $context
+            $run.Code | Should -Be @(0)
+            $run.Printed | Should -BeLike "*  Advice: $comfyLine*"
+            $run.Printed | Should -Not -BeLike '*Open WebUI: runs with older settings*'
+            $current = Get-TestSettingsCurrent -Context $context
+            $current.ComfyUI | Should -BeFalse
+            $current.OpenWebUI | Should -BeTrue
+        }
+
+        It 'names local-ai stop, then local-ai start, for an Open WebUI whose <Case> changed while every part runs, below its own lines' -ForEach @(
+            @{ Case = 'inherited variables' }
+            # Only the real workflow carries the steps, so this proves status reads it.
+            @{ Case = 'image steps' }
+        ) {
+            switch ($Case) {
+                'inherited variables' { $settings.OpenWebUI.InheritEnvironment = @('HF_ENDPOINT') }
+                'image steps' { $settings.Images.Steps = [int]$settings.Images.Steps + 1 }
+            }
+            $run = Invoke-StatusVerb -Context $context
+            $run.Code | Should -Be @(0)
+            $run.Printed | Should -BeLike "*Open WebUI: 0.12.4 runs at*`n  Advice: $webLine`n*ComfyUI: 0.42.5 runs at*"
+            (Get-TestSettingsCurrent -Context $context).OpenWebUI | Should -BeFalse
+        }
+
+        It 'gives Open WebUI no line and settingsCurrent null while <Name>, which its settings depend on, is down' -ForEach @(
+            @{ Name = 'ComfyUI'; Id = 4200; Port = 18432 }
+            @{ Name = 'ImageGate'; Id = 4300; Port = 18434 }
+            @{ Name = 'Files'; Id = 4400; Port = 18433 }
+        ) {
+            $settings.OpenWebUI.InheritEnvironment = @('HF_ENDPOINT')
+            $null = $world.Live.Remove($Id)
+            $world.Listeners.Remove($Port)
+            $run = Invoke-StatusVerb -Context $context
+            $run.Code | Should -Be @(2)
+            $run.Printed | Should -Not -BeLike '*older settings*'
+            $current = Get-TestSettingsCurrent -Context $context
+            $current.OpenWebUI | Should -BeNullOrEmpty
+            $current[$Name] | Should -BeNullOrEmpty
+        }
+
+        It 'gives Open WebUI no line and settingsCurrent null while mcpo runs but does not answer, as without files.key' {
+            $settings.OpenWebUI.InheritEnvironment = @('HF_ENDPOINT')
+            Remove-Item -LiteralPath $paths.FilesKey
+            $run = Invoke-StatusVerb -Context $context
+            $run.Printed | Should -Not -BeLike '*Open WebUI: runs with older settings*'
+            (Get-TestSettingsCurrent -Context $context).OpenWebUI | Should -BeNullOrEmpty
+        }
+
+        It 'gives Open WebUI no line and settingsCurrent null when the image workflow cannot be read' {
+            $settings.Images.Workflow = Join-Path $TestDrive "$leaf-missing-workflow.json"
+            $run = Invoke-StatusVerb -Context $context
+            $run.Printed | Should -Not -BeLike '*Open WebUI: runs with older settings*'
+            $current = Get-TestSettingsCurrent -Context $context
+            $current.OpenWebUI | Should -BeNullOrEmpty
+            # The others do not depend on it.
+            $current.ComfyUI | Should -BeTrue
+            $current.Files | Should -BeTrue
+        }
+
+        It 'does not fail for a Files.Root that no longer exists, and names local-ai start' {
+            $settings.Files.Root = Join-Path $TestDrive "$leaf-gone"
+            $run = Invoke-StatusVerb -Context $context
+            $run.Other | Should -BeNullOrEmpty
+            $run.Printed | Should -BeLike "*  Advice: $filesLine*"
+            $run.Printed | Should -BeLike '*== Doctor checks ==*'
+        }
+
+        It 'gives a service that does not run, or that the settings leave out, no line and settingsCurrent null' {
+            $settings.ComfyUI.InheritEnvironment = @('HIP_VISIBLE_DEVICES')
+            $null = $world.Live.Remove(4200)
+            $world.Listeners.Remove(18432)
+            $settings.Files.DisabledTools = @($settings.Files.DisabledTools) + 'search_files'
+            $settings.Files.Root = ''
+            $run = Invoke-StatusVerb -Context $context
+            $run.Printed | Should -Not -BeLike '*older settings*'
+            $current = Get-TestSettingsCurrent -Context $context
+            $current.ComfyUI | Should -BeNullOrEmpty
+            $current.Files | Should -BeNullOrEmpty
+        }
+
+        It 'stays read-only and never shows the key, on screen or in -Json, when settings changed' {
+            $settings.Ports.Files = 18435
+            $settings.OpenWebUI.InheritEnvironment = @('HF_ENDPOINT')
+            $before = Get-TestHash $paths.State
+            $run = Invoke-StatusVerb -Context $context
+            $run.Printed | Should -BeLike '*older settings*'
+            "$($run.Printed)`n$($run.Warnings)" | Should -Not -BeLike "*$key*"
+            $context.Json = $true
+            [string](Invoke-StatusVerb -Context $context).Records[0].MessageData | Should -Not -BeLike "*$key*"
+            Get-TestHash $paths.State | Should -Be $before
+            Test-Path -LiteralPath $paths.McpoConfig | Should -BeFalse
+            Should -Invoke Write-LocalAIState -ModuleName LocalAI -Times 0 -Exactly
+            Should -Invoke Stop-LocalAIService -ModuleName LocalAI -Times 0 -Exactly
+            Should -Invoke Start-LocalAIService -ModuleName LocalAI -Times 0 -Exactly
+        }
     }
 }
 
