@@ -74,6 +74,11 @@ All notable changes to this project are listed here. The format follows
   does once its Python is killed, and `stop` took that for a failure and kept the record until a
   second `stop`. It now waits as after any other kill, and still fails when the process or its
   port outlives that wait.
+- `stop` no longer fails when the service ended but another program took its port in the
+  meantime. It reports the service stopped, names the program that holds the port and drops
+  the record, and `start` then names that program when it needs the port. A program that started
+  before the kill, or whose start time cannot be read, may still belong to the service, so `stop`
+  waits for it and fails as before.
 
 ### Security
 
