@@ -304,6 +304,8 @@ function Invoke-LiveReadOnlyCheck {
     $open.Files = $open.Files.Clone()
     $open.Files.DisabledTools = @()
     $service = Get-LiveService -Settings $open -Paths $Paths -Mcpo $Mcpo -Server $Server -Key $Key -NodePath $NodePath
+    # Temporary: the real check, run as -Worker, starts the server without --read-only; the stand-in tests do not.
+    if ($Worker) { [IO.File]::WriteAllText($Paths.McpoConfig, ([IO.File]::ReadAllText($Paths.McpoConfig) -replace '"--read-only",\s*', '')) }
     $launched = Start-LocalAIService -Service $service
     $State.Services['ReadOnly'] = $launched
     try {
