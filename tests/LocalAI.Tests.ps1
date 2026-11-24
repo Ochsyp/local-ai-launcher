@@ -8476,6 +8476,32 @@ Describe 'Stop-LocalAI and Stop-LocalAIService' {
         (Read-LocalAIState -Path $paths.State).Services.ContainsKey('OpenWebUI') | Should -BeFalse
     }
 
+    It 'counts taskkill exit code 255, a process of the tree that ended by itself first, as stopped once the poll confirms it' {
+        Mock Invoke-Native -ModuleName LocalAI -ParameterFilter { $FilePath -eq 'taskkill' } -MockWith {
+            $Capture.Add('Reason: There is no running instance of the task.')
+            if ($SuccessCode -notcontains 255) { throw "'taskkill /PID 4242 /T /F' failed with exit code 255." }
+            $world.Alive = $false
+            255
+        }
+        $run = Invoke-StopVerb -Context $context
+        $run.Code | Should -Be @(0)
+        $run.Printed | Should -BeLike '*Stopped OpenWebUI (PID 4242).*'
+        $run.Printed | Should -Not -BeLike '*Could not stop*'
+        Should -Invoke Get-RecordedProcessState -ModuleName LocalAI -ParameterFilter { $Record.Pid -eq 4242 }
+        (Read-LocalAIState -Path $paths.State).Services.ContainsKey('OpenWebUI') | Should -BeFalse
+    }
+
+    It 'still reports failed after taskkill exit code 255 when the process outlives the wait' {
+        Mock Invoke-Native -ModuleName LocalAI -ParameterFilter { $FilePath -eq 'taskkill' } -MockWith {
+            if ($SuccessCode -notcontains 255) { throw "'taskkill /PID 4242 /T /F' failed with exit code 255." }
+            255
+        }
+        $output = @(Stop-LocalAIService -Name 'OpenWebUI' -Record $record -TimeoutSeconds 1 6>&1)
+        @($output | Where-Object { $_ -is [string] }) | Should -Be @('failed')
+        $printed = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$($_.MessageData)" }) -join "`n"
+        $printed | Should -Be 'OpenWebUI (PID 4242) still runs, or port 18431 is still held, 1 s after taskkill.'
+    }
+
     It 'returns 1, kills nothing and keeps the record when the process runs but cannot be inspected' {
         Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith { 'unreadable' }
         $run = Invoke-StopVerb -Context $context

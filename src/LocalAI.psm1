@@ -4035,8 +4035,9 @@ function Stop-LocalAIService {
     $target = $live[0]
     $said = New-Object System.Collections.Generic.List[string]
     try {
-        # 128: the process ended before taskkill reached it.
-        $null = Invoke-Native -FilePath 'taskkill' -ArgumentList '/PID', ([string]$target.Pid), '/T', '/F' -SuccessCode 0, 128 -Capture $said
+        # 128: the process ended before taskkill reached it. 255: a process of the tree ended by itself first, as uv's mcpo.exe does once its
+        # Python is killed. The wait below decides for both whether the process and its port are really gone.
+        $null = Invoke-Native -FilePath 'taskkill' -ArgumentList '/PID', ([string]$target.Pid), '/T', '/F' -SuccessCode 0, 128, 255 -Capture $said
     } catch {
         $text = @($said | Where-Object { $_.Trim() }) -join ' '
         Write-Host "Could not stop $Name (PID $($target.Pid)): $($_.Exception.Message) taskkill said: $text" -ForegroundColor Red
