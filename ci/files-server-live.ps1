@@ -483,8 +483,7 @@ function Invoke-LiveCheck {
         $root2 = Join-Path $WorkRoot 'root2'
         $null = [IO.Directory]::CreateDirectory($root2)
         $settings2 = Get-LiveSetting -RepoRoot $RepoRoot -Paths $paths -Root $root2 -Port $settings.Ports.Files
-        # Temporary: only the real check, run as -Worker, gets the first settings again; the stand-in tests do not.
-        $service2 = Get-LiveService -Settings $(if ($Worker) { $settings } else { $settings2 }) -Paths $paths -Mcpo $mcpo -Server $server -Key $key -NodePath $node
+        $service2 = Get-LiveService -Settings $settings -Paths $paths -Mcpo $mcpo -Server $server -Key $key -NodePath $node
         $null = Invoke-LiveRestart -Service $service2 -State $state -StatePath $paths.State -StartTimeoutSeconds $StartTimeoutSeconds
         Write-Host "The restart for a new folder took $([int]$timer.Elapsed.TotalSeconds) s."
 
