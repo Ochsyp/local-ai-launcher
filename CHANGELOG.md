@@ -31,6 +31,7 @@ All notable changes to this project are listed here. The format follows
 
 ### Changed
 
+- Repository standard 1.1.0: the copies and blocks of this release.
 - `local-ai.cmd` pauses after `update`, as after `status`, so its result stays readable in a
   window that a shortcut opened. With `-Json` it still never pauses.
 - The line `start` prints when a newer launcher is out also names the Start menu shortcut

@@ -41,6 +41,7 @@ RELEASE_KIND=tar
 RELEASE_RUNNER=ubuntu
 RELEASE_MANIFEST=example-release.json
 RELEASE_ASSETS=
+SEAL=no
 PRIVACY_RULES=
 MAX_BLOB_KB=1024" ]
 }
@@ -71,7 +72,7 @@ MAX_BLOB_KB=1024" ]
         'CI_STAGES=lint test system' CI_WEEKLY=yes PYTHON=3.13 'PS_MODULES=pester psscriptanalyzer' \
         'IMAGE_PLATFORMS=linux/amd64 linux/arm64' RELEASE_KIND=image RELEASE_RUNNER=windows \
         RELEASE_MANIFEST=example.json 'RELEASE_ASSETS=src/install.ps1 example.json' \
-        'VERSION_COPY=share/example/VERSION|X.Y.Z' 'PRIVACY_RULES=base disk vm' \
+        'VERSION_COPY=share/example/VERSION|X.Y.Z' SEAL=yes 'PRIVACY_RULES=base disk vm' \
         "PRIVACY_ALLOW=home-path ^tests/ ^$SYN_HOME$" \
         "PRIVACY_HISTORY_ACCEPT=$(printf '%040d' 0 | tr 0 a) e-mail" MAX_BLOB_KB=2048
     run_conf --check "$FILE"
@@ -105,8 +106,8 @@ MAX_BLOB_KB=1024" ]
         PS_MODULES=pester-extra IMAGE_PLATFORMS=linux/386 RELEASE_KIND=deb 'RELEASE_KIND=zip tar' \
         RELEASE_RUNNER=mac RELEASE_MANIFEST=dir/file.json RELEASE_ASSETS=../outside \
         RELEASE_ASSETS=/abs 'VERSION_COPY=file' 'VERSION_COPY=../f|X.Y.Z' \
-        'VERSION_COPY=f|X.Y.Z X.Y.Z' 'PRIVACY_RULES=base extra' MAX_BLOB_KB=0 MAX_BLOB_KB=12345678 \
-        MAX_BLOB_KB=1k; do
+        'VERSION_COPY=f|X.Y.Z X.Y.Z' SEAL=maybe 'PRIVACY_RULES=base extra' MAX_BLOB_KB=0 \
+        MAX_BLOB_KB=12345678 MAX_BLOB_KB=1k; do
         write_config "$bad"
         run_conf --check "$FILE"
         if [[ $status -ne 1 || $stderr != *"conf: line "*": ${bad%%=*}: expected"* ]]; then
@@ -114,6 +115,22 @@ MAX_BLOB_KB=1024" ]
             return 1
         fi
     done
+}
+
+@test "SEAL defaults to no, and SEAL=yes needs a release kind other than legacy" {
+    write_config RELEASE_KIND=legacy
+    run_conf --get SEAL "$FILE"
+    [ "$status" -eq 0 ]
+    [ "$output" = no ]
+    write_config SEAL=yes RELEASE_KIND=legacy
+    run_conf --check "$FILE"
+    [ "$status" -eq 1 ]
+    [[ $stderr == *"conf: SEAL=yes needs a RELEASE_KIND other than legacy"* ]]
+    [ "$(grep -c '^conf: ' <<< "$stderr")" -eq 1 ]
+    write_config SEAL=yes RELEASE_KIND=stack
+    run_conf --get SEAL "$FILE"
+    [ "$status" -eq 0 ]
+    [ "$output" = yes ]
 }
 
 @test "a CR line end, a trailing space and a tab are refused" {

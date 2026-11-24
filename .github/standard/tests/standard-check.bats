@@ -74,6 +74,25 @@ commit_unchecked() {
     git -C "$REPO" -c core.hooksPath=no-hooks commit -q -m "$1"
 }
 
+# Add three blocks to $REPO's MANIFEST and stage it: a releasing block (profile release), its
+# seal variant, and a block that exists only as a seal variant (both profile seal).
+add_seal_blocks() {
+    mkdir -p "$BODIES/CONTRIBUTING.md"
+    printf '%s\n' '## Releasing' '' 'Publish in the browser.' > "$BODIES/CONTRIBUTING.md/releasing.md"
+    printf '%s\n' '## Releasing' '' 'Publish in the browser, then seal.' \
+        > "$BODIES/CONTRIBUTING.md/releasing@seal.md"
+    printf '%s\n' '## Sealed releases' '' 'Hosts install a sealed release only.' \
+        > "$BODIES/SECURITY.md/sealed-releases@seal.md"
+    {
+        printf 'block release %s - CONTRIBUTING.md#releasing\n' "$(body_id CONTRIBUTING.md/releasing.md)"
+        printf 'block seal %s - CONTRIBUTING.md#releasing@seal\n' \
+            "$(body_id CONTRIBUTING.md/releasing@seal.md)"
+        printf 'block seal %s - SECURITY.md#sealed-releases@seal\n' \
+            "$(body_id SECURITY.md/sealed-releases@seal.md)"
+    } >> "$REPO/.github/standard/MANIFEST"
+    git -C "$REPO" add .github/standard/MANIFEST
+}
+
 # Build a public repository at $REPO that holds the standard, committed on main, and switch to
 # feat/example. The copies are this repository's hooks and bin/.
 make_consumer() {
@@ -175,6 +194,38 @@ make_consumer() {
     [ "$status" -eq 0 ]
 }
 
+@test "SEAL=yes takes a block's seal variant and needs a seal-only block, which SEAL=no refuses" {
+    make_consumer
+    add_seal_blocks
+    block releasing md CONTRIBUTING.md/releasing.md > "$REPO/CONTRIBUTING.md"
+    git -C "$REPO" add CONTRIBUTING.md
+    check --staged
+    [ "$status" -eq 0 ] || { printf '%s\n' "$stderr" >&2; return 1; }
+    # Without SEAL=yes, a block that exists only as a seal variant must not be there.
+    { printf '# Security\n\n'; block reporting md SECURITY.md/reporting@public.md
+      block sealed-releases md SECURITY.md/sealed-releases@seal.md; } > "$REPO/SECURITY.md"
+    git -C "$REPO" add SECURITY.md
+    check --staged
+    [ "$status" -eq 1 ]
+    [[ $stderr == *"SECURITY.md#sealed-releases@seal: the block is here, but the config does not set SEAL=yes"* ]]
+    # Under SEAL=yes the seal variant replaces the releasing block, and the seal-only block counts.
+    write_config VISIBILITY=public PRIVACY_RULES=base SEAL=yes
+    git -C "$REPO" add .github/standard.conf
+    check --staged
+    [ "$status" -eq 1 ]
+    [[ $stderr == *"CONTRIBUTING.md#releasing@seal: the block differs from the MANIFEST"* ]]
+    [ "$(grep -c '^standard-check: [A-Z]' <<< "$stderr")" -eq 1 ]
+    block releasing md CONTRIBUTING.md/releasing@seal.md > "$REPO/CONTRIBUTING.md"
+    git -C "$REPO" add CONTRIBUTING.md
+    check --staged
+    [ "$status" -eq 0 ] || { printf '%s\n' "$stderr" >&2; return 1; }
+    { printf '# Security\n\n'; block reporting md SECURITY.md/reporting@public.md; } > "$REPO/SECURITY.md"
+    git -C "$REPO" add SECURITY.md
+    check --staged
+    [ "$status" -eq 1 ]
+    [[ $stderr == *"SECURITY.md#sealed-releases@seal: the block's markers are missing"* ]]
+}
+
 @test "LICENSE follows the LICENSE key" {
     make_consumer
     write_config VISIBILITY=public PRIVACY_RULES=base LICENSE=none
@@ -246,7 +297,7 @@ make_consumer() {
     printf '# shellcheck shell=bash\n' > "$REPO/tests/helpers.bash"
     git -C "$REPO" add .github/standard.conf tests/helpers.bash
     check --staged
-    [[ $stderr == *"ci/lint: missing (CI_STAGES lists lint)"* ]]
+    [[ $stderr == *"ci/lint or ci/lint.ps1: missing (CI_STAGES lists lint)"* ]]
     [[ $stderr == *"tests/helpers.bash: does not source .github/standard/tests/lib.bash"* ]]
     printf '#!/bin/sh\nexit 0\n' > "$REPO/ci/lint.ps1"
     printf 'source "${BASH_SOURCE[0]%%/*}/../.github/standard/tests/lib.bash"\n' > "$REPO/tests/helpers.bash"
@@ -352,6 +403,48 @@ make_consumer() {
     git -C "$REPO" remote add upstream https://github.com/owner/example.git
     check --local
     [[ $stderr == *"warning: remote upstream is example of another owner than origin"* ]]
+}
+
+@test "--local gives a notice for a tracked blob above the limit in HEAD, and the exit stays" {
+    local short
+    make_consumer
+    write_denylist
+    write_config VISIBILITY=public PRIVACY_RULES=base MAX_BLOB_KB=1
+    head -c 2048 /dev/zero | tr '\0' a > "$REPO/large-name.dat"
+    git -C "$REPO" add -A
+    commit_unchecked "feat: a large file"
+    short=$(git -C "$REPO" rev-parse --short=12 HEAD:large-name.dat)
+    check --local
+    [ "$status" -eq 0 ]
+    [[ $stderr == *"notice: blob $short is 2 KB, above MAX_BLOB_KB=1."* ]]
+    [[ $stderr == *"Find its file with: git ls-files -s | grep $short"* ]]
+    [[ $stderr == *"in a commit of its own"* && $stderr == *"chore/privacy-*"* ]]
+    [[ $stderr != *large-name* ]]
+    check --staged
+    [ "$status" -eq 0 ]
+    [[ $stderr != *"MAX_BLOB_KB"* ]]
+    # A limit raised only in the index does not count: the hooks read it from HEAD.
+    write_config VISIBILITY=public PRIVACY_RULES=base MAX_BLOB_KB=1024
+    git -C "$REPO" add .github/standard.conf
+    check --local
+    [ "$status" -eq 0 ]
+    [[ $stderr == *"notice: blob $short is 2 KB, above MAX_BLOB_KB=1."* ]]
+    commit_unchecked "chore: raise the limit"
+    check --local
+    [ "$status" -eq 0 ]
+    [[ $stderr != *"above MAX_BLOB_KB"* ]]
+}
+
+@test "--local says when it cannot read a tracked blob's size, and the exit stays" {
+    local oid
+    oid=$(printf '%040d' 0 | tr 0 1)
+    make_consumer
+    write_denylist
+    git -C "$REPO" update-index --add --cacheinfo "100644,$oid,ghost-name.dat"
+    check --local
+    [ "$status" -eq 0 ]
+    [[ $stderr == *"notice: blob ${oid:0:12} could not be read, so its size was not compared. Find its file with: git ls-files -s | grep ${oid:0:12}"* ]]
+    [[ $stderr != *ghost-name* && $stderr != *"Raise MAX_BLOB_KB"* ]]
 }
 
 @test "a staged ROLE=source does not switch off the copy checks" {

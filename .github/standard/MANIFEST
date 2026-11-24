@@ -1,20 +1,20 @@
-# Repository standard 1.0.1. Written by tools/manifest; never edit it.
+# Repository standard 1.1.0. Written by tools/manifest; never edit it.
 # type  profile  blob-id                                   mode    path[#block[@variant]]
-standard 1.0.1
+standard 1.1.0
 file    all      941c1c30e14277895654fb9805bef6308a79601c  100755  .githooks/commit-msg
-file    all      69c09a66ff4d3969d848b4d93c56ca3ef308a67d  100644  .githooks/lib.sh
+file    all      b5c4c466975f8ef98ebfa7a69c68838357b686a0  100644  .githooks/lib.sh
 file    all      d5c698aa8c8da0560bb52304c8aafca57a0bf5c3  100755  .githooks/pre-commit
 file    all      a75b31ca1d9056f5487e50c0d1d262725236ce5f  100755  .githooks/pre-merge-commit
 file    all      56c7891c3b469719682a53fae16eca4035887aef  100755  .githooks/pre-push
 file    all      0df849eb5cbe375990b0e03f9d044e21462752b2  100755  .githooks/privacy-scan
-file    all      21369350d2a093c67534d7ab14fe8f32a7c9568a  100644  .githooks/rules/base
+file    all      634b21bf283663f036a7e94b4cbac579bc5f316d  100644  .githooks/rules/base
 file    all      40ca1345fcae4b716888942e08db42edf18e5d1b  100644  .githooks/rules/disk
 file    all      a34753f7f764dd463fe795f388a243da0b1fcf91  100644  .githooks/rules/vm
-file    all      62d16e7fb242558ee36d667d982327636c7dd6cb  100644  .github/pull_request_template.md
+file    all      1fd68eab7ce3eeb367ffab3722137032ca82bdd3  100644  .github/pull_request_template.md
 file    all      59dd7e555b62927bd3c97693de357aebc6188e2a  100644  .github/standard/README.md
 file    all      a6a035238c79fb86b568688177b7093f91715dfd  100644  .github/standard/actions.allow
 file    all      c11cccce8c02c866d3cb77bd698a0204da1cf96b  100755  .github/standard/bin/changelog-entry
-file    all      1fcffe49a338fcf15930e3e4153d52832531c21f  100755  .github/standard/bin/conf
+file    all      37797131893b0ee6eb1ff45dce51ad3ee650418e  100755  .github/standard/bin/conf
 file    all      0dd9d2bce88cbe1af44ee7455463170c8d365e9d  100755  .github/standard/bin/install-tools
 file    all      1efffa291d7661ae34c4e7e1bc4cb3a959f9bd6d  100644  .github/standard/bin/lib.bash
 file    all      896c9969b818ba9bdbb300858c3fe95058849a25  100755  .github/standard/bin/no-skips
@@ -22,22 +22,22 @@ file    all      0cfb2b62c2520808cbd839c13ac4cb1373b1c4ad  100755  .github/stand
 file    all      7b2b55a74c0b26df52dace15aecdec7874f57501  100755  .github/standard/bin/pr-title
 file    all      b67686feca114254debdf422fbbd4f16c2724889  100755  .github/standard/bin/release-build
 file    all      54aacf1df7bf820872c0febc158ce18dce5516e2  100755  .github/standard/bin/release-draft
-file    all      5ce08e7574548c5ee428a3f64ad8bb66b6b539c8  100755  .github/standard/bin/release-meta
-file    all      4c7e4c4f98f2849719493c9f202d6fdf03fb8cba  100755  .github/standard/bin/release-prepare
+file    all      644e8222406b5ad087d05655ff9290f042b051e8  100755  .github/standard/bin/release-meta
+file    all      87427c779d96c11f3b4bac0191546c6ef0dc7164  100755  .github/standard/bin/release-prepare
 file    all      3d504d7817870445c8ec917dfb0f6e102d2b764e  100755  .github/standard/bin/release-promote
 file    all      ca6920304c4e2abd8491d5cda634358407433b5d  100755  .github/standard/bin/release-verify
 file    all      c51eace2dce1e43778a3d64fd6217d29fc369d9f  100755  .github/standard/bin/run-stage
 file    all      c47bfe96f2d655dcfd54aa7056b49eedf71814e6  100755  .github/standard/bin/secret-scan
-file    all      e2badd06ab6d8937641428aef1e6823075229ec0  100755  .github/standard/bin/standard-check
-file    all      8de15312c9c7e1d01f5987acc12fe3c89f061917  100755  .github/standard/tests/conf.bats
-file    all      47c34405d4ac95610b48e2b1d648b41321e4be10  100755  .github/standard/tests/hooks.bats
+file    all      051e03b747eba544cc0ee2e45cb70dc14ad3f739  100755  .github/standard/bin/standard-check
+file    all      1fee954a0ec0b922e65a395714d66d1b9f9b6792  100755  .github/standard/tests/conf.bats
+file    all      544cd28c288b54ccfad3aea28ed81e98e5d5d06d  100755  .github/standard/tests/hooks.bats
 file    all      7d3beb2bf680a7b879863021a7c839e77f2b1dcd  100644  .github/standard/tests/lib.bash
 file    all      e99288d7e0b805cb5bc9c580d2242c82f2d026c7  100755  .github/standard/tests/lint.bats
-file    all      50919f5229d0d3cc1b6ffd3c4b188b01ba6421e7  100755  .github/standard/tests/privacy-scan.bats
-file    all      5206d58bc74058c9fbaae3f17857e9b671adb618  100755  .github/standard/tests/release-meta.bats
+file    all      4cbf00099413316fa61f5c62642a1a6600992a56  100755  .github/standard/tests/privacy-scan.bats
+file    all      3e6b603f4bffb64bf1422764dbe619dcfb18af96  100755  .github/standard/tests/release-meta.bats
 file    all      ce286a83d9cbfec96e2dedd238fbe7b87d956c68  100755  .github/standard/tests/release-tools.bats
 file    all      8b54937d8ea46d0a68b6dc597ff56c2fca84528c  100755  .github/standard/tests/secret-scan.bats
-file    all      4b3f1f61d80540219b6f450530d8960db2482211  100755  .github/standard/tests/standard-check.bats
+file    all      f0e19ab05c6574dbc3ea281ccc6fdc4bbb65b75d  100755  .github/standard/tests/standard-check.bats
 file    all      0dc7bf3a939fcbe91f4e89701b19d8374d0f9698  100755  .github/standard/tests/stub-bin/docker
 file    all      869492e83d7f59aee5846419c4e0991afa5989ed  100755  .github/standard/tests/stub-bin/gh
 file    all      b9229271396615e2fab9ef1720eeaac20a4bb26f  100755  .github/standard/tests/stub-bin/gitleaks
@@ -51,12 +51,14 @@ file    mit      0bb60fd869aacc0b7550e57fdc24de528cccb0c8  100644  LICENSE
 block   all      2a3c6440c39ac8ab19df09429194f307e138b027  -       .editorconfig#editorconfig
 block   all      ee7eb51cc6cb0bc0cd314d1389b502f4c0448d4a  -       .gitattributes#gitattributes
 block   all      ca6e9b8346666c633f45f169d1b49831f970054e  -       .github/dependabot.yml#dependabot
-block   private  5c4a591cf84e7908186af0f81975fa3d41fbd679  -       CONTRIBUTING.md#guard-rails@private
-block   public   3d0736ce601e04ecfd4cc85c346c88268098dac8  -       CONTRIBUTING.md#guard-rails@public
+block   private  ab5da77141aa68d8c3ecdd213c84be1998eef57d  -       CONTRIBUTING.md#guard-rails@private
+block   public   ad640b0c6ec290401784354f70d4d62f655589a1  -       CONTRIBUTING.md#guard-rails@public
 block   release  e3473b7aaa8398c655bbe357151043d5e8b1619f  -       CONTRIBUTING.md#releasing
-block   all      9000a6afdde6887d927fe3024772401de73f38e7  -       CONTRIBUTING.md#standard
+block   seal     99b1ec55fe99b2df0c9d66d419d6f7b7d5346a05  -       CONTRIBUTING.md#releasing@seal
+block   all      7c1f34d28b2d76bb2b2e8f8fb4e36b9ff3c42402  -       CONTRIBUTING.md#standard
 block   all      581f57a82c5bd79ebadad7fb105c66c207051eb8  -       CONTRIBUTING.md#workflow
 block   private  58a71c9cd2298067184dadfcafad6dc3e9f4cd31  -       SECURITY.md#automated-checks@private
 block   public   9a20dd491d91f7f0b30b8266ad60ecace3393845  -       SECURITY.md#automated-checks@public
 block   private  c828e6428c3280d2da931787c7880ebadfd14b54  -       SECURITY.md#reporting@private
 block   public   cec24782757f5de75882626848f6ccf75c18a9cc  -       SECURITY.md#reporting@public
+block   seal     53636891a2c8427635a39e0b271299284e8f69bd  -       SECURITY.md#sealed-releases@seal

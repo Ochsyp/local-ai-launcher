@@ -641,8 +641,17 @@ scan_run() {
                 hidden[line] = 1
                 emit(kind, "", nameof[line], "path name " line " of the scanned paths", value)
             } else if (id in bp) {
+                # A blob that a ref names directly has no path, and git lists each object once,
+                # so a committed file with the same blob loses its path too. Such a hit names the
+                # blob, under a path no git tree can hold: a PRIVACY_ALLOW path of ^$, meant for
+                # messages, never exempts file content.
                 c = split(substr(bp[id], 2), paths, us)
+                if (c == 0) { c = 1; paths[1] = "" }
                 for (j = 1; j <= c; j++) {
+                    if (paths[j] == "") {
+                        emit(kind, id, "/no-path", "blob " substr(id, 1, 12) ", line " line, value)
+                        continue
+                    }
                     if (kind != "denylist" && paths[j] == ".github/standard.conf" &&
                         ((id us line us kind) in cfga)) continue
                     emit(kind, id, paths[j], shown(paths[j]) ":" line, value)

@@ -41,9 +41,9 @@ the checked-out tree with the maintainer's credentials, even during a fetch, so:
 <!-- standard:begin guard-rails -->
 ## Guard rails
 
-GitHub's ruleset on `main` blocks force pushes and its deletion. From this repository's
-adoption of the standard on, it also blocks direct pushes, and the merge of a pull request whose
-`all-passed` or `scan` check failed.
+GitHub's ruleset on `main` blocks force pushes and its deletion. Once the maintainer has updated
+it after this repository's adoption of the standard, it also blocks direct pushes, and the merge
+of a pull request whose `all-passed` or `scan` check failed.
 
 The hooks in `.githooks/` guard every commit and push:
 - `pre-commit` refuses a commit while `main` or `master` is checked out, a changed copy of the
@@ -51,9 +51,10 @@ The hooks in `.githooks/` guard every commit and push:
   committer that hold a denylist term or a rule pack hit. `pre-merge-commit` does the same for a
   merge.
 - `commit-msg` refuses such a term or hit in the message.
-- `pre-push` refuses a push to `main` or `master`, every tag push (release tags come from
-  publishing a release), a branch or tag name with a term or hit, and what the pushed commits
-  bring in, which covers rebase, cherry-pick and `am` too.
+- `pre-push` refuses a push to `main` or `master`, every tag push except a `v*` tag under
+  `RELEASE_KIND=legacy` (otherwise release tags come from publishing a release), a branch or tag
+  name with a term or hit, and what the pushed commits bring in, which covers rebase, cherry-pick
+  and `am` too.
 
 The denylists hold names that must never be committed and never leave the maintainer's machine.
 The rule packs in `.githooks/rules/` hold the patterns: private addresses, local host names, MAC
@@ -73,6 +74,12 @@ them here: change repo-standard, release it, and sync with a `chore/standard-X.Y
 CI fails when a copy differs or changes on another branch. Sync summaries and pull request texts
 here name no other repository. An exemption, an accepted finding or a dropped check comes in a
 `chore/privacy-*` pull request of its own.
+
+A repository goes public in this order. A pull request sets `VISIBILITY=public` and brings the
+public block texts. The maintainer switches the repository to public on GitHub and turns on the
+security settings those texts promise. A new commit on that branch reruns its checks; a rerun
+from the Actions page keeps the old private flag. Then that pull request merges before anything
+else, since until then `main` says private while GitHub says public.
 <!-- standard:end standard -->
 
 ## Checks

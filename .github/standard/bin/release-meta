@@ -243,7 +243,7 @@ read_changelog() {
 # no releases yet exactly while there is no version section.
 check_header() {
     if [[ $HEADER != *"$KEEP_A_CHANGELOG"* || $HEADER != *"$SEMANTIC_VERSIONING"* ]]; then
-        problem "CHANGELOG.md: the header must name Keep a Changelog 1.1.0 and Semantic Versioning 2.0.0, as spec 3.8 writes them"
+        problem "CHANGELOG.md: the header must name Keep a Changelog 1.1.0 and Semantic Versioning 2.0.0, as templates/CHANGELOG.md in repo-standard writes them"
     fi
     if (( ${#SEC_VERSION[@]} )) && [[ $HEADER == *"$NO_RELEASES"* ]]; then
         problem "CHANGELOG.md: the header says there are no releases yet, but it holds version sections"

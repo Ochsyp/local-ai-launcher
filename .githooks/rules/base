@@ -14,8 +14,10 @@ ipv4-private|\b(10(\.[0-9]{1,3}){3}|192\.168(\.[0-9]{1,3}){2}|172\.(1[6-9]|2[0-9
 # Unique local (fc00 to fdff) and link-local (fe80 to febf) IPv6 addresses.
 ipv6-private|\b([Ff][CcDd][0-9A-Fa-f]{2}|[Ff][Ee][89ABab][0-9A-Fa-f]):[0-9A-Fa-f:]*|
 # Host names under .lan, .home.arpa (RFC 8375), .local, .internal and .ts.net, except names
-# whose first label starts with example-.
-host-name|\b[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.([Ll][Aa][Nn]|[Hh][Oo][Mm][Ee]\.[Aa][Rr][Pp][Aa]|[Ll][Oo][Cc][Aa][Ll]|[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll]|[Tt][Ss]\.[Nn][Ee][Tt])\b|^example-
+# whose first label starts with example-. A last label that goes on with a hyphen and a letter,
+# such as local-tools in a folder name x.local-tools-old, is no host name: the hit takes it in, and
+# it is exempt. A hyphen and a digit, as in a dated file name, still leaves the host name a hit.
+host-name|\b[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.([Ll][Aa][Nn]|[Hh][Oo][Mm][Ee]\.[Aa][Rr][Pp][Aa]|[Ll][Oo][Cc][Aa][Ll]|[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll]|[Tt][Ss]\.[Nn][Ee][Tt])(-[A-Za-z][A-Za-z0-9-]*)?\b|(^example-|\.(lan|home\.arpa|local|internal|ts\.net)-[a-z][a-z0-9-]*$)
 # MAC addresses with ":" or "-" separators, except the documentation range 00-00-5E-00-53-xx
 # (RFC 7042) and the synthetic 5c-a1-ab-1e prefix.
 mac-address|\b[0-9A-Fa-f]{2}([:-][0-9A-Fa-f]{2}){5}\b|^(00[:-]00[:-]5e[:-]00[:-]53|5c[:-]a1[:-]ab[:-]1e)[:-]
@@ -24,6 +26,6 @@ mac-address|\b[0-9A-Fa-f]{2}([:-][0-9A-Fa-f]{2}){5}\b|^(00[:-]00[:-]5e[:-]00[:-]
 home-path|(/home/[A-Za-z0-9._-]+|[A-Za-z]:[\\/]+[Uu][Ss][Ee][Rr][Ss][\\/]+[^\\/:*?"<>[:space:]]+|/[A-Za-z]/[Uu]sers/[A-Za-z0-9._-]+|/Users/[A-Za-z0-9._-]+)|
 # E-mail addresses, except noreply@ and no-reply@ senders, GitHub's users.noreply.github.com,
 # the reserved names .invalid, .test, .example and .localhost (RFC 2606), example.com, .org and
-# .net, git@github.com of SSH remotes, and the standard's block bodies, such as
-# reporting@private.md.
-e-mail|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|^((noreply|no-reply)@.*|[^@]*@users\.noreply\.github\.com|[^@]*@([a-z0-9-]+\.)*example\.(com|org|net)|[^@]*@([a-z0-9-]+\.)*(invalid|test|example|localhost)|git@github\.com|[a-z0-9-]+@(public|private|seal)\.(md|yml))$
+# .net, git@github.com of SSH remotes, GitHub's support address in every Dependabot sign-off, and
+# the standard's block bodies, such as reporting@private.md.
+e-mail|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|^((noreply|no-reply)@.*|[^@]*@users\.noreply\.github\.com|[^@]*@([a-z0-9-]+\.)*example\.(com|org|net)|[^@]*@([a-z0-9-]+\.)*(invalid|test|example|localhost)|git@github\.com|support@github\.com|[a-z0-9-]+@(public|private|seal)\.(md|yml))$

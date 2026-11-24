@@ -138,6 +138,68 @@ synthetic() {
     [ -z "$stderr" ]
 }
 
+@test "a label that only starts with lan, local, internal, home.arpa or ts.net is no host name" {
+    local hit
+    make_repo
+    git -C "$REPO" switch -q -c feat/example
+    commit_config PRIVACY_RULES=base
+    {
+        printf 'dir x.%s-tools-old\n' local                   # 1 passes
+        printf 'dir y.%s-backup\n' lan                        # 2 passes
+        printf 'dir z.%s-tools\n' internal                    # 3 passes
+        printf 'dir n.home.%s-old\n' arpa                     # 4 passes
+        printf 'dir t.ts.%s-x\n' net                          # 5 passes
+        printf 'dir X.%s-AI-OLD\n' LOCAL                      # 6 passes
+        printf 'host example-nas.%s-ai.%s\n' local lan        # 7 passes
+        printf 'host h.%s\n' local                            # 8 host-name
+        printf 'host h.%s.\n' local                           # 9 host-name
+        printf 'host h.%s-ai.%s\n' local lan                  # 10 host-name
+        printf 'host h.%s- end\n' local                       # 11 host-name
+        printf 'host h.%s-ai.%s.%s\n' lan internal lan        # 12 host-name
+        printf 'log h.%s-2026-11-20.log\n' local              # 13 host-name
+        printf 'host h.%s-ai_x\n' local                       # 14 host-name
+    } > "$REPO/hosts.txt"
+    git -C "$REPO" add hosts.txt
+    scan --staged
+    [ "$status" -eq 1 ]
+    for hit in 8 9 10 11 12 13 14; do [[ $stderr == *"hosts.txt:$hit: host-name"* ]]; done
+    [ "$(grep -c '^privacy-scan: .*: [a-z0-9-]*$' <<< "$stderr")" -eq 7 ]
+}
+
+@test "the Dependabot sign-off passes, and another github.com address still hits" {
+    local trailer
+    trailer=$(printf 'Signed-off-by: dependabot[bot] <%s@%s.%s>' support github com)
+    make_repo
+    git -C "$REPO" switch -q -c feat/example
+    commit_config PRIVACY_RULES=base
+    add_remote
+    printf 'chore(deps): bump actions/checkout\n\n%s\n' "$trailer" > "$BATS_TEST_TMPDIR/msg"
+    scan --message "$BATS_TEST_TMPDIR/msg"
+    [ "$status" -eq 0 ]
+    [[ $stderr != *e-mail* ]]
+    stage notes.txt 'synthetic notes'
+    git -C "$REPO" -c core.hooksPath=no-hooks commit -q -F "$BATS_TEST_TMPDIR/msg"
+    scan --range HEAD --not --remotes=origin
+    [ "$status" -eq 0 ]
+    [[ $stderr != *e-mail* ]]
+    scan --history
+    [ "$status" -eq 0 ]
+    [[ $stderr != *e-mail* ]]
+    printf 'docs: notes\n\nfrom <%s@%s.%s>\n' someone github com > "$BATS_TEST_TMPDIR/msg"
+    scan --message "$BATS_TEST_TMPDIR/msg"
+    [ "$status" -eq 1 ]
+    [[ $stderr == *"message line 3: e-mail"* ]]
+    stage notes.txt 'more synthetic notes'
+    git -C "$REPO" -c core.hooksPath=no-hooks commit -q -F "$BATS_TEST_TMPDIR/msg"
+    scan --range HEAD --not --remotes=origin
+    [ "$status" -eq 1 ]
+    [[ $stderr == *"of git cat-file -p: e-mail"* ]]
+    printf 'docs: notes\n\nfrom <%s@%s.%s>\n' support github io > "$BATS_TEST_TMPDIR/msg"
+    scan --message "$BATS_TEST_TMPDIR/msg"
+    [ "$status" -eq 1 ]
+    [[ $stderr == *"message line 3: e-mail"* ]]
+}
+
 @test "privacy-scan refuses a bad option or argument count with exit 64" {
     make_repo
     scan --all
@@ -255,6 +317,31 @@ synthetic() {
     [ "$status" -eq 1 ]
     [[ $stderr == *"old.txt:2: home-path"* ]]
     [[ $stderr != *"e-mail"* ]]
+}
+
+@test "--history still finds a term in a committed file whose blob a tag also points at" {
+    make_repo
+    write_denylist
+    git -C "$REPO" switch -q -c feat/example
+    commit_config PRIVACY_RULES=base
+    stage notes.txt "notes by $DENY_TERM"
+    git -C "$REPO" -c core.hooksPath=no-hooks commit -q -m "docs: notes"
+    git -C "$REPO" tag example-blob "$(git -C "$REPO" rev-parse HEAD:notes.txt)"
+    scan --history
+    [ "$status" -eq 1 ] || { printf 'exit %s\n' "$status" >&2; return 1; }
+    [[ $stderr == *": denylist"* ]]
+}
+
+@test "a PRIVACY_ALLOW line for the empty path does not exempt a blob that a tag names directly" {
+    local blob
+    make_repo
+    git -C "$REPO" switch -q -c feat/example
+    commit_config PRIVACY_RULES=base 'PRIVACY_ALLOW=e-mail ^$ ^someone@example\.de$'
+    blob=$(printf 'mail someone@%s\n' example.de | git -C "$REPO" hash-object -w --stdin)
+    git -C "$REPO" tag example-blob "$blob"
+    scan --history
+    [ "$status" -eq 1 ] || { printf 'exit %s\n%s\n' "$status" "$stderr" >&2; return 1; }
+    [[ $stderr == *"privacy-scan: blob ${blob:0:12}, line 1: e-mail"* ]]
 }
 
 @test "CRLF in the index is refused, except in -text paths" {
