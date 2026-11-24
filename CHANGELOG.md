@@ -22,6 +22,9 @@ All notable changes to this project are listed here. The format follows
 - The CI live check also restarts the real mcpo: it changes `Files.Root` to a second folder and
   fails unless `start`'s own code stops the running mcpo without an error, starts it again, and
   the new mcpo serves only the new folder.
+- The CI live check also starts the real mcpo once with no hidden tools, so that only the files
+  server's `--read-only` withholds any, and fails unless it offers exactly its ten read tools. A
+  server version whose flag lets a write tool through now fails in its own pull request.
 - The Start menu shortcut Update Local AI, which runs `local-ai.cmd update`. `local-ai
   shortcuts` creates it beside Start, Stop and Status Local AI, and `uninstall` and
   `shortcuts -Remove` remove it with them. The refusal inside a packaged app and its line in

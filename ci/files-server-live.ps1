@@ -2,7 +2,9 @@
 # pinned mcpo and files server into a temporary folder on the system drive, starts them with the
 # launcher's own settings, and fails unless they offer exactly Files.AllowedTools and that folder.
 # Then it changes Files.Root, and fails unless start's own code restarts mcpo, which must serve the
-# new folder alone. Outside CI it exits 2 and installs nothing. Exits 0 when the check passes, else 1.
+# new folder alone. Last it starts mcpo with no hidden tools, and fails unless the server's --read-only
+# alone withholds every tool but Get-LiveReadOnlyTool. Outside CI it exits 2 and installs nothing.
+# Exits 0 when the check passes, else 1.
 
 [CmdletBinding()]
 param(
@@ -39,6 +41,11 @@ function Get-LiveFailureText {
         'Difference' { return "LIVE CHECK: the real files server differs from what the launcher expects. $Message Look at the version change in this pull request." }
         'Start' { return "LIVE CHECK: mcpo did not start. $Message Its log is printed above." }
         'Restart' { return "LIVE CHECK: the restart after a settings change failed. $Message Look at the start and stop code in this pull request." }
+        'ReadOnly' {
+            return ("LIVE CHECK: with --read-only alone and no hidden tools, the files server does not offer exactly the read tools this check expects. " +
+                "$Message Look at the version change in this pull request: a write tool must never appear, and a new read tool belongs in " +
+                'Get-LiveReadOnlyTool in ci\files-server-live.ps1 and in Files.DisabledTools or Files.AllowedTools.')
+        }
         default { return "LIVE CHECK: the check stopped. $Message" }
     }
 }
@@ -259,6 +266,55 @@ function Invoke-LiveRestart {
     }
 }
 
+# Return the tools server-filesystem 2.3.0 offers with --read-only alone: the five of Files.AllowedTools, and the five read tools
+# Files.DisabledTools hides beside the write tools. A server version that changes this list fails the check until the list here is updated.
+function Get-LiveReadOnlyTool {
+    [CmdletBinding()]
+    [OutputType([object[]])]
+    param()
+    return @('read_text_file', 'list_directory', 'search_files', 'get_file_info', 'list_allowed_directories',
+        'read_file', 'read_multiple_files', 'read_media_file', 'directory_tree', 'list_directory_with_sizes')
+}
+
+# Start mcpo once more as start would, on a new port and for Files.Root of $Settings, but with mcpo.json hiding no tool, so only the server's
+# --read-only withholds any. Records it in $State.Services as 'ReadOnly' for the stop at the end. Throws a ReadOnly failure unless it offers
+# exactly Get-LiveReadOnlyTool, which names any write tool or new tool it offers.
+function Invoke-LiveReadOnlyCheck {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [Parameter(Mandatory)][hashtable]$Paths,
+        [Parameter(Mandatory)][hashtable]$Settings,
+        [Parameter(Mandatory)][hashtable]$Mcpo,
+        [Parameter(Mandatory)][hashtable]$Server,
+        [Parameter(Mandatory)][string]$Key,
+        [Parameter(Mandatory)][string]$NodePath,
+        [Parameter(Mandatory)][hashtable]$State,
+        [int]$StartTimeoutSeconds = 60
+    )
+    $open = Get-LiveSetting -RepoRoot $RepoRoot -Paths $Paths -Root $Settings.Files.Root -Port (Get-LiveFreePort)
+    # After the settings' own checks, which would refuse a list without the write tools.
+    $open.Files = $open.Files.Clone()
+    $open.Files.DisabledTools = @()
+    $service = Get-LiveService -Settings $open -Paths $Paths -Mcpo $Mcpo -Server $Server -Key $Key -NodePath $NodePath
+    $launched = Start-LocalAIService -Service $service
+    $State.Services['ReadOnly'] = $launched
+    try {
+        $null = Wait-LocalAIService -Service (Get-LiveReadyService -Service $service -TimeoutSeconds $StartTimeoutSeconds) -Process $launched.Process `
+            -TimeoutSeconds $StartTimeoutSeconds
+    } catch {
+        $why = $_.Exception.Message
+        if ($why -notlike '*exited with code*') { Write-LiveLog -Service $service }
+        $why = $why.Replace("Its logs are $($service.ErrLog) and $($service.OutLog).", '').Trim()
+        throw (Get-LiveFailure -Kind 'Start' -Message "This was its start with no hidden tools, for the read-only check: $why")
+    }
+    try {
+        $null = Get-FilesServerVersion -Url $service.Url -Key $Key -Version $open.Files.ServerVersion -Tools (Get-LiveReadOnlyTool) -Root $service.Root
+    } catch {
+        throw (Get-LiveFailure -Kind 'ReadOnly' -Message $_.Exception.Message)
+    }
+}
+
 # Delete $Path, waiting for handles of processes that just ended. A folder that stays only warns: the runner is discarded.
 function Clear-LiveFolder {
     [CmdletBinding()]
@@ -425,17 +481,30 @@ function Invoke-LiveCheck {
         $null = Invoke-LiveRestart -Service $service2 -State $state -StatePath $paths.State -StartTimeoutSeconds $StartTimeoutSeconds
         Write-Host "The restart for a new folder took $([int]$timer.Elapsed.TotalSeconds) s."
 
+        # Both guards are on above, so this start proves the server's flag on its own. It writes the same logs, which the running mcpo holds
+        # open, so that one ends first; as below, what still runs decides, not the stop's result.
+        $timer.Restart()
+        Invoke-LiveStop -Record $state.Services['Files']
+        $state.Services.Remove('Files')
+        if (-not (Wait-LiveProcessEnd -WorkRoot $WorkRoot -TimeoutSeconds $StopTimeoutSeconds)) {
+            throw 'The restarted mcpo could not be stopped, so the start with --read-only alone did not run.'
+        }
+        Invoke-LiveReadOnlyCheck -RepoRoot $RepoRoot -Paths $paths -Settings $settings2 -Mcpo $mcpo -Server $server -Key $key -NodePath $node -State $state `
+            -StartTimeoutSeconds $StartTimeoutSeconds
+        Write-Host "The start with --read-only alone took $([int]$timer.Elapsed.TotalSeconds) s."
+
         $verdict = ("LIVE CHECK: passed. mcpo serves $version with exactly the tools $(@($settings.Files.AllowedTools) -join ', ') and one folder, " +
-            'and start restarted it for a new folder, which it then served alone.')
+            "start restarted it for a new folder, which it then served alone, and --read-only alone withholds every tool but the " +
+            "$(@(Get-LiveReadOnlyTool).Count) read tools.")
         $code = 0
     } catch {
         $code = 1
         $verdict = Get-LiveFailureText -Kind ([string]$_.Exception.Data['LiveKind']) -Message $_.Exception.Message
     } finally {
         foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $savedVariables[$name], 'Process') }
-        # What still runs decides, not the stop's result: taskkill also reports a failure when a process of the tree ended by
-        # itself first, as uv's mcpo.exe does once its Python is gone.
-        if ($state.Services['Files']) { Invoke-LiveStop -Record $state.Services['Files'] }
+        # What still runs decides, not the stop's result: a stop that fails or throws leaves Wait-LiveProcessEnd to end what runs from
+        # $WorkRoot, and reports it.
+        foreach ($name in 'Files', 'ReadOnly') { if ($state.Services[$name]) { Invoke-LiveStop -Record $state.Services[$name] } }
         if (-not (Wait-LiveProcessEnd -WorkRoot $WorkRoot -TimeoutSeconds $StopTimeoutSeconds)) {
             $verdict = if ($code -eq 0) { 'LIVE CHECK: mcpo answered correctly, but could not be stopped.' } else { "$verdict mcpo could not be stopped either." }
             $code = 1
