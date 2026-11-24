@@ -61,6 +61,14 @@ All notable changes to this project are listed here. The format follows
   that moment fails. An mcpo started by an older launcher restarts once. Open WebUI is not
   restarted, so a new `Ports.Files` or `files.key` still needs `local-ai stop`.
 
+### Fixed
+
+- `stop` no longer says in red that a service could not be stopped, and returns 1, when it did
+  stop. taskkill exits 255 when a process of the tree ended by itself first, as uv's `mcpo.exe`
+  does once its Python is killed, and `stop` took that for a failure and kept the record until a
+  second `stop`. It now waits as after any other kill, and still fails when the process or its
+  port outlives that wait.
+
 ### Security
 
 - The files server's lockfile takes server-filesystem 2.3.0, minimatch 11.0.8 and
