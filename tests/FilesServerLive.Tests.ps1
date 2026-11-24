@@ -128,6 +128,13 @@ Describe 'Get-LiveFailureText' {
         $text | Should -Match 'start and stop code'
     }
 
+    It 'sends a stop that fails during the check to the stop code, or to a re-run' {
+        $text = Get-LiveFailureText -Kind 'Stop' -Message 'mcpo could not be stopped.'
+        $text | Should -Match 'mcpo could not be stopped\.'
+        $text | Should -Match 'stop code'
+        $text | Should -Match 're-run'
+    }
+
     It 'sends a read-only flag that withholds too much or too little to the version change and the expected list' {
         $text = Get-LiveFailureText -Kind 'ReadOnly' -Message 'mcpo serves /write_file.'
         $text | Should -Match '/write_file'
@@ -316,6 +323,31 @@ public static class McpoStandIn {
         Test-StandInGone $run.Started | Should -BeTrue
     }
 
+    It 'tries once more on a new port when another program holds the first before start looks' {
+        $holder = New-Object System.Net.Sockets.TcpListener ([Net.IPAddress]::Loopback), 0
+        $holder.Start()
+        try {
+            $script:heldPort = ([Net.IPEndPoint]$holder.LocalEndpoint).Port
+            $script:ports = 0
+            # The second port asked for is the first start's.
+            Mock Get-LiveFreePort {
+                $script:ports++
+                if ($script:ports -eq 2) { return $script:heldPort }
+                $probe = New-Object System.Net.Sockets.TcpListener ([Net.IPAddress]::Loopback), 0
+                $probe.Start()
+                try { ([Net.IPEndPoint]$probe.LocalEndpoint).Port } finally { $probe.Stop() }
+            }
+            $run = Invoke-StandInCheck
+        } finally {
+            $holder.Stop()
+        }
+        $run.Code | Should -Be 0 -Because $run.Said
+        $run.Said | Should -Match "mcpo could not start on port $($script:heldPort), so it gets one more try"
+        $run.Started.Count | Should -Be 3 -Because 'start refused the held port, so mcpo started on the second, then for the restart and the read-only check'
+        ($run.Started[0] -split ' ')[0] | Should -Not -Be ([string]$script:heldPort)
+        Test-StandInGone $run.Started | Should -BeTrue
+    }
+
     It 'fails after two starts when mcpo never starts, and cleans up' {
         $run = Invoke-StandInCheck -Change @{ Mode = 'ExitAlways' }
         $run.Code | Should -Be 1
@@ -377,11 +409,29 @@ public static class McpoStandIn {
         Test-Path -LiteralPath $run.Work | Should -BeFalse
     }
 
+    It 'fails a check that passed when the last mcpo cannot be stopped, and ends it itself' {
+        $script:stops = 0
+        # The first stop ends the restarted mcpo before the read-only start; the last one throws.
+        Mock Stop-LocalAIService {
+            $script:stops++
+            if ($script:stops -ge 2) { throw 'Get-NetTCPConnection failed.' }
+            $null = & taskkill.exe /PID $Record.Pid /T /F 2>&1
+            'stopped'
+        }
+        $run = Invoke-StandInCheck -StopTimeoutSeconds 1
+        $run.Code | Should -Be 1
+        $run.Last | Should -BeExactly 'LIVE CHECK: mcpo answered correctly, but could not be stopped.'
+        $script:stops | Should -Be 2
+        Test-StandInGone $run.Started | Should -BeTrue
+        Test-Path -LiteralPath $run.Work | Should -BeFalse
+    }
+
     It 'still ends mcpo and removes its folder when the stop throws' {
         Mock Stop-LocalAIService { throw 'Get-NetTCPConnection failed.' }
         $run = Invoke-StandInCheck -StopTimeoutSeconds 1
         $run.Code | Should -Be 1
-        $run.Last | Should -Match 'could not be stopped'
+        $run.Last | Should -Match 'The restarted mcpo could not be stopped, so the start with --read-only alone did not run\.'
+        $run.Last | Should -Match 'Look at the stop code'
         Test-StandInGone $run.Started | Should -BeTrue
         Test-Path -LiteralPath $run.Work | Should -BeFalse
     }

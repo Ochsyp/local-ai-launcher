@@ -41,6 +41,7 @@ function Get-LiveFailureText {
         'Difference' { return "LIVE CHECK: the real files server differs from what the launcher expects. $Message Look at the version change in this pull request." }
         'Start' { return "LIVE CHECK: mcpo did not start. $Message Its log is printed above." }
         'Restart' { return "LIVE CHECK: the restart after a settings change failed. $Message Look at the start and stop code in this pull request." }
+        'Stop' { return "LIVE CHECK: the check stopped. $Message Look at the stop code in this pull request; if nothing there changed, re-run the failed job." }
         'ReadOnly' {
             return ("LIVE CHECK: with --read-only alone and no hidden tools, the files server does not offer exactly the read tools this check expects. " +
                 "$Message Look at the version change in this pull request: a write tool must never appear, and a new read tool belongs in " +
@@ -159,7 +160,9 @@ function Invoke-LiveLauncher {
         [Parameter(Mandatory)][string]$Name,
         [Parameter(Mandatory)][hashtable]$Parameters
     )
-    & (Get-Module LocalAI) { param($Command, $Arguments) & $Command @Arguments } $Name $Parameters
+    # The module whose exported functions this script calls, also when another copy of it is loaded.
+    $module = (Get-Command -Name 'Get-LocalAIService' -CommandType Function).Module
+    & $module { param($Command, $Arguments) & $Command @Arguments } $Name $Parameters
 }
 
 # Return the launcher's Files service for $Settings, built as start builds it: mcpo.json written by New-McpoConfig, and its entry, the installs of mcpo
@@ -266,8 +269,9 @@ function Invoke-LiveRestart {
     }
 }
 
-# Return the tools server-filesystem 2.3.0 offers with --read-only alone: the five of Files.AllowedTools, and the five read tools
-# Files.DisabledTools hides beside the write tools. A server version that changes this list fails the check until the list here is updated.
+# Return the tools server-filesystem 2.3.0 offers with --read-only alone, the read tools it marks read-only, as the server names them. The
+# launcher's settings split them into Files.AllowedTools and the read tools Files.DisabledTools hides; this list does not read them. A server
+# version that changes it fails the check until the list here is updated.
 function Get-LiveReadOnlyTool {
     [CmdletBinding()]
     [OutputType([object[]])]
@@ -442,8 +446,9 @@ function Invoke-LiveCheck {
             $settings = Get-LiveSetting -RepoRoot $RepoRoot -Paths $paths -Root $root -Port $port
             $service = Get-LiveService -Settings $settings -Paths $paths -Mcpo $mcpo -Server $server -Key $key -NodePath $node
             # As start launches it, so the record holds the hashes the restart below compares.
-            $use = Invoke-LiveLauncher -Name 'Use-LocalAIService' -Parameters (@{ Service = $service; State = $state; StatePath = $paths.State } + $lists)
+            $use = $null
             try {
+                $use = Invoke-LiveLauncher -Name 'Use-LocalAIService' -Parameters (@{ Service = $service; State = $state; StatePath = $paths.State } + $lists)
                 # Adds the listening process to the record, as start does, so the restart finds the mcpo that holds the port.
                 $null = Invoke-LiveLauncher -Name 'Complete-LocalAIService' -Parameters @{
                     Service = (Get-LiveReadyService -Service $service -TimeoutSeconds $StartTimeoutSeconds); Process = $use.Process; State = $state
@@ -452,15 +457,16 @@ function Invoke-LiveCheck {
                 break
             } catch {
                 $why = $_.Exception.Message
-                # The likely cause is another program taking the port after Get-LiveFreePort looked.
-                if ($use.Process.HasExited -and $attempt -eq 1) {
+                # The likely cause is another program taking the port after Get-LiveFreePort looked: start refuses the port, or mcpo ends.
+                $taken = -not $use -and $why -like '*not by a process this launcher started*'
+                if ($attempt -eq 1 -and ($taken -or ($use -and $use.Process.HasExited))) {
                     if ($state.Services['Files']) { Invoke-LiveStop -Record $state.Services['Files'] }
                     $state.Services.Remove('Files')
-                    Write-Host "mcpo ended on port $port, so it gets one more try on a new port. $why"
+                    Write-Host "mcpo could not start on port $port, so it gets one more try on a new port. $why"
                     continue
                 }
-                # Wait-LocalAIService prints the logs only for a process that ended.
-                if ($why -notlike '*exited with code*') { Write-LiveLog -Service $service }
+                # Wait-LocalAIService prints the logs only for a process that ended; a port start refused has none.
+                if ($use -and $why -notlike '*exited with code*') { Write-LiveLog -Service $service }
                 # Its message names the log files, which are gone by the time the verdict prints.
                 $why = $why.Replace("Its logs are $($service.ErrLog) and $($service.OutLog).", '').Trim()
                 throw (Get-LiveFailure -Kind 'Start' -Message $why)
@@ -487,7 +493,7 @@ function Invoke-LiveCheck {
         Invoke-LiveStop -Record $state.Services['Files']
         $state.Services.Remove('Files')
         if (-not (Wait-LiveProcessEnd -WorkRoot $WorkRoot -TimeoutSeconds $StopTimeoutSeconds)) {
-            throw 'The restarted mcpo could not be stopped, so the start with --read-only alone did not run.'
+            throw (Get-LiveFailure -Kind 'Stop' -Message 'The restarted mcpo could not be stopped, so the start with --read-only alone did not run.')
         }
         Invoke-LiveReadOnlyCheck -RepoRoot $RepoRoot -Paths $paths -Settings $settings2 -Mcpo $mcpo -Server $server -Key $key -NodePath $node -State $state `
             -StartTimeoutSeconds $StartTimeoutSeconds
