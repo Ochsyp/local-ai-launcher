@@ -9,6 +9,12 @@ All notable changes to this project are listed here. The format follows
 
 ### Added
 
+- `status` adds an advice line when a running mcpo, ComfyUI or Open WebUI still uses older
+  settings than `start` would give it now, and names the command that fixes it: `local-ai start`
+  for the file tools, which restarts mcpo, else `local-ai stop`, then `local-ai start`. Open
+  WebUI is compared only while every other service runs, as its settings depend on them. The
+  exit code stays as it is. `-Json` gives each service `settingsCurrent`: true, false, or null
+  when status cannot tell.
 - CI now installs the pinned mcpo and files server on a clean Windows runner, starts them with the
   launcher's settings on a temporary folder, and fails unless they offer exactly the five read
   tools and that one folder. It uses uv 0.13.7, pinned with a hash in
