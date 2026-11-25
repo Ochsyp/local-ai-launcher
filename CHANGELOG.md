@@ -7,6 +7,8 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-25
+
 ### Added
 
 - `status` adds an advice line when a running mcpo, ComfyUI or Open WebUI still uses older
@@ -351,6 +353,7 @@ service that an earlier start left running keeps the environment it started with
   folder of the working folder. SECURITY.md describes what this trusts, also for
   `Launcher.Repo` and the one-liner.
 
-[Unreleased]: https://github.com/Ochsyp/local-ai-launcher/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/Ochsyp/local-ai-launcher/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/Ochsyp/local-ai-launcher/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/Ochsyp/local-ai-launcher/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Ochsyp/local-ai-launcher/releases/tag/v1.0.0
