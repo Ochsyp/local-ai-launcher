@@ -123,9 +123,12 @@ test. A Pester test skips only where the runner lacks what it needs, such as 8.3
 the Pester summary line shows how many skipped.
 
 On a CI runner, `ci/test.ps1` ends with `ci/files-server-live.ps1`, which installs the pinned mcpo
-and files server and fails unless they offer exactly `Files.AllowedTools` and one folder. Its last
-line says whether to re-run the job (a failed install step) or look at the change (a real
-difference).
+and files server and fails unless they offer exactly `Files.AllowedTools` and one folder. It then
+changes `Files.Root` and fails unless `start`'s own code restarts mcpo, which must then serve only
+the new folder. Last it starts mcpo with no hidden tools and fails unless the server's
+`--read-only` alone leaves exactly the ten read tools that `Get-LiveReadOnlyTool` in that script
+lists; a server upgrade that adds a read tool updates that list too. Its last line says whether to
+re-run the job (a failed install step) or look at the change (a real difference).
 
 ## Test data
 

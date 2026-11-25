@@ -3946,8 +3946,9 @@ function Start-LocalAIService {
     }
     # 5.1 reports no ExitCode unless the handle was opened while the process ran.
     $null = $process.Handle
-    $path = [string]$process.Path
-    if (-not $path) { $path = $shell }
+    # The program started is $shell. Read at once, a new process's Path can be empty, or ntdll.dll while only that is loaded, which no later check
+    # of the PID would match, so stop would find nothing to end.
+    $path = $shell
     return @{
         Pid        = $process.Id
         StartTicks = $process.StartTime.ToUniversalTime().Ticks

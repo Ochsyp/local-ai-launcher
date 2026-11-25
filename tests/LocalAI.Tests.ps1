@@ -6651,6 +6651,15 @@ Describe 'Start-LocalAIService' {
         $result.ErrLog | Should -Be $service.ErrLog
         $result.Process.Id | Should -Be 4242
     }
+
+    It 'records cmd.exe as the path, also when the new process still names its first loaded module' {
+        # Read at once, the path of a process can still be ntdll.dll, which no later check of the PID would match.
+        Mock Start-Process -ModuleName LocalAI -MockWith {
+            [pscustomobject]@{ Id = 4242; StartTime = $started; Path = 'C:\WINDOWS\SYSTEM32\ntdll.dll'; Handle = [IntPtr]::Zero; HasExited = $false }
+        }
+        $result = Start-LocalAIService -Service $service
+        $result.Path | Should -Be $cmd
+    }
 }
 
 Describe 'Wait-LocalAIService' {
