@@ -174,6 +174,8 @@ release in each release pull request: the `install.ps1` one-liner and its script
 `releases/download/vX.Y.Z/install.ps1`, so each always gets the same file. `release-prepare`
 leaves these two lines to the session. The build runs `ci/release-build.ps1` on Windows, which
 builds the zip, `install.ps1` and `SHA256SUMS` with `.github/scripts/LocalAIRelease.psm1`.
+Leave v1.0.0 and v1.0.1 as they are: the `verify` job also runs when a release is edited, and
+those two releases attest only their zip, so marking one as a pre-release would fail that run.
 
 ## Release contract
 

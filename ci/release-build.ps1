@@ -12,7 +12,8 @@ $given = @{}
 for ($i = 0; $i -lt $args.Count; $i++) {
     $name = [string]$args[$i]
     if ($name -ceq '--dry-run') { continue }
-    if (@('--version', '--commit', '--out') -cnotcontains $name -or $i + 1 -ge $args.Count) {
+    # A value that starts with -- is a flag given where the value is missing.
+    if (@('--version', '--commit', '--out') -cnotcontains $name -or $i + 1 -ge $args.Count -or ([string]$args[$i + 1]).StartsWith('--')) {
         Write-Host $usage
         exit 64
     }

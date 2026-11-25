@@ -930,6 +930,7 @@ Describe 'Invoke-ReleaseHookBuild and ci\release-build.ps1' {
         @{ Name = 'no --out'; Arguments = @('--version', '1.2.4', '--commit', 'HEAD') }
         @{ Name = 'an unknown argument'; Arguments = @('--version', '1.2.4', '--commit', 'HEAD', '--out', 'x', '--zip') }
         @{ Name = 'a value missing'; Arguments = @('--version', '1.2.4', '--commit', 'HEAD', '--out') }
+        @{ Name = 'a flag where a value belongs'; Arguments = @('--version', '1.2.4', '--commit', 'HEAD', '--out', '--dry-run') }
     ) {
         $run = Invoke-TestHook -Path $checkout -Arguments $Arguments
         $run.Code | Should -Be 64
