@@ -5,6 +5,9 @@ rem Pauses on a non-zero exit and after status and update, so the result stays r
 rem a shortcut opened, except with -Json, which programs read. PowerShell binds any prefix of -Json,
 rem such as -j, and --json too; -Json is the only switch that starts with j.
 setlocal
+rem PowerShell 7 hands on its module path, which names its own modules first. Windows PowerShell cannot load those, and then lacks
+rem commands such as Get-FileHash. Unset, the path is one Windows PowerShell builds itself; the launcher needs only modules Windows ships.
+set "PSModulePath="
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy RemoteSigned -File "%~dp0src\local-ai.ps1" %*
 set "rc=%errorlevel%"
 set "wait="

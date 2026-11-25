@@ -10917,6 +10917,42 @@ Describe 'local-ai.cmd' {
         $after = @($output | Select-Object -Skip ($marker + 1) | Where-Object { $_.Trim() })
         ($after.Count -gt 0) | Should -Be $Pauses
     }
+
+    It 'gives Windows PowerShell its own module path, also when PowerShell 7 hands it one that names its own modules first' {
+        # As PowerShell 7 does when it runs local-ai.cmd: its module path, which cmd.exe passes on unchanged, names its own Microsoft.PowerShell.Utility
+        # first. Windows PowerShell cannot load that module and then lacks the commands its own one adds, such as Get-FileHash.
+        $probeFolder = Join-Path $TestDrive 'cmd-modules'
+        $null = New-Item -ItemType Directory -Force -Path (Join-Path $probeFolder 'src')
+        Copy-Item -LiteralPath (Join-Path (Split-Path $PSScriptRoot -Parent) 'local-ai.cmd') -Destination $probeFolder
+        [IO.File]::WriteAllText((Join-Path $probeFolder 'src\local-ai.ps1'), (@(
+                    "`$found = if (Get-Command Get-FileHash -ErrorAction SilentlyContinue) { 'found' } else { 'missing' }"
+                    "Write-Output `"Get-FileHash `$found`""
+                    "Write-Output `"PSModulePath `$env:PSModulePath`""
+                ) -join "`r`n") + "`r`n")
+        $core = Join-Path $TestDrive 'core-modules'
+        $utility = Join-Path $core 'Microsoft.PowerShell.Utility'
+        $null = New-Item -ItemType Directory -Force -Path $utility
+        [IO.File]::WriteAllText((Join-Path $utility 'Microsoft.PowerShell.Utility.psd1'), (@(
+                    '@{'
+                    "    GUID = '1da87e53-152b-403e-98dc-74d7b4d63d59'"
+                    "    ModuleVersion = '7.0.0.0'"
+                    "    CompatiblePSEditions = @('Core')"
+                    "    PowerShellVersion = '7.0'"
+                    "    CmdletsToExport = @('Get-FileHash')"
+                    '}'
+                ) -join "`r`n") + "`r`n")
+        $saved = $env:PSModulePath
+        try {
+            $env:PSModulePath = "$core;$saved"
+            $output = @(& cmd.exe /d /c "echo.| `"$(Join-Path $probeFolder 'local-ai.cmd')`" start" 2>&1 | ForEach-Object { [string]$_ })
+        } finally {
+            $env:PSModulePath = $saved
+        }
+        $output | Should -Contain 'Get-FileHash found'
+        $line = @($output | Where-Object { $_.StartsWith('PSModulePath ', [StringComparison]::Ordinal) })[0]
+        $line | Should -Not -BeNullOrEmpty
+        $line.IndexOf($core, [StringComparison]::OrdinalIgnoreCase) | Should -Be -1
+    }
 }
 
 Describe 'Confirm-LocalAIAction' {
@@ -16620,10 +16656,20 @@ Describe 'Invoke-LauncherChild' {
             $seen.PassThru = [bool]$PassThru
             $seen.Wait = [bool]$Wait
             $seen.Process = $process
+            $seen.ModulePath = $env:PSModulePath
             $process
         }
         $script = 'C:\Users\User Name\AppData\Local\Programs\local-ai-launcher\versions\v1.1.0\src\local-ai.ps1'
-        Invoke-ModuleFunction 'Invoke-LauncherChild' @{ Script = $script; ArgumentList = @('update', '-Tools', '-ActivateLauncher', 'v1.1.0') } | Should -Be 2
+        $savedModulePath = $env:PSModulePath
+        try {
+            # As PowerShell 7 hands it on: Windows PowerShell must not inherit it, and this process keeps it.
+            $env:PSModulePath = 'C:\Program Files\PowerShell\7\Modules;' + $savedModulePath
+            Invoke-ModuleFunction 'Invoke-LauncherChild' @{ Script = $script; ArgumentList = @('update', '-Tools', '-ActivateLauncher', 'v1.1.0') } | Should -Be 2
+            $seen.ModulePath | Should -BeNullOrEmpty
+            $env:PSModulePath | Should -BeExactly ('C:\Program Files\PowerShell\7\Modules;' + $savedModulePath)
+        } finally {
+            $env:PSModulePath = $savedModulePath
+        }
         $seen.FilePath | Should -Be (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')
         $seen.ArgumentList | Should -BeExactly "-NoLogo -NoProfile -ExecutionPolicy RemoteSigned -File `"$script`" update -Tools -ActivateLauncher v1.1.0"
         $seen.NoNewWindow | Should -BeTrue
@@ -16746,12 +16792,22 @@ Describe 'install.ps1' {
             $seen.NoNewWindow = [bool]$NoNewWindow
             $seen.Wait = [bool]$Wait
             $seen.Process = $process
+            $seen.ModulePath = $env:PSModulePath
             $process
         }
         # A path with a space and a single quote, which the command must keep whole.
         $setupRoot = Join-Path $TestDrive "setup\it's here\Programs\local-ai-launcher"
         $setupFolder = Write-TestReleaseFolder -Path (Join-Path $setupRoot 'versions\v1.1.0') -Tag 'v1.1.0' -Files @{ 'src/LocalAI.psm1' = [IO.File]::ReadAllText($modulePath) }
-        Invoke-LauncherSetup -Folder $setupFolder -Root $setupRoot -Tag 'v1.1.0' | Should -Be 0
+        $savedModulePath = $env:PSModulePath
+        try {
+            # install.ps1 may run in PowerShell 7, whose module path Windows PowerShell must not inherit; this session keeps it.
+            $env:PSModulePath = 'C:\Program Files\PowerShell\7\Modules;' + $savedModulePath
+            Invoke-LauncherSetup -Folder $setupFolder -Root $setupRoot -Tag 'v1.1.0' | Should -Be 0
+            $seen.ModulePath | Should -BeNullOrEmpty
+            $env:PSModulePath | Should -BeExactly ('C:\Program Files\PowerShell\7\Modules;' + $savedModulePath)
+        } finally {
+            $env:PSModulePath = $savedModulePath
+        }
         $seen.FilePath | Should -Be (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')
         $seen.ArgumentList | Should -BeLike '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -Command "*"'
         $seen.NoNewWindow | Should -BeTrue

@@ -796,7 +796,14 @@ public static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UInt
         $powershell = [IO.Path]::Combine($env:SystemRoot, 'System32\WindowsPowerShell\v1.0\powershell.exe')
         # No Windows path holds a double quote, so one pair of them carries the command whole.
         $line = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -Command `"$command`""
-        $process = Start-Process -FilePath $powershell -ArgumentList $line -NoNewWindow -PassThru -ErrorAction Stop
+        # Without PSModulePath, as PowerShell 7's names its own modules first, which Windows PowerShell cannot load: it would lack Get-FileHash.
+        $savedModulePath = $env:PSModulePath
+        try {
+            $env:PSModulePath = $null
+            $process = Start-Process -FilePath $powershell -ArgumentList $line -NoNewWindow -PassThru -ErrorAction Stop
+        } finally {
+            $env:PSModulePath = $savedModulePath
+        }
         # 5.1 reports no ExitCode unless the handle was opened while the process ran.
         $null = $process.Handle
         $process.WaitForExit()
