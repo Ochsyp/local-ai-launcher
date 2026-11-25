@@ -117,8 +117,10 @@ CI adds the rest. The `ci` workflow runs the job `standard` (the standard's copi
 actionlint, the standard's suites, the privacy rules over the tree, `VERSION` against
 `CHANGELOG.md`, and the pull request's title and changelog entry), the stages `lint` and `test`
 (`ci/lint.ps1` and `ci/test.ps1` on Windows), `hooks-windows`, and the gate `all-passed`. The
-`secret-scan` workflow runs the job `scan`. `release.yml` builds the zip twice for a pull request
-that changes the release tooling, `.gitattributes` or `VERSION`. CI fails on any skipped bats
+`secret-scan` workflow runs the job `scan`. `release.yml` builds the release twice and compares the
+builds for a pull request that changes `VERSION`, `.gitattributes`, the config, the release
+workflows or tools, or `ci/release-build.ps1`; a change to `.github/scripts/` alone gets no dry run,
+and `tests/Release.Tests.ps1` checks it. CI fails on any skipped bats
 test. A Pester test skips only where the runner lacks what it needs, such as 8.3 short names;
 the Pester summary line shows how many skipped.
 
@@ -139,49 +141,41 @@ made-up values and two findings of the rules that are no private data: the folde
 `.local-ai-clone`, `.local-ai-old-venv` and `.local-ai-removing`, and GitHub's support address
 in the sign-off of Dependabot's commits. A comment above each exemption says what it covers.
 
-## Releases
+<!-- standard:begin releasing -->
+## Releasing
 
-A release is a pull request like any other. Claude prepares it; the maintainer reviews and merges
-it, and publishes the release that GitHub Actions then drafts. Claude never creates a tag and
-never publishes, edits or deletes a release.
+GitHub Actions builds each release, and the maintainer publishes it in the browser.
 
-1. Branch `chore/release-X.Y.Z` from an up-to-date `main`.
-2. Write `X.Y.Z` and a line feed to `VERSION`. Raise MAJOR, MINOR or PATCH as
-   [Semantic Versioning](https://semver.org/spec/v2.0.0.html) asks for the changes since the last
-   release.
-3. In `CHANGELOG.md`, rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, with the planned
-   merge date, and add an empty `## [Unreleased]` above it. Point the `[Unreleased]:` link at
-   `compare/vX.Y.Z...HEAD`, and add a `[X.Y.Z]:` link to `releases/tag/vX.Y.Z`, or after the first
-   release to `compare/vPREVIOUS...vX.Y.Z`. The move is the release's entry; it adds no other.
-   The first release also drops the sentences in `CHANGELOG.md` and the README that say there
-   is no release yet.
-4. In the README's *Install from a release*, point the `install.ps1` one-liner and its script
-   block form at `releases/download/vX.Y.Z/install.ps1`. Each pins the tag of a release, so it
-   always gets the same file.
-5. Commit as `chore(release): X.Y.Z` and open the pull request with that title. Its body is the
-   new CHANGELOG section. CI's job `standard` checks that `VERSION`, the heading and the links
-   agree and that X.Y.Z is above every release tag. The release workflow builds the zip as a
-   dry run.
-6. The maintainer merges it. The merge changes `VERSION` on `main`, so
-   `.github/workflows/release.yml` builds the zip, `install.ps1`, `SHA256SUMS` and the
-   attestation from the merge commit, and creates the draft release `vX.Y.Z` for that commit.
-   The build refuses an X.Y.Z that is not greater than every released version, and a
-   `## [Unreleased]` section that lists anything, because the release would ship those changes
-   without naming them.
-7. The maintainer checks the draft's notes, its three assets and its target commit, then
-   publishes it. Publishing creates the tag `vX.Y.Z` and makes the release immutable. The
-   workflow then checks the published assets and attestations.
+1. A session opens the release pull request `chore/release-X.Y.Z`, written with
+   `.github/standard/bin/release-prepare`: `VERSION`, the `VERSION_COPY` files, and the
+   `CHANGELOG.md` section with its links. Its body names the dependency updates since the last
+   release. CI checks the version, the date and the links, and the `release` workflow builds the
+   release twice to compare.
+2. The maintainer reviews and squash-merges it. The push to `main` that changes `VERSION` runs
+   the `release` workflow: the checks of `ci` on that commit, the build, an attestation in the
+   public repositories, and a draft release `vX.Y.Z` of that commit.
+3. The maintainer checks the draft (notes, assets, target commit, image digest) and clicks
+   **Publish release**. GitHub creates the tag and the immutable release. The `verify` job then
+   checks the published release: look for it to pass.
+4. To fix a draft, merge a pull request from `fix/release-X.Y.Z-<slug>`, whose `CHANGELOG.md`
+   line goes into `## [X.Y.Z]`, then run the `release` workflow on `main` (Actions, release, Run
+   workflow). Merge nothing else until the draft is published: CI says so on every pull request
+   while a release waits.
+5. Never delete a published release. Tick **Set as a pre-release** on a bad one, which clients
+   and updaters then ignore, and ship X.Y.Z+1. For a container image, that edit also moves
+   `latest` back.
 
-Until the draft is published, merge nothing into `main` but fixes of the release: a new build
-ships the tip of `main`. To fix the draft, merge the fix through a pull request that lists its
-change in the `## [X.Y.Z]` section, not under `## [Unreleased]`, since the fix ships in X.Y.Z.
-Then run `release.yml` on `main` with *Run workflow*. It builds the tip of `main` and replaces
-the draft. Do not re-run an older run instead: the draft job refuses a commit that is no longer
-the tip of `main`. A published release never changes, so a fix after that is the next version.
-Publish on the date the heading names, or fix the date through a pull request and run the
-workflow again before you publish.
+Sessions prepare release pull requests. They never create a tag, and never publish, edit or
+delete a release.
+<!-- standard:end releasing -->
 
-### Release contract
+In this repository, the session also points the README's *Install from a release* at the new
+release in each release pull request: the `install.ps1` one-liner and its script block form name
+`releases/download/vX.Y.Z/install.ps1`, so each always gets the same file. `release-prepare`
+leaves these two lines to the session. The build runs `ci/release-build.ps1` on Windows, which
+builds the zip, `install.ps1` and `SHA256SUMS` with `.github/scripts/LocalAIRelease.psm1`.
+
+## Release contract
 
 Whatever installs or updates the launcher from a release relies on these rules, so a change to
 one of them is a MAJOR change. An added asset is a MINOR change, since `update` and
@@ -228,7 +222,8 @@ one of them is a MAJOR change. An added asset is a MINOR change, since `update` 
   release as `update` does.
 - The asset `SHA256SUMS` holds one line per other asset: the SHA-256 in lowercase hex, two
   spaces and the file name, then a line feed, in ASCII.
-- A build provenance attestation covers the zip. `release.yml` signs it on `refs/heads/main`.
+- A build provenance attestation covers each asset: the zip, `install.ps1` and `SHA256SUMS`.
+  `release.yml` of this repository signs them on `refs/heads/main`.
 - A release install lives in `%LOCALAPPDATA%\Programs\local-ai-launcher`: the shim
   `local-ai.cmd`, which nothing rewrites once it exists and which runs only from that folder,
   the file `current`, which holds the active tag `vX.Y.Z` and CRLF, and one folder
