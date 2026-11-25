@@ -86,6 +86,11 @@ All notable changes to this project are listed here. The format follows
   the record, and `start` then names that program when it needs the port. A program that started
   before the kill, or whose start time cannot be read, may still belong to the service, so `stop`
   waits for it and fails as before.
+- `start` no longer records a service's window process with the wrong program path. About one
+  start in twenty read the path while the new process had loaded only `ntdll.dll`, and every
+  later check then took that process for gone: a service that `start` gave up on kept running,
+  and `stop` ended a service only through the record of its listening process. `start` now records
+  the `cmd.exe` it starts. The CI live check found this.
 
 ### Security
 
