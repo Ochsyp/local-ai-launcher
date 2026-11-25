@@ -2,7 +2,8 @@
 #                 LOCAL AI RELEASE TESTS
 # -------------------------------------------------------
 #
-# Pester 6 tests for .github\scripts\LocalAIRelease.psm1, which release.yml runs: the
+# Pester 6 tests for .github\scripts\LocalAIRelease.psm1 and ci\release-build.ps1, which the
+# standard's release.yml runs: the
 # rules for VERSION and CHANGELOG.md, the release notes, the manifest and SHA256SUMS formats, the
 # asset install.ps1, full builds in git repositories made in TestDrive:, and the export-ignore
 # rules of this repository's .gitattributes. git must be on PATH; every remote is a folder in
@@ -869,7 +870,96 @@ Describe 'Invoke-ReleaseBuild' {
     }
 }
 
+Describe 'Invoke-ReleaseHookBuild and ci\release-build.ps1' {
+    BeforeAll {
+        $hookBase = Join-Path $TestDrive 'hook'
+        $hookScript = Join-Path $repoRoot 'ci\release-build.ps1'
+        $checkout = Join-Path $hookBase 'checkout'
+        $commit = Initialize-TestRepository -Path $checkout -Files (Get-TestLauncher -Version '1.2.4')
+
+        # Run ci\release-build.ps1 with $Arguments in the folder $Path, as the standard's release-build runs it. Returns @{ Code; Output }.
+        function Invoke-TestHook([string]$Path, [string[]]$Arguments) {
+            $powershell = Join-Path $PSHOME 'powershell.exe'
+            Push-Location -LiteralPath $Path
+            try {
+                $output = @(& $powershell -NoProfile -ExecutionPolicy Bypass -File $hookScript @Arguments 2>&1 | ForEach-Object { "$_" })
+                return @{ Code = $LASTEXITCODE; Output = ($output -join "`n") }
+            } finally {
+                Pop-Location
+            }
+        }
+    }
+
+    It 'writes only assets\: the zip, install.ps1 and SHA256SUMS, the same bytes as the release build' {
+        $out = Join-Path $hookBase 'function-out'
+        $null = New-Item -ItemType Directory -Path (Join-Path $out 'assets')
+        $built = Invoke-ReleaseHookBuild -RepositoryPath $checkout -Version '1.2.4' -Commit $commit -OutputDirectory $out 6>$null
+        @(Get-ChildItem -LiteralPath $out | ForEach-Object { $_.Name }) | Should -Be @('assets')
+        @(Get-ChildItem -LiteralPath (Join-Path $out 'assets') | ForEach-Object { $_.Name } | Sort-Object) |
+            Should -Be @('install.ps1', 'local-ai-launcher-1.2.4.zip', 'SHA256SUMS')
+        $built.Zip | Should -Be (Join-Path $out 'assets\local-ai-launcher-1.2.4.zip')
+        $built.Commit | Should -BeExactly $commit
+        # The full build, with its notes and its checks of the tags, writes the same three assets.
+        $null = Invoke-TestGit @('-C', $checkout, 'remote', 'add', 'origin', ([uri](Join-Path $hookBase 'nowhere')).AbsoluteUri)
+        $null = Initialize-TestRepository -Path (Join-Path $hookBase 'nowhere') -Files @{ 'README.md' = "remote`n" }
+        $full = Invoke-ReleaseBuild -RepositoryPath $checkout -Commit $commit -OutputDirectory (Join-Path $hookBase 'full-out') 6>$null
+        foreach ($name in 'install.ps1', 'local-ai-launcher-1.2.4.zip', 'SHA256SUMS') {
+            (Get-FileHash -LiteralPath (Join-Path $out "assets\$name")).Hash | Should -BeExactly (Get-FileHash -LiteralPath (Join-Path (Split-Path $full.Zip) $name)).Hash
+        }
+    }
+
+    It 'refuses a version that VERSION at the commit does not name' {
+        $out = Join-Path $hookBase 'wrong-out'
+        { Invoke-ReleaseHookBuild -RepositoryPath $checkout -Version '1.2.5' -Commit $commit -OutputDirectory $out 6>$null } |
+            Should -Throw -ExpectedMessage "*local-ai-launcher-1.2.5/VERSION holds '1.2.4\n', not 1.2.5 and a line feed.*"
+    }
+
+    It 'builds through the script with the arguments of the standard''s release-build, a dry run too, in the current folder' {
+        foreach ($dry in @(@(), @('--dry-run'))) {
+            $out = Join-Path $hookBase ('script-out' + $dry.Count)
+            $null = New-Item -ItemType Directory -Path (Join-Path $out 'assets')
+            # As the standard passes it: a Windows path with forward slashes.
+            $run = Invoke-TestHook -Path $checkout -Arguments (@('--version', '1.2.4', '--commit', $commit, '--out', $out.Replace('\', '/')) + $dry)
+            $run.Code | Should -Be 0 -Because $run.Output
+            @(Get-ChildItem -LiteralPath (Join-Path $out 'assets') | ForEach-Object { $_.Name } | Sort-Object) |
+                Should -Be @('install.ps1', 'local-ai-launcher-1.2.4.zip', 'SHA256SUMS')
+        }
+    }
+
+    It 'exits 64 with its usage for <Name>' -ForEach @(
+        @{ Name = 'no --out'; Arguments = @('--version', '1.2.4', '--commit', 'HEAD') }
+        @{ Name = 'an unknown argument'; Arguments = @('--version', '1.2.4', '--commit', 'HEAD', '--out', 'x', '--zip') }
+        @{ Name = 'a value missing'; Arguments = @('--version', '1.2.4', '--commit', 'HEAD', '--out') }
+        @{ Name = 'a flag where a value belongs'; Arguments = @('--version', '1.2.4', '--commit', 'HEAD', '--out', '--dry-run') }
+    ) {
+        $run = Invoke-TestHook -Path $checkout -Arguments $Arguments
+        $run.Code | Should -Be 64
+        $run.Output | Should -Match 'usage: ci/release-build.ps1 --version X.Y.Z --commit SHA --out DIR \[--dry-run\]'
+    }
+
+    It 'exits 1 naming the reason when the build fails' {
+        $run = Invoke-TestHook -Path $checkout -Arguments @('--version', '1.2.5', '--commit', $commit, '--out', (Join-Path $hookBase 'failed-out'))
+        $run.Code | Should -Be 1
+        $run.Output | Should -Match '^ci/release-build.ps1: '
+    }
+}
+
 Describe 'This repository' {
+    It 'tells the standard''s release tools the name, kind, manifest and asset this module builds' {
+        $conf = @{}
+        foreach ($line in [IO.File]::ReadAllLines((Join-Path $repoRoot '.github\standard.conf'))) {
+            if ($line -cmatch '\A([A-Z_]+)=(.*)\z' -and $Matches[1] -cne 'PRIVACY_ALLOW' -and $Matches[1] -cne 'PRIVACY_HISTORY_ACCEPT') { $conf[$Matches[1]] = $Matches[2] }
+        }
+        $module = InModuleScope LocalAIRelease { @{ Name = $script:ReleaseName; Manifest = $script:ManifestName; Install = $script:InstallScriptPath } }
+        $conf['RELEASE_KIND'] | Should -BeExactly 'zip'
+        $conf['RELEASE_RUNNER'] | Should -BeExactly 'windows' -Because 'the hook runs in Windows PowerShell 5.1'
+        # The standard expects the asset <NAME>-X.Y.Z.zip with the folder <NAME>-X.Y.Z/ inside, which holds the manifest and the asset.
+        $conf['NAME'] | Should -BeExactly $module.Name
+        $conf['RELEASE_MANIFEST'] | Should -BeExactly $module.Manifest
+        $conf['RELEASE_ASSETS'] | Should -BeExactly $module.Install
+        Test-Path -LiteralPath (Join-Path $repoRoot 'ci\release-build.ps1') -PathType Leaf | Should -BeTrue
+    }
+
     It 'exports exactly the runtime files: what git ls-files lists, less what git check-attr marks export-ignore' {
         $tracked = @(Invoke-TestGit @('-C', $repoRoot, '-c', 'core.quotepath=off', 'ls-files'))
         $tracked.Count | Should -BeGreaterThan 10

@@ -38,6 +38,12 @@ All notable changes to this project are listed here. The format follows
 ### Changed
 
 - Repository standard 1.1.0: the copies and blocks of this release.
+- Releases now follow the repository standard's release flow: its `release.yml` builds on
+  Windows through `ci/release-build.ps1`, which runs the launcher's own zip build, and attests all
+  three assets, the zip, `install.ps1` and `SHA256SUMS`, where only the zip was attested before.
+  The assets, their names, the zip and its manifest stay as they were, so `update` and
+  `install.ps1` check new releases as before. A draft that needs a fix gets a pull request from
+  `fix/release-X.Y.Z-<slug>`, then Run workflow on `main`.
 - `local-ai.cmd` pauses after `update`, as after `status`, so its result stays readable in a
   window that a shortcut opened. With `-Json` it still never pauses.
 - The line `start` prints when a newer launcher is out also names the Start menu shortcut

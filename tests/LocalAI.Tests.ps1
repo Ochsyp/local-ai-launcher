@@ -16721,7 +16721,7 @@ Describe 'install.ps1' {
         $verbs | Should -Be @('shortcuts')
         $known = InModuleScope LocalAI { Get-LocalAIVerb }
         $contributing = [IO.File]::ReadAllText((Join-Path (Split-Path $PSScriptRoot -Parent) 'CONTRIBUTING.md'))
-        $contract = $contributing.Substring($contributing.IndexOf('### Release contract'))
+        $contract = $contributing.Substring($contributing.IndexOf('## Release contract'))
         foreach ($verb in @($verbs) + @('install')) {
             $known.ContainsKey($verb) | Should -BeTrue -Because "install.ps1 relies on the verb $verb"
             $contract.Contains("``$verb``") | Should -BeTrue -Because "the release contract names the verb $verb"

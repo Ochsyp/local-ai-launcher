@@ -678,7 +678,7 @@ files:
 - `SHA256SUMS`: the SHA-256 of the zip and of `install.ps1`.
 
 GitHub Actions builds them from the commit that the tag `vX.Y.Z` names, and signs a build
-provenance attestation for the zip. A published release is immutable: its files and its tag
+provenance attestation for each of them. A published release is immutable: its files and its tag
 cannot change.
 
 To check a download, compare its SHA-256 with the line in `SHA256SUMS`:
@@ -780,13 +780,14 @@ tests\test_image_gate.py            unittest tests for the image gate
 tests\run-checks.ps1                runs PSScriptAnalyzer and the Pester tests
 tests\requirements.txt              Python packages the image gate tests need
 ci\lint.ps1, ci\test.ps1            the CI stages lint and test: run-checks.ps1 and the image gate tests
+ci\release-build.ps1                the release build that the standard's release.yml runs
 PSScriptAnalyzerSettings.psd1       PSScriptAnalyzer rules
 .githooks\                          the standard's hooks: no commit or push to main, no private data
 .github\standard.conf               this repository's settings for the repository standard
 .github\standard\                   the standard's tools and tests; MANIFEST lists every copy
 .github\                            CI, secret scan, Dependabot and the pull request template
-.github\workflows\release.yml       builds, drafts and checks releases
-.github\scripts\                    the release scripts behind release.yml
+.github\workflows\release.yml       the standard's release workflow: builds, drafts and checks releases
+.github\scripts\                    the zip build behind ci\release-build.ps1
 .editorconfig, .gitattributes       editor settings and line endings
 .shellcheckrc                       ShellCheck settings for the standard's shell scripts
 .gitignore                          keeps secrets, weights and logs out of git

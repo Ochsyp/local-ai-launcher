@@ -2,7 +2,8 @@
 #                 LOCAL AI RELEASE TOOLS
 # -------------------------------------------------------
 #
-# Functions behind .github\workflows\release.yml and the version check run by hand: the rules for
+# Functions behind ci\release-build.ps1, which the standard's release.yml runs, and behind the full
+# build and the version check run by hand: the rules for
 # VERSION and CHANGELOG.md, the release notes, the release zip with its manifest, the check of
 # that zip, the asset install.ps1 taken from it, and SHA256SUMS. CONTRIBUTING.md describes the
 # release contract they keep, and tests\Release.Tests.ps1 tests them. They run in Windows
@@ -822,6 +823,35 @@ function Assert-ReleaseVersionBump {
     Write-Host "VERSION goes $($from)to $version, and tag v$version does not exist yet."
 }
 
+# Build the release assets of $Commit for the repository standard's release-build, which runs ci\release-build.ps1 in the checkout
+# $RepositoryPath and checks VERSION, CHANGELOG.md and the tags itself: assets\local-ai-launcher-$Version.zip, checked as
+# Invoke-ReleaseBuild checks it, its src/install.ps1 as assets\install.ps1 and assets\SHA256SUMS of both, and nothing else in
+# $OutputDirectory. Throws when the zip does not hold the release $Version. Returns @{ Version; Commit; Zip; Sha256; InstallScript }.
+function Invoke-ReleaseHookBuild {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$RepositoryPath,
+        [Parameter(Mandatory)][string]$Version,
+        [Parameter(Mandatory)][string]$Commit,
+        [Parameter(Mandatory)][string]$OutputDirectory
+    )
+    $root = Resolve-ReleasePath -Path $RepositoryPath
+    $assets = Join-Path (Resolve-ReleasePath -Path $OutputDirectory) 'assets'
+    $zip = New-ReleaseZip -RepositoryPath $root -Commit $Commit -Version $Version -OutputDirectory $assets
+    Assert-ReleaseZip -Path $zip.Path -Version $Version -Commit $zip.Commit
+    $installScript = Save-ReleaseInstallScript -ZipPath $zip.Path -Version $Version -OutputDirectory $assets
+    New-ReleaseChecksumFile -Path @($zip.Path, $installScript) -OutputPath (Join-Path $assets 'SHA256SUMS')
+    Write-Host "Built $($zip.Path) from $($zip.Commit): $($zip.Files) files, SHA-256 $($zip.Sha256), and $installScript from it."
+    return [pscustomobject]@{
+        Version       = $Version
+        Commit        = $zip.Commit
+        Zip           = $zip.Path
+        Sha256        = $zip.Sha256
+        InstallScript = $installScript
+    }
+}
+
 # The version check, run by hand (CI runs the standard's release-meta), on the checkout $RepositoryPath: Get-ReleaseVersion, with a notice when there is no VERSION, and with
 # -PullRequest also Assert-ReleaseVersionBump against HEAD^1, the base branch side of the pull request's merge commit.
 function Invoke-ReleaseVersionCheck {
@@ -840,6 +870,7 @@ function Invoke-ReleaseVersionCheck {
     if ($PullRequest) { Assert-ReleaseVersionBump -RepositoryPath $RepositoryPath -BaseRevision 'HEAD^1' -Remote $Remote }
 }
 
+# The full build, run by hand; the release workflow builds through Invoke-ReleaseHookBuild and the standard's own checks.
 # Build the release of $Commit in the checkout $RepositoryPath into the new or empty folder $OutputDirectory: check VERSION and CHANGELOG.md,
 # require X.Y.Z above each tag on $Remote and an empty '## [Unreleased]', write notes.md, build and check assets\local-ai-launcher-X.Y.Z.zip,
 # write its src/install.ps1 as assets\install.ps1 and write assets\SHA256SUMS of both. -DryRun, for pull requests, skips those two
@@ -925,4 +956,5 @@ Export-ModuleMember -Function @(
     'Assert-ReleaseVersionBump'
     'Invoke-ReleaseVersionCheck'
     'Invoke-ReleaseBuild'
+    'Invoke-ReleaseHookBuild'
 )

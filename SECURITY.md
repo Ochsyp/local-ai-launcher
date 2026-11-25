@@ -185,9 +185,10 @@ control.
   repository code.
 - Releases are immutable once published: GitHub refuses to change their assets or move their
   tag, and records a release attestation, which `gh release verify` checks.
-- The zip carries a build provenance attestation, signed through Sigstore's public-good instance
-  and recorded in its public transparency log. It ties the zip to `release.yml`, the commit and
-  `refs/heads/main`. `gh attestation verify` checks it; the README shows the commands.
+- Each asset (the zip, `install.ps1` and `SHA256SUMS`) carries a build provenance attestation,
+  signed through Sigstore's public-good instance and recorded in its public transparency log. It
+  ties the asset to `release.yml`, the commit and `refs/heads/main`. `gh attestation verify`
+  checks it; the README shows the commands.
 - `SHA256SUMS` lists the SHA-256 of the zip and of `install.ps1`, and the manifest
   `local-ai-release.json` in the zip lists the SHA-256 of every file in it. They come with the
   release itself, so they show a damaged download but are no signature. The attestations show
