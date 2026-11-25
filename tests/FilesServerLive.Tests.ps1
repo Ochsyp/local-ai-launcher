@@ -265,10 +265,12 @@ public static class McpoStandIn {
             }
         }
 
-        # $true when no stand-in of the 'port PID' lines $Started still runs.
+        # $true when no stand-in of the 'port PID' lines $Started still runs within 5 s: one that taskkill just ended can still be exiting,
+        # which Get-Process sees but the check's own process listing no longer does.
         function Test-StandInGone([string[]]$Started) {
             foreach ($line in $Started) {
-                if (Get-Process -Id ([int]($line -split ' ')[1]) -ErrorAction SilentlyContinue) { return $false }
+                $running = Get-Process -Id ([int]($line -split ' ')[1]) -ErrorAction SilentlyContinue
+                if ($running -and -not $running.WaitForExit(5000)) { return $false }
             }
             return $true
         }
