@@ -7,6 +7,8 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-25
+
 ### Fixed
 
 - `local-ai.cmd` run from PowerShell 7 failed as soon as a verb hashed a file, such as `update`
@@ -362,7 +364,8 @@ service that an earlier start left running keeps the environment it started with
   folder of the working folder. SECURITY.md describes what this trusts, also for
   `Launcher.Repo` and the one-liner.
 
-[Unreleased]: https://github.com/Ochsyp/local-ai-launcher/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/Ochsyp/local-ai-launcher/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/Ochsyp/local-ai-launcher/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Ochsyp/local-ai-launcher/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/Ochsyp/local-ai-launcher/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Ochsyp/local-ai-launcher/releases/tag/v1.0.0
