@@ -7,6 +7,15 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `local-ai.cmd` run from PowerShell 7 failed as soon as a verb hashed a file, such as `update`
+  right after its download, with "The term 'Get-FileHash' is not recognized". PowerShell 7's
+  module path names its own modules first, cmd.exe handed it on to Windows PowerShell, and Windows
+  PowerShell cannot load those modules. `local-ai.cmd` now clears the path, so Windows PowerShell
+  builds its own; `install.ps1` and `update`'s handover start Windows PowerShell without it too.
+  For 1.1.0 and older, run `cmd /d /c "set PSModulePath=& local-ai update"` from PowerShell 7.
+
 ## [1.1.0] - 2026-11-25
 
 ### Added

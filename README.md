@@ -269,6 +269,12 @@ or another folder stay as they are. A git clone never changes versions this way,
 
 Run `local-ai.cmd` from a console window, Windows Terminal or the Start menu shortcuts.
 
+From PowerShell 7, launcher 1.1.0 and older fail with "The term 'Get-FileHash' is not
+recognized": `local-ai.cmd` hands PowerShell 7's module path to Windows PowerShell, which then
+cannot load its own commands. Later versions clear that path. For an older version, clear it for
+that one command, as in `cmd /d /c "set PSModulePath=& local-ai update"`, or run it from Windows
+PowerShell or the Start menu shortcuts.
+
 Do not run it from a terminal inside a packaged app, such as the Claude desktop app. Windows
 puts the folders that such an app's processes create in `%LOCALAPPDATA%` and `%APPDATA%` into
 the package's private store. Other windows never see them there. The launcher detects this.

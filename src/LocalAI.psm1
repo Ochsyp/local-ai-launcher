@@ -9437,8 +9437,16 @@ function Invoke-LauncherChild {
     $powershell = [IO.Path]::Combine($env:SystemRoot, 'System32\WindowsPowerShell\v1.0\powershell.exe')
     $passed = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', $Script) + @($ArgumentList)
     $line = @($passed | ForEach-Object { ConvertTo-NativeArgument -Argument $_ -Quote }) -join ' '
-    # No -Wait, which in 5.1 also waits for every process the child leaves running, such as the Ollama app.
-    $process = Start-Process -FilePath $powershell -ArgumentList $line -NoNewWindow -PassThru -ErrorAction Stop
+    # Without PSModulePath, which Windows PowerShell then builds itself: one PowerShell 7 handed on names its own modules first, which Windows
+    # PowerShell cannot load, so it would lack Get-FileHash. No -Wait, which in 5.1 also waits for every process the child leaves running, such as
+    # the Ollama app.
+    $savedModulePath = $env:PSModulePath
+    try {
+        $env:PSModulePath = $null
+        $process = Start-Process -FilePath $powershell -ArgumentList $line -NoNewWindow -PassThru -ErrorAction Stop
+    } finally {
+        $env:PSModulePath = $savedModulePath
+    }
     # 5.1 reports no ExitCode unless the handle was opened while the process ran.
     $null = $process.Handle
     $process.WaitForExit()
