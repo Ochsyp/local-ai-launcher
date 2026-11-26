@@ -8,8 +8,8 @@
 #             repository (rule 7), and loosening comes in a chore/privacy-* pull request of its
 #             own (rule 10). Reads EVENT, PRIVATE, BASE, HEAD_REF, HEAD_REPO and REPO.
 #   --staged  checks the index; the pre-commit hook runs it where the standard is adopted.
-#   --local   as --staged, plus whether the hooks are on, what the denylist loader finds (counts
-#             only), remotes of another owner, as in a fork clone, and a notice for each tracked
+#   --local   as --staged, plus: whether the hooks are on; what the denylist loader finds (counts
+#             only); remotes of another owner, as in a fork clone; and a notice for each tracked
 #             blob above the MAX_BLOB_KB of HEAD, which is the limit the hooks apply.
 # Exit 0; 1 when a rule fails; 2 when a check cannot run; 64 usage.
 set -eu
@@ -176,96 +176,118 @@ if [ "$role" = consumer ] || [ "$prev_role" = consumer ]; then
     consumer=1
 fi
 
-# Rules 2 to 4 for a repository that uses the standard: every copy and block of the selected
-# profiles as the MANIFEST lists it, and no file of the standard's folders beyond it.
+# Rules 2 to 4 against the MANIFEST file $1. With SCOPE all (a repository that uses the
+# standard): every copy and block of the selected profiles, and no file of the standard's folders
+# beyond it. With SCOPE blocks (repo-standard): the blocks only. Prints the problems it finds in
+# the copies and writes the selected blocks to $3 as "blob-id entry" lines, "-" for a block that
+# must be absent. A block's seal variant (profile seal) replaces the block of its name where
+# SEAL=yes. A block that exists only as a seal variant must be absent elsewhere.
+manifest_rules() {
+    SCOPE=$2 VIS=$visibility LIC=$license KIND=$kind SEAL=$seal awk -v tree="$t/tree" -v blocks="$3" '
+        BEGIN {
+            while ((getline line < tree) > 0) {
+                split(line, f, "\t"); split(f[1], m, " ")
+                mode[f[2]] = m[1]; oid[f[2]] = m[2]
+            }
+            printf "" > blocks
+            all = ENVIRON["SCOPE"] == "all"
+        }
+        /^#/ || /^[ \t]*$/ { next }
+        $1 == "standard" && NF == 2 { version = 1; next }
+        ($1 != "file" && $1 != "block") || NF != 5 {
+            print "standard-check: .github/standard/MANIFEST: line " NR " does not parse"; bad++; next
+        }
+        {
+            p = $2
+            if (p == "all" || p == "release") sel = 1
+            else if (p == "mit") sel = ENVIRON["LIC"] == "MIT"
+            else if (p == "public" || p == "private") sel = ENVIRON["VIS"] == p
+            else if (p == "seal") sel = ENVIRON["SEAL"] == "yes"
+            else { print "standard-check: .github/standard/MANIFEST: line " NR ": unknown profile " p; bad++; next }
+            if ($1 == "file") { listed[$5] = 1; if (!all) next }
+            if ($1 == "block") {
+                name = $5; sub(/@.*/, "", name)
+                if (p == "seal") sealed[name] = 1; else plain[name] = 1
+                if (!sel) { if (p == "seal") unsel[$5] = name; next }
+                if (p == "release" && ENVIRON["KIND"] == "legacy") next
+                nb++; bwant[nb] = $3; bentry[nb] = $5; bname[nb] = name; bprof[nb] = p
+                next
+            }
+            if (!sel) next
+            if (!($5 in oid)) { print "standard-check: " $5 ": missing (the MANIFEST lists it)"; bad++; next }
+            if (p == "release" && ENVIRON["KIND"] == "legacy") next
+            if (oid[$5] != $3) { print "standard-check: " $5 ": differs from the MANIFEST"; bad++ }
+            if (mode[$5] != $4) { print "standard-check: " $5 ": mode " mode[$5] ", the MANIFEST says " $4; bad++ }
+        }
+        END {
+            for (i = 1; i <= nb; i++)
+                if (bprof[i] == "seal" || !(bname[i] in sealed) || ENVIRON["SEAL"] != "yes")
+                    print bwant[i], bentry[i] > blocks
+            for (e in unsel) if (!(unsel[e] in plain)) print "-", e > blocks
+            if (!all) exit bad > 0
+            if (!version) { print "standard-check: .github/standard/MANIFEST: no standard version line"; bad++ }
+            for (path in oid) {
+                if (path == ".github/standard/MANIFEST" || (path in listed)) continue
+                if (path ~ /^\.githooks\// || path ~ /^\.github\/standard\// || path ~ /^\.github\/workflows\//)
+                    { print "standard-check: " path ": not in the MANIFEST"; bad++ }
+            }
+            exit bad > 0
+        }' "$1" > "$t/rules" || true
+    if [ -s "$t/rules" ]; then
+        sort "$t/rules" >&2
+        errors=$((errors + $(awk 'END { print NR }' "$t/rules")))
+    fi
+}
+
+# Each block of the list $1, as manifest_rules writes it, against the tree. With $2 consumer a
+# block must be there and equal the MANIFEST. With $2 source a document may leave a block's markers
+# out, as repo-standard does with the standard block, whose text speaks to a consumer. Markers
+# that are there must hold the body in blocks/ that the config selects, once and in order.
+check_blocks() {
+    while read -r want entry; do
+        target=${entry%%#*}
+        block=${entry#*#}
+        block=${block%%@*}
+        toid=$(oid_of "$target")
+        if [ "$want" = - ]; then
+            [ -n "$toid" ] || continue
+            status=0
+            block_of "$toid" "$target" "$block" "$t/block" || status=$?
+            [ "$status" -eq 3 ] ||
+                problem "$entry: the block is here, but the config does not set SEAL=yes"
+            continue
+        fi
+        if [ -z "$toid" ]; then
+            [ "$2" = source ] || problem "$entry: $target is missing"
+            continue
+        fi
+        status=0
+        block_of "$toid" "$target" "$block" "$t/block" || status=$?
+        case $status in
+            0)
+                have=$(git hash-object --stdin < "$t/block") || std_fail "cannot hash a block"
+                [ "$have" = "$want" ] && continue
+                if [ "$2" = source ]; then
+                    problem "$entry: the block differs from blocks/; run sh tools/manifest"
+                else
+                    problem "$entry: the block differs from the MANIFEST"
+                fi
+                ;;
+            3) [ "$2" = source ] || problem "$entry: the block's markers are missing" ;;
+            *) problem "$entry: the block's markers appear more than once or out of order" ;;
+        esac
+    done < "$1"
+}
+
+# Rules 2 to 4 for a repository that uses the standard, against its MANIFEST.
 man=$(oid_of .github/standard/MANIFEST)
 if [ "$consumer" -eq 1 ]; then
     if [ -z "$man" ]; then
         problem ".github/standard/MANIFEST: missing"
     else
         git cat-file blob "$man" > "$t/manifest" || std_fail "cannot read the MANIFEST"
-        # A block's seal variant (profile seal) replaces the block of its name where SEAL=yes; a
-        # block that exists only as a seal variant must be absent elsewhere ("-" in the blocks list).
-        VIS=$visibility LIC=$license KIND=$kind SEAL=$seal awk -v tree="$t/tree" -v blocks="$t/blocks" '
-            BEGIN {
-                while ((getline line < tree) > 0) {
-                    split(line, f, "\t"); split(f[1], m, " ")
-                    mode[f[2]] = m[1]; oid[f[2]] = m[2]
-                }
-                printf "" > blocks
-            }
-            /^#/ || /^[ \t]*$/ { next }
-            $1 == "standard" && NF == 2 { version = 1; next }
-            ($1 != "file" && $1 != "block") || NF != 5 {
-                print "standard-check: .github/standard/MANIFEST: line " NR " does not parse"; bad++; next
-            }
-            {
-                p = $2
-                if (p == "all" || p == "release") sel = 1
-                else if (p == "mit") sel = ENVIRON["LIC"] == "MIT"
-                else if (p == "public" || p == "private") sel = ENVIRON["VIS"] == p
-                else if (p == "seal") sel = ENVIRON["SEAL"] == "yes"
-                else { print "standard-check: .github/standard/MANIFEST: line " NR ": unknown profile " p; bad++; next }
-                if ($1 == "file") { listed[$5] = 1 }
-                if ($1 == "block") {
-                    name = $5; sub(/@.*/, "", name)
-                    if (p == "seal") sealed[name] = 1; else plain[name] = 1
-                    if (!sel) { if (p == "seal") unsel[$5] = name; next }
-                    if (p == "release" && ENVIRON["KIND"] == "legacy") next
-                    nb++; bwant[nb] = $3; bentry[nb] = $5; bname[nb] = name; bprof[nb] = p
-                    next
-                }
-                if (!sel) next
-                if (!($5 in oid)) { print "standard-check: " $5 ": missing (the MANIFEST lists it)"; bad++; next }
-                if (p == "release" && ENVIRON["KIND"] == "legacy") next
-                if (oid[$5] != $3) { print "standard-check: " $5 ": differs from the MANIFEST"; bad++ }
-                if (mode[$5] != $4) { print "standard-check: " $5 ": mode " mode[$5] ", the MANIFEST says " $4; bad++ }
-            }
-            END {
-                for (i = 1; i <= nb; i++)
-                    if (bprof[i] == "seal" || !(bname[i] in sealed) || ENVIRON["SEAL"] != "yes")
-                        print bwant[i], bentry[i] > blocks
-                for (e in unsel) if (!(unsel[e] in plain)) print "-", e > blocks
-                if (!version) { print "standard-check: .github/standard/MANIFEST: no standard version line"; bad++ }
-                for (path in oid) {
-                    if (path == ".github/standard/MANIFEST" || (path in listed)) continue
-                    if (path ~ /^\.githooks\// || path ~ /^\.github\/standard\// || path ~ /^\.github\/workflows\//)
-                        { print "standard-check: " path ": not in the MANIFEST"; bad++ }
-                }
-                exit bad > 0
-            }' "$t/manifest" > "$t/rules" || true
-        if [ -s "$t/rules" ]; then
-            sort "$t/rules" >&2
-            errors=$((errors + $(awk 'END { print NR }' "$t/rules")))
-        fi
-        while read -r want entry; do
-            target=${entry%%#*}
-            block=${entry#*#}
-            block=${block%%@*}
-            toid=$(oid_of "$target")
-            if [ "$want" = - ]; then
-                [ -n "$toid" ] || continue
-                status=0
-                block_of "$toid" "$target" "$block" "$t/block" || status=$?
-                [ "$status" -eq 3 ] ||
-                    problem "$entry: the block is here, but the config does not set SEAL=yes"
-                continue
-            fi
-            if [ -z "$toid" ]; then
-                problem "$entry: $target is missing"
-                continue
-            fi
-            status=0
-            block_of "$toid" "$target" "$block" "$t/block" || status=$?
-            case $status in
-                0)
-                    have=$(git hash-object --stdin < "$t/block") || std_fail "cannot hash a block"
-                    [ "$have" = "$want" ] || problem "$entry: the block differs from the MANIFEST"
-                    ;;
-                3) problem "$entry: the block's markers are missing" ;;
-                *) problem "$entry: the block's markers appear more than once or out of order" ;;
-            esac
-        done < "$t/blocks"
+        manifest_rules "$t/manifest" all "$t/blocks"
+        check_blocks "$t/blocks" consumer
     fi
 fi
 
@@ -336,7 +358,8 @@ ho=$(oid_of tests/helpers.bash)
 if [ -n "$ho" ] && ! git cat-file blob "$ho" | grep -q -F '/../.github/standard/tests/lib.bash'; then
     problem "tests/helpers.bash: does not source .github/standard/tests/lib.bash"
 fi
-# gitleaks' inline allow marker would hide its line from the secret scan; built from fragments.
+# gitleaks' inline allow marker would hide its line from the secret scan. The marker is built
+# from fragments, so this file does not hold it.
 marker="gitleaks"":allow"
 if [ "$mode" = --ci ]; then
     git -c core.quotePath=false grep -I -l -F -e "$marker" HEAD > "$t/marked" 2> /dev/null || true
@@ -353,9 +376,10 @@ for path in .github/workflows/tests.yml .github/workflows/validate.yml .githooks
     [ -z "$(oid_of "$path")" ] || problem "$path: removed by the standard; delete it"
 done
 
-# Rule 9, in repo-standard: the MANIFEST rebuilt from the tree and blocks/ equals the committed
-# one (an error on the release pull request, a notice otherwise), and no copy or block names a
-# repository of config/private-names.
+# Rule 9, in repo-standard. The MANIFEST rebuilt from the tree and blocks/ equals the committed
+# one: an error on the release pull request, a notice otherwise. The blocks in repo-standard's own
+# documents are the variants its config selects. No copy or block names a repository of
+# config/private-names.
 if [ "$role" = source ]; then
     if [ "$mode" = --ci ]; then set -- --print --rev HEAD; else set -- --print; fi
     if [ ! -f tools/manifest ]; then
@@ -374,9 +398,13 @@ if [ "$role" = source ]; then
             if [ "$release" -eq 1 ]; then
                 problem ".github/standard/MANIFEST: differs from the tree; run tools/manifest"
             else
-                notice ".github/standard/MANIFEST differs from the tree; the release pull request rebuilds it"
+                notice ".github/standard/MANIFEST differs from the tree; run sh tools/manifest"
             fi
         fi
+        # Rules 3 and 4 for repo-standard's own documents, over the MANIFEST rebuilt from blocks/:
+        # no sync writes them here, and tools/manifest rewrites them.
+        manifest_rules "$t/rebuilt" blocks "$t/own-blocks"
+        check_blocks "$t/own-blocks" source
         names=$(oid_of config/private-names)
         if [ -n "$names" ]; then
             git cat-file blob "$names" | sed -e '/^#/d' -e '/^[[:space:]]*$/d' > "$t/names"

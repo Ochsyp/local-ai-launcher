@@ -2,8 +2,8 @@
 # conf of the repository standard: the same file in every repository; never edit it here.
 # The one reader of .github/standard.conf, which is data: nothing sources it. It checks each
 # line against the keys and value forms of the standard and prints the values, with the
-# defaults filled in, for the hooks and the tools. POSIX sh and awk, so the hooks can run it
-# under dash.
+# defaults filled in, for the hooks and the tools. It is POSIX sh and awk, so the hooks can run
+# it under dash.
 #   conf --check [FILE|-]     exit 0 when FILE parses
 #   conf --get KEY [FILE|-]   print KEY's value or its default; a repeatable key one per line
 #   conf --print [FILE|-]     print every key as KEY=value, with the defaults filled in
@@ -140,8 +140,8 @@ if [ "$mode" != --defaults ]; then
         { n = split(FILENAME, p, "/"); print p[n], $1 }' "$rules"/* > "$tmp/kinds" ||
         fail "cannot read the rule packs"
     [ -s "$tmp/kinds" ] || fail "the rule packs hold no rule"
-    # The EREs of every rule, to check that no PATH-ERE holds a value a pack would report: one
-    # per line in eres for a first grep, and "ERE US exempt-ERE" lines in rulesx.
+    # The EREs of every rule, to check that no PATH-ERE holds a value a pack would report. eres
+    # holds one per line for a first grep; rulesx holds "ERE US exempt-ERE" lines.
     LC_ALL=C awk -v us="$us" -v rulesx="$tmp/rulesx" '
         /^[ 	]*(#|$)/ { next }
         {
@@ -322,7 +322,7 @@ if [ "$mode" != --defaults ]; then
                 continue 2
             fi
         done
-        # A hit that the rule's own exempt ERE covers is no finding, as in a scan; a first grep
+        # A hit that the rule's own exempt ERE covers is no finding, as in a scan. A first grep
         # with every rule keeps the common case, no hit at all, to one process.
         printf '%s\n' "$apath" > "$tmp/apath"
         if LC_ALL=C.UTF-8 grep -q -E -f "$tmp/eres" "$tmp/apath"; then

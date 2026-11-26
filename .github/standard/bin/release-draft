@@ -1,13 +1,14 @@
 #!/bin/bash
 # release-draft of the repository standard: the same file in every repository; never edit it
-# here. The draft job of release.yml (spec 3.5): the launcher's draft job, moved into a tested
-# script. It checks the formats of VERSION and COMMIT, the assets against SHA256SUMS, that main is
-# still at COMMIT, that no release of the tag vX.Y.Z is published, and that no tag vX.Y.Z exists
-# without a release, so a pushed tag cannot take over the publish. Then it checks each earlier
-# draft of the tag once more, deletes it, and drafts the release with
-# gh release create vX.Y.Z --draft --target COMMIT: DIR/notes.md are its notes, and DIR/assets/*
-# its assets. For the image kind (an image.json among the assets) the notes get a section
-# "Container image" with the image reference and its digest. It never publishes anything.
+# here. The draft job of release.yml (spec 3.5): the launcher's draft job, as a tested script.
+# It checks the formats of VERSION and COMMIT, and the assets against SHA256SUMS. It checks that
+# main is still at COMMIT and that no release of the tag vX.Y.Z is published. It also checks that
+# no tag vX.Y.Z exists without a release, so a pushed tag cannot take over the publish. Then it
+# deletes each earlier draft of the tag, after checking once more that it is still a draft. Last,
+# it drafts the release with gh release create vX.Y.Z --draft --target COMMIT, with DIR/notes.md
+# as its notes and DIR/assets/* as its assets. For the image kind (an image.json among the assets)
+# the notes get a section "Container image" with the image reference and its digest. It never
+# publishes anything.
 #   release-draft --dir DIR      reads VERSION, COMMIT and GITHUB_REPOSITORY; gh reads GH_TOKEN
 # Exit 0; 1 a refused or failed draft; 64 usage.
 set -euo pipefail

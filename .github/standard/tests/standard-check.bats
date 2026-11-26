@@ -253,8 +253,8 @@ make_consumer() {
     write_config VISIBILITY=public PRIVACY_RULES=base 'VERSION_COPY=version.txt|version=X.Y.Z'
     git -C "$REPO" add VERSION version.txt .github/standard.conf
     check --staged
-    # Named by its place in the config, never by its path, which a commit made with the hooks
-    # off could have filled with a term.
+    # The entry is named by its place in the config, never by its path: a commit made with the
+    # hooks off could have put a term into that path.
     [[ $stderr == *"VERSION_COPY entry 1: its file does not hold the line for 1.1.0-dev"* ]]
     [[ $stderr != *version.txt* ]]
     git -C "$REPO" rm -q --cached version.txt

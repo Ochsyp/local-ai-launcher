@@ -1,11 +1,11 @@
 #!/bin/bash
 # stub-bin/gh of the repository standard's tests: the same file in every repository; never edit
 # it here. Stands in for gh in the release tool tests. It logs "gh ARGS" to $STUB_LOG and answers
-# from the folder $STUB_GH: the reply to a call is the file named after its arguments, each run
-# of characters other than letters, digits, dots and dashes written as one underscore, and a name
-# longer than 120 characters written as its SHA-256, so it fits any file system (gh_key in
-# release-tools.bats builds the same name). It prints that file and exits with the number in the
-# file of the same name plus .rc, or 0. A call without a reply prints nothing and exits 0.
+# from the folder $STUB_GH: the reply to a call is the file named after its arguments. The name
+# writes each run of characters other than letters, digits, dots and dashes as one underscore. A
+# name longer than 120 characters becomes its SHA-256, so it fits any file system. gh_key in
+# release-tools.bats builds the same name. The stub prints that file and exits with the number in
+# the file of the same name plus .rc, or 0. A call without a reply prints nothing and exits 0.
 # gh release download TAG [--dir DIR] [--pattern NAME] copies $STUB_GH/assets-TAG/* (or NAME)
 # into DIR. gh release create also logs the file of its --notes-file, after a line "gh notes:".
 # Under STUB_GH_READONLY=1 every call that would change something exits 99: gh api with a method
