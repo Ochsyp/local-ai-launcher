@@ -3,10 +3,9 @@
 # -------------------------------------------------------
 #
 # Pester 6 tests for .github\scripts\LocalAIRelease.psm1 and ci\release-build.ps1, which the
-# standard's release.yml runs: the rules for VERSION and CHANGELOG.md, the release notes, the
-# manifest and SHA256SUMS formats, the asset install.ps1, full builds in git repositories made in
-# TestDrive:, and the export-ignore rules of this repository's .gitattributes. git must be on PATH;
-# every remote is a folder in TestDrive:.
+# standard's release.yml runs: the manifest and SHA256SUMS formats, the release zip and its check,
+# the asset install.ps1, builds in git repositories made in TestDrive:, and the export-ignore rules
+# of this repository's .gitattributes. git must be on PATH.
 
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', '',
     Justification = 'Pester shares BeforeAll and BeforeEach variables with the It blocks.')]
@@ -45,28 +44,15 @@ BeforeAll {
         }
     }
 
-    # Return a CHANGELOG.md text with LF line ends and an empty [Unreleased] section above the release $Version of 2026-05-04, and above
-    # it the release $Previous of 2026-04-01 when that is given, with the links Keep a Changelog writes. Without $Version, the entries sit
-    # under [Unreleased], as before the first release.
-    function Get-TestChangelog([string]$Version = '1.2.3', [string]$Previous = '') {
+    # Return a CHANGELOG.md text with LF line ends and an empty [Unreleased] section above the release $Version of 2026-05-04, with the
+    # links Keep a Changelog writes.
+    function Get-TestChangelog([string]$Version = '1.2.3') {
         $url = 'https://github.com/example/launcher'
         $lines = New-Object System.Collections.Generic.List[string]
         foreach ($line in '# Changelog', '', 'All notable changes to this project are listed here.', '', '## [Unreleased]', '') { $lines.Add($line) }
-        if (-not $Version) {
-            foreach ($line in '### Added', '', '- A release check.', '', "[Unreleased]: $url/commits/main") { $lines.Add($line) }
-            return ($lines -join "`n") + "`n"
-        }
         foreach ($line in "## [$Version] - 2026-05-04", '', '### Added', '', '- A release check.', '', '### Fixed', '', '- A typo.', '') { $lines.Add($line) }
-        if ($Previous) {
-            foreach ($line in "## [$Previous] - 2026-04-01", '', '### Added', '', '- The first release.', '') { $lines.Add($line) }
-        }
         $lines.Add("[Unreleased]: $url/compare/v$Version...HEAD")
-        if ($Previous) {
-            $lines.Add("[$Version]: $url/compare/v$Previous...v$Version")
-            $lines.Add("[$Previous]: $url/releases/tag/v$Previous")
-        } else {
-            $lines.Add("[$Version]: $url/releases/tag/v$Version")
-        }
+        $lines.Add("[$Version]: $url/releases/tag/v$Version")
         return ($lines -join "`n") + "`n"
     }
 
@@ -153,206 +139,13 @@ BeforeAll {
         'SECURITY.md'                      = "# Security`n"
     }
 
-    # Return the files of a launcher checkout whose VERSION holds $Version (none when it is empty), with a CHANGELOG.md that fits it.
+    # Return the files of a launcher checkout whose VERSION holds $Version, with a CHANGELOG.md that fits it.
     function Get-TestLauncher([string]$Version = '1.2.3') {
         $files = $runtimeFiles.Clone()
         foreach ($name in $devFiles.Keys) { $files[$name] = $devFiles[$name] }
         $files['CHANGELOG.md'] = Get-TestChangelog -Version $Version
-        if ($Version) { $files['VERSION'] = "$Version`n" }
+        $files['VERSION'] = "$Version`n"
         return $files
-    }
-}
-
-Describe 'Compare-ReleaseVersion' {
-    It 'orders <Version> against <Other> as <Expected>' -ForEach @(
-        @{ Version = '1.10.0'; Other = '1.9.9'; Expected = 1 }
-        @{ Version = '2.0.0'; Other = '1.99.99'; Expected = 1 }
-        @{ Version = '0.1.0'; Other = '0.0.10'; Expected = 1 }
-        @{ Version = '1.2.3'; Other = '1.2.3'; Expected = 0 }
-        @{ Version = '1.2.3'; Other = '1.2.4'; Expected = -1 }
-    ) {
-        Compare-ReleaseVersion -Version $Version -Other $Other | Should -Be $Expected
-    }
-
-    It 'refuses <Text>, which is no release version' -ForEach @(
-        @{ Text = '1.2' }
-        @{ Text = '01.2.3' }
-        @{ Text = 'v1.2.3' }
-        @{ Text = '1.2.3-rc.1' }
-        @{ Text = '2147483648.0.0' }
-    ) {
-        { Compare-ReleaseVersion -Version $Text -Other '1.0.0' } | Should -Throw -ExpectedMessage "'$Text' is no release version X.Y.Z."
-    }
-}
-
-Describe 'Get-ReleaseChangelogProblem' {
-    It 'finds nothing wrong in <Case>' -ForEach @(
-        @{ Case = 'a first release with its links'; Version = '1.2.3'; Previous = ''; LineEnd = "`n" }
-        @{ Case = 'a later release whose link compares the one before'; Version = '1.2.3'; Previous = '1.2.2'; LineEnd = "`n" }
-        @{ Case = 'CRLF line ends'; Version = '1.2.3'; Previous = ''; LineEnd = "`r`n" }
-        @{ Case = 'spaces at the end of every line'; Version = '1.2.3'; Previous = ''; LineEnd = "  `n" }
-        @{ Case = 'the Unreleased section alone, when there is no VERSION'; Version = ''; Previous = ''; LineEnd = "`n" }
-    ) {
-        $text = (Get-TestChangelog -Version $Version -Previous $Previous).Replace("`n", $LineEnd)
-        @(Get-ReleaseChangelogProblem -Text $text -Version $Version) | Should -BeNullOrEmpty
-    }
-
-    # Built is the release the CHANGELOG.md text holds (none when empty), Old and New change that text, and Version is what VERSION holds.
-    It 'reports <Case>' -ForEach @(
-        @{ Case = 'a version heading without VERSION'; Built = '1.2.3'; Version = ''; Old = ''; New = ''
-            Problem = "There is no VERSION file, but CHANGELOG.md has the version heading '## [1.2.3] - 2026-05-04'." }
-        @{ Case = 'VERSION without a version heading'; Built = ''; Version = '1.2.3'; Old = ''; New = ''
-            Problem = 'VERSION names 1.2.3, but CHANGELOG.md has no version heading.' }
-        @{ Case = 'a version heading above Unreleased'; Built = '1.2.3'; Version = '1.2.3'; Old = "## [Unreleased]`n`n"; New = ''
-            Problem = "The first '## ' heading of CHANGELOG.md must be '## [Unreleased]', but it is '## [1.2.3] - 2026-05-04'." }
-        @{ Case = 'no heading at all'; Built = ''; Version = ''; Old = "## [Unreleased]`n"; New = ''
-            Problem = "CHANGELOG.md has no '## [Unreleased]' heading." }
-        @{ Case = 'two Unreleased headings'; Built = '1.2.3'; Version = '1.2.3'; Old = '## [1.2.3]'; New = "## [Unreleased]`n`n## [1.2.3]"
-            Problem = "CHANGELOG.md has 2 '## [Unreleased]' headings; keep one." }
-        @{ Case = 'no Unreleased link'; Built = '1.2.3'; Version = '1.2.3'; Old = "[Unreleased]: https://github.com/example/launcher/compare/v1.2.3...HEAD`n"; New = ''
-            Problem = "CHANGELOG.md has no '[Unreleased]: ' link line." }
-        @{ Case = 'a heading that names another version'; Built = '1.2.3'; Version = '1.2.4'; Old = ''; New = ''
-            Problem = 'The first version heading of CHANGELOG.md names 1.2.3, but VERSION names 1.2.4.' }
-        @{ Case = 'a heading without a date'; Built = '1.2.3'; Version = '1.2.3'; Old = '## [1.2.3] - 2026-05-04'; New = '## [1.2.3]'
-            Problem = "The first version heading of CHANGELOG.md must read '## [1.2.3] - YYYY-MM-DD', but it reads '## [1.2.3]'." }
-        @{ Case = 'a date in another form'; Built = '1.2.3'; Version = '1.2.3'; Old = '2026-05-04'; New = '04.05.2026'
-            Problem = "The first version heading of CHANGELOG.md must read '## [1.2.3] - YYYY-MM-DD', but it reads '## [1.2.3] - 04.05.2026'." }
-        @{ Case = 'a date that does not exist'; Built = '1.2.3'; Version = '1.2.3'; Old = '2026-05-04'; New = '2026-02-30'
-            Problem = "The date in '## [1.2.3] - 2026-02-30' is no real date YYYY-MM-DD." }
-        @{ Case = 'two headings of the version'; Built = '1.2.3'; Version = '1.2.3'; Old = '[Unreleased]: '; New = "## [1.2.3] - 2026-05-05`n`n- Again.`n`n[Unreleased]: "
-            Problem = 'CHANGELOG.md has 2 headings for 1.2.3; keep one.' }
-        @{ Case = 'a section without changes'; Built = '1.2.3'; Version = '1.2.3'; Old = "### Added`n`n- A release check.`n`n### Fixed`n`n- A typo.`n"; New = ''
-            Problem = "The section '## [1.2.3] - 2026-05-04' of CHANGELOG.md lists no changes." }
-        @{ Case = 'an Unreleased link that still names main'; Built = '1.2.3'; Version = '1.2.3'; Old = 'compare/v1.2.3...HEAD'; New = 'commits/main'
-            Problem = "The link '[Unreleased]: https://github.com/example/launcher/commits/main' must compare v1.2.3 with HEAD" }
-        @{ Case = 'an Unreleased link from the version before'; Built = '1.2.3'; Version = '1.2.3'; Old = 'compare/v1.2.3...HEAD'; New = 'compare/v1.2.2...HEAD'
-            Problem = "The link '[Unreleased]: https://github.com/example/launcher/compare/v1.2.2...HEAD' must compare v1.2.3 with HEAD" }
-        @{ Case = 'no link for the version'; Built = '1.2.3'; Version = '1.2.3'; Old = "[1.2.3]: https://github.com/example/launcher/releases/tag/v1.2.3`n"; New = ''
-            Problem = "CHANGELOG.md has no '[1.2.3]: ' link line." }
-        @{ Case = 'a version link to another release'; Built = '1.2.3'; Version = '1.2.3'; Old = 'releases/tag/v1.2.3'; New = 'releases/tag/v1.2.2'
-            Problem = "The link '[1.2.3]: https://github.com/example/launcher/releases/tag/v1.2.2' must lead to the release v1.2.3" }
-        @{ Case = 'a version link over http'; Built = '1.2.3'; Version = '1.2.3'; Old = 'https://github.com/example/launcher/releases'; New = 'http://github.com/example/launcher/releases'
-            Problem = "The link '[1.2.3]: http://github.com/example/launcher/releases/tag/v1.2.3' must lead to the release v1.2.3" }
-    ) {
-        $text = Get-TestChangelog -Version $Built
-        if ($Old) { $text = $text.Replace($Old, $New) }
-        $problems = @(Get-ReleaseChangelogProblem -Text $text -Version $Version)
-        @($problems | Where-Object { $_.StartsWith($Problem, [StringComparison]::Ordinal) }).Count | Should -Be 1 -Because ($problems -join ' | ')
-    }
-}
-
-Describe 'Get-ReleaseVersion' {
-    BeforeEach {
-        $checkout = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
-        Write-ReleaseTestFile (Join-Path $checkout 'CHANGELOG.md') (Get-TestChangelog)
-    }
-
-    It 'returns the version that VERSION holds with a line feed, also for a relative path' {
-        Write-ReleaseTestFile (Join-Path $checkout 'VERSION') "1.2.3`n"
-        Get-ReleaseVersion -RepositoryPath $checkout | Should -BeExactly '1.2.3'
-        Push-Location -LiteralPath $checkout
-        try {
-            Get-ReleaseVersion -RepositoryPath '.' | Should -BeExactly '1.2.3'
-        } finally {
-            Pop-Location
-        }
-    }
-
-    It 'returns $null without VERSION, as before the first release, while CHANGELOG.md names no version' {
-        Write-ReleaseTestFile (Join-Path $checkout 'CHANGELOG.md') (Get-TestChangelog -Version '')
-        Get-ReleaseVersion -RepositoryPath $checkout | Should -BeNullOrEmpty
-    }
-
-    It 'refuses a VERSION file that holds <Case>' -ForEach @(
-        @{ Case = 'no line feed'; Text = '1.2.3' }
-        @{ Case = 'CRLF'; Text = "1.2.3`r`n" }
-        @{ Case = 'a BOM'; Text = ([string][char]0xEF + [char]0xBB + [char]0xBF) + "1.2.3`n" }
-        @{ Case = 'two line feeds'; Text = "1.2.3`n`n" }
-        @{ Case = 'a trailing space'; Text = "1.2.3 `n" }
-        @{ Case = 'a v before the version'; Text = "v1.2.3`n" }
-        @{ Case = 'a leading zero'; Text = "1.02.3`n" }
-        @{ Case = 'two numbers'; Text = "1.2`n" }
-        @{ Case = 'a prerelease'; Text = "1.2.3-rc.1`n" }
-        @{ Case = 'a number above 2147483647'; Text = "2147483648.0.0`n" }
-    ) {
-        Write-ReleaseTestFile (Join-Path $checkout 'VERSION') $Text
-        { Get-ReleaseVersion -RepositoryPath $checkout } | Should -Throw -ExpectedMessage '*VERSION must hold one line X.Y.Z and a line feed*'
-    }
-
-    It 'refuses a folder named VERSION, and a missing or broken CHANGELOG.md' {
-        $null = New-Item -ItemType Directory -Path (Join-Path $checkout 'VERSION')
-        { Get-ReleaseVersion -RepositoryPath $checkout } | Should -Throw -ExpectedMessage '*VERSION is a folder*'
-        [IO.Directory]::Delete((Join-Path $checkout 'VERSION'))
-        Write-ReleaseTestFile (Join-Path $checkout 'CHANGELOG.md') ("# Changelog`n" + [char]0xFF + "`n")
-        { Get-ReleaseVersion -RepositoryPath $checkout } | Should -Throw -ExpectedMessage '*CHANGELOG.md is not UTF-8 text*'
-        Remove-Item -LiteralPath (Join-Path $checkout 'CHANGELOG.md')
-        { Get-ReleaseVersion -RepositoryPath $checkout } | Should -Throw -ExpectedMessage '*CHANGELOG.md is missing.*'
-    }
-
-    It 'lists what CHANGELOG.md breaks for the version VERSION names, and for a missing VERSION' {
-        Write-ReleaseTestFile (Join-Path $checkout 'VERSION') "1.2.4`n"
-        $thrown = { Get-ReleaseVersion -RepositoryPath $checkout } | Should -Throw -PassThru
-        $thrown.Exception.Message | Should -BeLike "VERSION and CHANGELOG.md in $checkout break the release rules in CONTRIBUTING.md:*"
-        $thrown.Exception.Message | Should -BeLike '*names 1.2.3, but VERSION names 1.2.4.*'
-        $thrown.Exception.Message | Should -BeLike '*must compare v1.2.4 with HEAD*'
-        Remove-Item -LiteralPath (Join-Path $checkout 'VERSION')
-        { Get-ReleaseVersion -RepositoryPath $checkout } | Should -Throw -ExpectedMessage '*There is no VERSION file, but CHANGELOG.md has the version heading*'
-    }
-}
-
-Describe 'Get-ReleaseNotes' {
-    BeforeAll {
-        $notes123 = (@('## [1.2.3] - 2026-05-04', '', '### Added', '', '- A release check.', '', '### Fixed', '', '- A typo.') -join "`n") + "`n"
-    }
-
-    It 'returns the first release from its heading up to the links, without them, ending in one LF' {
-        Get-ReleaseNotes -Text (Get-TestChangelog) -Version '1.2.3' | Should -BeExactly $notes123
-    }
-
-    It 'stops at the heading of the release before, and writes LF for CRLF' {
-        $text = (Get-TestChangelog -Previous '1.2.2').Replace("`n", "`r`n")
-        Get-ReleaseNotes -Text $text -Version '1.2.3' | Should -BeExactly $notes123
-        Get-ReleaseNotes -Text $text -Version '1.2.2' | Should -BeExactly ((@('## [1.2.2] - 2026-04-01', '', '### Added', '', '- The first release.') -join "`n") + "`n")
-    }
-
-    It 'refuses a version without a section, and a section that lists no changes' {
-        $thrown = { Get-ReleaseNotes -Text (Get-TestChangelog) -Version '1.2.4' } | Should -Throw -PassThru
-        $thrown.Exception.Message | Should -BeExactly "CHANGELOG.md has no section '## [1.2.4] - YYYY-MM-DD'."
-        $empty = (Get-TestChangelog).Replace("### Added`n`n- A release check.`n`n### Fixed`n`n- A typo.`n", '')
-        $thrown = { Get-ReleaseNotes -Text $empty -Version '1.2.3' } | Should -Throw -PassThru
-        $thrown.Exception.Message | Should -BeExactly "The section '## [1.2.3] - 2026-05-04' of CHANGELOG.md lists no changes."
-    }
-
-    It 'writes the notes of a checkout to a file as UTF-8 without BOM' {
-        $checkout = Join-Path $TestDrive 'notes'
-        Write-ReleaseTestFile (Join-Path $checkout 'CHANGELOG.md') (Get-TestChangelog)
-        $path = Join-Path $TestDrive 'notes-out\notes.md'
-        New-ReleaseNotesFile -RepositoryPath $checkout -Version '1.2.3' -Path $path
-        $latin1.GetString([IO.File]::ReadAllBytes($path)) | Should -BeExactly $notes123
-    }
-}
-
-Describe 'Get-ReleaseUnreleasedLine' {
-    It 'finds nothing under the empty [Unreleased] of a release, with <Case>' -ForEach @(
-        @{ Case = 'LF line ends'; LineEnd = "`n" }
-        @{ Case = 'CRLF line ends'; LineEnd = "`r`n" }
-        @{ Case = 'spaces at the end of every line'; LineEnd = "  `n" }
-    ) {
-        $text = (Get-TestChangelog -Previous '1.2.2').Replace("`n", $LineEnd)
-        @(Get-ReleaseUnreleasedLine -Text $text) | Should -BeNullOrEmpty
-    }
-
-    It 'returns the lines under [Unreleased] up to the next heading, without blank lines and trailing spaces' {
-        $text = (Get-TestChangelog).Replace("## [Unreleased]`n", "## [Unreleased]`n`n### Fixed  `n`n- The fix of a draft,`n  which ships in 1.2.3.`n`n")
-        @(Get-ReleaseUnreleasedLine -Text $text) | Should -Be @('### Fixed', '- The fix of a draft,', '  which ships in 1.2.3.')
-    }
-
-    It 'returns the entries before the first release, without the link line below them' {
-        @(Get-ReleaseUnreleasedLine -Text (Get-TestChangelog -Version '')) | Should -Be @('### Added', '- A release check.')
-    }
-
-    It 'finds nothing without an [Unreleased] heading' {
-        @(Get-ReleaseUnreleasedLine -Text "# Changelog`n`n## [1.0.0] - 2026-01-01`n`n- The first release.`n") | Should -BeNullOrEmpty
     }
 }
 
@@ -540,10 +333,8 @@ Describe 'New-ReleaseZip and Assert-ReleaseZip' {
             Should -Throw -ExpectedMessage "$trackedCommit tracks local-ai-release.json at the top of the repository*"
     }
 
-    It 'passes the zip it built, and refuses it with -NoVersionFile, under another name or for another commit' {
+    It 'passes the zip it built, and refuses it under another name or for another commit' {
         { Assert-ReleaseZip -Path $build.Path -Version '1.2.3' -Commit $commit 6>$null } | Should -Not -Throw
-        { Assert-ReleaseZip -Path $build.Path -Version '1.2.3' -Commit $commit -NoVersionFile } |
-            Should -Throw -ExpectedMessage '*The zip holds local-ai-launcher-1.2.3/VERSION, but its commit has no VERSION file.*'
         $renamed = Join-Path $base 'renamed\other.zip'
         $null = New-Item -ItemType Directory -Force -Path (Split-Path $renamed -Parent)
         Copy-Item -LiteralPath $build.Path -Destination $renamed
@@ -650,225 +441,6 @@ Describe 'New-ReleaseZip and Assert-ReleaseZip' {
     }
 }
 
-Describe 'Assert-ReleaseTagAbsent, Assert-ReleaseVersionNewest and Assert-ReleaseVersionBump' {
-    BeforeAll {
-        $base = Join-Path $TestDrive 'bump'
-        # The remote: v1.2.3 is a lightweight tag, as a published release makes, and v2.0.0 an annotated one. v3.0.0-rc.1 and v4.0 name no
-        # release version X.Y.Z.
-        $remote = Join-Path $base 'remote'
-        $null = Initialize-TestRepository -Path $remote -Files @{ 'README.md' = "remote`n" }
-        $null = Invoke-TestGit @('-C', $remote, 'tag', 'v1.2.3')
-        $null = Invoke-TestGit @('-C', $remote, 'tag', '-a', '-m', 'annotated', 'v2.0.0')
-        $null = Invoke-TestGit @('-C', $remote, 'tag', 'v3.0.0-rc.1')
-        $null = Invoke-TestGit @('-C', $remote, 'tag', 'v4.0')
-        $remoteUrl = ([uri]$remote).AbsoluteUri
-
-        # Return a checkout named $Name with origin at the remote, whose first commit holds VERSION $BaseVersion and whose second, HEAD,
-        # holds VERSION $Version, each none when empty, with a CHANGELOG.md that fits it.
-        function Initialize-BumpCheckout([string]$Name, [string]$BaseVersion, [string]$Version) {
-            $path = Join-Path $base $Name
-            $files = @{ 'CHANGELOG.md' = (Get-TestChangelog -Version $BaseVersion) }
-            if ($BaseVersion) { $files['VERSION'] = "$BaseVersion`n" }
-            $null = Initialize-TestRepository -Path $path -Files $files
-            $previous = if ($BaseVersion -and $BaseVersion -ne $Version) { $BaseVersion } else { '' }
-            Write-ReleaseTestFile (Join-Path $path 'CHANGELOG.md') (Get-TestChangelog -Version $Version -Previous $previous)
-            if ($Version) {
-                Write-ReleaseTestFile (Join-Path $path 'VERSION') "$Version`n"
-            } elseif ($BaseVersion) {
-                Remove-Item -LiteralPath (Join-Path $path 'VERSION')
-            }
-            Write-ReleaseTestFile (Join-Path $path 'change.txt') "$Name`n"
-            $null = Add-TestCommit -Path $path -Message 'second'
-            $null = Invoke-TestGit @('-C', $path, 'remote', 'add', 'origin', $remoteUrl)
-            return $path
-        }
-    }
-
-    It 'finds no tag <Tag> on the remote' -ForEach @(
-        @{ Tag = 'v1.2.4' }
-        @{ Tag = 'v1.2' }
-        @{ Tag = 'v2.0' }
-    ) {
-        $checkout = Initialize-BumpCheckout -Name "absent-$Tag" -BaseVersion '' -Version ''
-        { Assert-ReleaseTagAbsent -RepositoryPath $checkout -Tag $Tag } | Should -Not -Throw
-    }
-
-    It 'finds the <Kind> tag <Tag> on the remote' -ForEach @(
-        @{ Kind = 'lightweight'; Tag = 'v1.2.3' }
-        @{ Kind = 'annotated'; Tag = 'v2.0.0' }
-    ) {
-        $checkout = Initialize-BumpCheckout -Name "present-$Tag" -BaseVersion '' -Version ''
-        { Assert-ReleaseTagAbsent -RepositoryPath $checkout -Tag $Tag } | Should -Throw -ExpectedMessage "Tag $Tag already exists on origin, so that version is released.*"
-    }
-
-    It 'fails when git cannot read the remote' {
-        $checkout = Initialize-BumpCheckout -Name 'no-remote' -BaseVersion '' -Version ''
-        { Assert-ReleaseTagAbsent -RepositoryPath $checkout -Tag 'v1.0.0' -Remote 'nowhere' } | Should -Throw -ExpectedMessage "'git ls-remote --tags nowhere refs/tags/v1.0.0' in * failed with exit code *"
-        { Assert-ReleaseVersionNewest -RepositoryPath $checkout -Version '1.0.0' -Remote 'nowhere' } | Should -Throw -ExpectedMessage "'git ls-remote --tags nowhere refs/tags/v*' in * failed with exit code *"
-    }
-
-    It 'passes the version <Version>, which is above every release tag on the remote' -ForEach @(
-        @{ Version = '2.0.1' }
-        @{ Version = '2.1.0' }
-        @{ Version = '10.0.0' }
-    ) {
-        $checkout = Initialize-BumpCheckout -Name "newest-$Version" -BaseVersion '' -Version ''
-        $printed = @(Assert-ReleaseVersionNewest -RepositoryPath $checkout -Version $Version 6>&1 | ForEach-Object { "$_" }) -join "`n"
-        $printed | Should -BeExactly "v$Version is above v2.0.0, the highest release tag on origin."
-    }
-
-    It 'refuses the version <Version>, <Case>' -ForEach @(
-        @{ Version = '1.2.3'; Case = 'whose lightweight tag exists'; Message = 'Tag v1.2.3 already exists on origin, so that version is released.*' }
-        @{ Version = '2.0.0'; Case = 'whose annotated tag exists'; Message = 'Tag v2.0.0 already exists on origin, so that version is released.*' }
-        @{ Version = '1.10.0'; Case = 'which is below the release v2.0.0'; Message = 'VERSION names 1.10.0, but tag v2.0.0 on origin is a higher version.*' }
-        @{ Version = '1.2.4'; Case = 'which lies between two releases'; Message = 'VERSION names 1.2.4, but tag v2.0.0 on origin is a higher version.*' }
-    ) {
-        $checkout = Initialize-BumpCheckout -Name "below-$Version" -BaseVersion '' -Version ''
-        { Assert-ReleaseVersionNewest -RepositoryPath $checkout -Version $Version } | Should -Throw -ExpectedMessage $Message
-    }
-
-    It 'passes any version while the remote has no release tag' {
-        $checkout = Initialize-BumpCheckout -Name 'newest-first' -BaseVersion '' -Version ''
-        # A remote whose only tag, vnext, names no version.
-        $first = Join-Path $base 'first'
-        $null = Initialize-TestRepository -Path $first -Files @{ 'README.md' = "first`n" }
-        $null = Invoke-TestGit @('-C', $first, 'tag', 'vnext')
-        $null = Invoke-TestGit @('-C', $checkout, 'remote', 'add', 'first', ([uri]$first).AbsoluteUri)
-        $printed = @(Assert-ReleaseVersionNewest -RepositoryPath $checkout -Version '0.1.0' -Remote 'first' 6>&1 | ForEach-Object { "$_" }) -join "`n"
-        $printed | Should -BeExactly 'first has no release tag yet, so v0.1.0 is the first release.'
-    }
-
-    It 'passes a pull request that <Case>' -ForEach @(
-        @{ Case = 'adds VERSION 1.0.0, whose tag is missing'; BaseVersion = ''; Version = '1.0.0' }
-        @{ Case = 'raises VERSION from 1.2.3 to 1.3.0'; BaseVersion = '1.2.3'; Version = '1.3.0' }
-        @{ Case = 'raises VERSION from 1.9.0 to 1.10.0'; BaseVersion = '1.9.0'; Version = '1.10.0' }
-        @{ Case = 'keeps VERSION 1.2.3, although its tag exists'; BaseVersion = '1.2.3'; Version = '1.2.3' }
-        @{ Case = 'has no VERSION on either side'; BaseVersion = ''; Version = '' }
-    ) {
-        $checkout = Initialize-BumpCheckout -Name ([guid]::NewGuid().ToString('N')) -BaseVersion $BaseVersion -Version $Version
-        { Assert-ReleaseVersionBump -RepositoryPath $checkout -BaseRevision 'HEAD^1' 6>$null } | Should -Not -Throw
-    }
-
-    It 'refuses a pull request that <Case>' -ForEach @(
-        @{ Case = 'adds VERSION 1.2.3, whose lightweight tag exists'; BaseVersion = ''; Version = '1.2.3'; Message = 'Tag v1.2.3 already exists on origin*' }
-        @{ Case = 'raises VERSION to 2.0.0, whose annotated tag exists'; BaseVersion = '1.2.3'; Version = '2.0.0'; Message = 'Tag v2.0.0 already exists on origin*' }
-        @{ Case = 'lowers VERSION from 1.3.0 to 1.2.4'; BaseVersion = '1.3.0'; Version = '1.2.4'; Message = 'VERSION goes from 1.3.0 to 1.2.4, but a release must raise it.' }
-    ) {
-        $checkout = Initialize-BumpCheckout -Name ([guid]::NewGuid().ToString('N')) -BaseVersion $BaseVersion -Version $Version
-        { Assert-ReleaseVersionBump -RepositoryPath $checkout -BaseRevision 'HEAD^1' } | Should -Throw -ExpectedMessage $Message
-    }
-
-    It 'refuses a base commit the checkout lacks, as with fetch-depth 1' {
-        $single = Join-Path $base 'single'
-        $null = Initialize-TestRepository -Path $single -Files @{ 'CHANGELOG.md' = (Get-TestChangelog -Version ''); 'README.md' = "x`n" }
-        { Assert-ReleaseVersionBump -RepositoryPath $single -BaseRevision 'HEAD^1' } | Should -Throw -ExpectedMessage '*needs the checkout''s fetch-depth at 2 or more*'
-    }
-
-    It 'gives a notice without VERSION, and checks the version change of a pull request with -PullRequest' {
-        $none = Initialize-BumpCheckout -Name 'notice' -BaseVersion '' -Version ''
-        $printed = @(Invoke-ReleaseVersionCheck -RepositoryPath $none 6>&1 | ForEach-Object { "$_" }) -join "`n"
-        $printed | Should -BeLike '*::notice::There is no VERSION file, so no release is prepared.*'
-        $taken = Initialize-BumpCheckout -Name 'taken' -BaseVersion '' -Version '1.2.3'
-        { Invoke-ReleaseVersionCheck -RepositoryPath $taken 6>$null } | Should -Not -Throw
-        { Invoke-ReleaseVersionCheck -RepositoryPath $taken -PullRequest 6>$null } | Should -Throw -ExpectedMessage 'Tag v1.2.3 already exists on origin*'
-    }
-}
-
-Describe 'Invoke-ReleaseBuild' {
-    BeforeAll {
-        $base = Join-Path $TestDrive 'build'
-        $remote = Join-Path $base 'remote'
-        $null = Initialize-TestRepository -Path $remote -Files @{ 'README.md' = "remote`n" }
-        $null = Invoke-TestGit @('-C', $remote, 'tag', 'v1.2.3')
-        $remoteUrl = ([uri]$remote).AbsoluteUri
-
-        # Return a launcher checkout named $Name with VERSION $Version (none when empty) and origin at the remote.
-        function Initialize-BuildCheckout([string]$Name, [string]$Version) {
-            $path = Join-Path $base $Name
-            $null = Initialize-TestRepository -Path $path -Files (Get-TestLauncher -Version $Version)
-            $null = Invoke-TestGit @('-C', $path, 'remote', 'add', 'origin', $remoteUrl)
-            return $path
-        }
-    }
-
-    It 'builds the zip, install.ps1, SHA256SUMS and notes.md of the version VERSION names, once its tag is missing' {
-        $checkout = Initialize-BuildCheckout -Name 'release' -Version '1.2.4'
-        $out = Join-Path $base 'release-out'
-        $release = Invoke-ReleaseBuild -RepositoryPath $checkout -Commit 'HEAD' -OutputDirectory $out 6>$null
-        $release.Version | Should -BeExactly '1.2.4'
-        $release.Tag | Should -BeExactly 'v1.2.4'
-        $release.Commit | Should -BeExactly @(Invoke-TestGit @('-C', $checkout, 'rev-parse', 'HEAD'))[-1]
-        $release.DryRun | Should -BeFalse
-        $release.Zip | Should -Be (Join-Path $out 'assets\local-ai-launcher-1.2.4.zip')
-        @(Get-ChildItem -LiteralPath (Join-Path $out 'assets') | ForEach-Object { $_.Name } | Sort-Object) | Should -Be @('install.ps1', 'local-ai-launcher-1.2.4.zip', 'SHA256SUMS')
-        # install.ps1 is the zip's src/install.ps1, CRLF and all, and SHA256SUMS lists both assets in ordinal order.
-        $release.InstallScript | Should -Be (Join-Path $out 'assets\install.ps1')
-        $latin1.GetString([IO.File]::ReadAllBytes($release.InstallScript)) | Should -BeExactly $zippedFiles['src/install.ps1']
-        $latin1.GetString([IO.File]::ReadAllBytes((Join-Path $out 'assets\SHA256SUMS'))) |
-            Should -BeExactly "$(Get-TestHash $zippedFiles['src/install.ps1'])  install.ps1`n$($release.Sha256)  local-ai-launcher-1.2.4.zip`n"
-        $release.Notes | Should -Be (Join-Path $out 'notes.md')
-        $latin1.GetString([IO.File]::ReadAllBytes($release.Notes)) | Should -BeExactly ((@('## [1.2.4] - 2026-05-04', '', '### Added', '', '- A release check.', '',
-                    '### Fixed', '', '- A typo.') -join "`n") + "`n")
-        Test-Path -LiteralPath (Join-Path $out 'again') | Should -BeFalse
-        { Assert-ReleaseZip -Path $release.Zip -Version '1.2.4' -Commit $release.Commit 6>$null } | Should -Not -Throw
-    }
-
-    It 'refuses to build a version whose tag exists, a checkout without VERSION, and an output folder that is not empty' {
-        $released = Initialize-BuildCheckout -Name 'released' -Version '1.2.3'
-        { Invoke-ReleaseBuild -RepositoryPath $released -Commit 'HEAD' -OutputDirectory (Join-Path $base 'released-out') } |
-            Should -Throw -ExpectedMessage 'Tag v1.2.3 already exists on origin*'
-        $unversioned = Initialize-BuildCheckout -Name 'unversioned' -Version ''
-        { Invoke-ReleaseBuild -RepositoryPath $unversioned -Commit 'HEAD' -OutputDirectory (Join-Path $base 'unversioned-out') } |
-            Should -Throw -ExpectedMessage 'There is no VERSION file, so there is no release to build.*'
-        $full = Join-Path $base 'full-out'
-        Write-ReleaseTestFile (Join-Path $full 'left.txt') 'x'
-        { Invoke-ReleaseBuild -RepositoryPath $released -Commit 'HEAD' -OutputDirectory $full -DryRun } |
-            Should -Throw -ExpectedMessage "The output folder $full is not empty. Choose a new or empty folder."
-    }
-
-    It 'refuses to build a version below a released one, and changes still listed under [Unreleased], which a dry run builds' {
-        $below = Initialize-BuildCheckout -Name 'below' -Version '1.2.2'
-        { Invoke-ReleaseBuild -RepositoryPath $below -Commit 'HEAD' -OutputDirectory (Join-Path $base 'below-out') } |
-            Should -Throw -ExpectedMessage 'VERSION names 1.2.2, but tag v1.2.3 on origin is a higher version.*'
-        # A fix merged after the release pull request, with its entry under [Unreleased] instead of in the section of 1.2.4.
-        $waiting = Initialize-BuildCheckout -Name 'waiting' -Version '1.2.4'
-        $changelog = (Get-TestChangelog -Version '1.2.4').Replace("## [Unreleased]`n", "## [Unreleased]`n`n### Fixed`n`n- The fix of a draft.`n")
-        Write-ReleaseTestFile (Join-Path $waiting 'CHANGELOG.md') $changelog
-        $null = Add-TestCommit -Path $waiting -Message 'fix'
-        $thrown = { Invoke-ReleaseBuild -RepositoryPath $waiting -Commit 'HEAD' -OutputDirectory (Join-Path $base 'waiting-out') 6>$null } |
-            Should -Throw -PassThru
-        $thrown.Exception.Message | Should -BeExactly ("CHANGELOG.md lists changes under '## [Unreleased]', which v1.2.4 would ship while its notes " +
-            "leave them out. Move them into the section of 1.2.4, as CONTRIBUTING.md describes for a fix of a draft:`n  ### Fixed`n  - The fix of a draft.")
-        Test-Path -LiteralPath (Join-Path $base 'waiting-out\notes.md') | Should -BeFalse
-        $dry = Invoke-ReleaseBuild -RepositoryPath $waiting -Commit 'HEAD' -OutputDirectory (Join-Path $base 'waiting-dry') -DryRun 6>$null
-        $dry.Version | Should -BeExactly '1.2.4'
-    }
-
-    It 'dry-runs the version 0.0.0 without VERSION: no tag check and no notes, and a second build with the same bytes' {
-        $checkout = Initialize-BuildCheckout -Name 'dry' -Version ''
-        $out = Join-Path $base 'dry-out'
-        # Captured, so that the notice stays out of the output of the checks, where GitHub Actions would read it as a workflow command.
-        $output = @(Invoke-ReleaseBuild -RepositoryPath $checkout -Commit 'HEAD' -OutputDirectory $out -DryRun -Remote 'nowhere' 6>&1)
-        $release = @($output | Where-Object { $_ -isnot [System.Management.Automation.InformationRecord] })[0]
-        @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$($_.MessageData)" }) |
-            Should -Contain '::notice::There is no VERSION file, so this dry run builds the version 0.0.0.'
-        $release.Version | Should -BeExactly '0.0.0'
-        $release.DryRun | Should -BeTrue
-        $release.Notes | Should -BeNullOrEmpty
-        Test-Path -LiteralPath (Join-Path $out 'notes.md') | Should -BeFalse
-        (Read-TestZip $release.Zip).Contains('local-ai-launcher-0.0.0/VERSION') | Should -BeFalse
-        (Get-FileHash -LiteralPath (Join-Path $out 'again\local-ai-launcher-0.0.0.zip') -Algorithm SHA256).Hash.ToLowerInvariant() | Should -BeExactly $release.Sha256
-        $latin1.GetString([IO.File]::ReadAllBytes((Join-Path $out 'assets\install.ps1'))) | Should -BeExactly $zippedFiles['src/install.ps1']
-    }
-
-    It 'dry-runs the version VERSION names, also when its tag exists' {
-        $checkout = Initialize-BuildCheckout -Name 'dry-released' -Version '1.2.3'
-        $release = Invoke-ReleaseBuild -RepositoryPath $checkout -Commit 'HEAD' -OutputDirectory (Join-Path $base 'dry-released-out') -DryRun 6>$null
-        $release.Version | Should -BeExactly '1.2.3'
-        Test-Path -LiteralPath $release.Notes | Should -BeTrue
-    }
-}
-
 Describe 'Invoke-ReleaseHookBuild and ci\release-build.ps1' {
     BeforeAll {
         $hookBase = Join-Path $TestDrive 'hook'
@@ -889,7 +461,7 @@ Describe 'Invoke-ReleaseHookBuild and ci\release-build.ps1' {
         }
     }
 
-    It 'writes only assets\: the zip, install.ps1 and SHA256SUMS, the same bytes as the release build' {
+    It 'writes only assets\: the zip, install.ps1 and SHA256SUMS' {
         $out = Join-Path $hookBase 'function-out'
         $null = New-Item -ItemType Directory -Path (Join-Path $out 'assets')
         $built = Invoke-ReleaseHookBuild -RepositoryPath $checkout -Version '1.2.4' -Commit $commit -OutputDirectory $out 6>$null
@@ -898,13 +470,6 @@ Describe 'Invoke-ReleaseHookBuild and ci\release-build.ps1' {
             Should -Be @('install.ps1', 'local-ai-launcher-1.2.4.zip', 'SHA256SUMS')
         $built.Zip | Should -Be (Join-Path $out 'assets\local-ai-launcher-1.2.4.zip')
         $built.Commit | Should -BeExactly $commit
-        # The full build, with its notes and its checks of the tags, writes the same three assets.
-        $null = Invoke-TestGit @('-C', $checkout, 'remote', 'add', 'origin', ([uri](Join-Path $hookBase 'nowhere')).AbsoluteUri)
-        $null = Initialize-TestRepository -Path (Join-Path $hookBase 'nowhere') -Files @{ 'README.md' = "remote`n" }
-        $full = Invoke-ReleaseBuild -RepositoryPath $checkout -Commit $commit -OutputDirectory (Join-Path $hookBase 'full-out') 6>$null
-        foreach ($name in 'install.ps1', 'local-ai-launcher-1.2.4.zip', 'SHA256SUMS') {
-            (Get-FileHash -LiteralPath (Join-Path $out "assets\$name")).Hash | Should -BeExactly (Get-FileHash -LiteralPath (Join-Path (Split-Path $full.Zip) $name)).Hash
-        }
     }
 
     It 'refuses a version that VERSION at the commit does not name' {
@@ -999,9 +564,5 @@ Describe 'This repository' {
         @($ignored | Sort-Object) | Should -Be @($module.Dev | Sort-Object)
         @($crlf | Sort-Object) | Should -Be @($module.Crlf | Sort-Object)
         @($binary | Sort-Object) | Should -Be @($module.Binary | Sort-Object)
-    }
-
-    It 'keeps the release rules for VERSION and CHANGELOG.md' {
-        { Get-ReleaseVersion -RepositoryPath $repoRoot } | Should -Not -Throw
     }
 }

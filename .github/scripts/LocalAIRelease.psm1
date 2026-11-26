@@ -2,11 +2,10 @@
 #                 LOCAL AI RELEASE TOOLS
 # -------------------------------------------------------
 #
-# Functions behind ci\release-build.ps1, which the standard's release.yml runs, and behind the full
-# build and the version check run by hand: the rules for VERSION and CHANGELOG.md, the release
-# notes, the release zip with its manifest, the check of that zip, the asset install.ps1 taken
-# from it, and SHA256SUMS. CONTRIBUTING.md describes the release contract they keep, and
-# tests\Release.Tests.ps1 tests them. They run in Windows PowerShell 5.1 with git on PATH.
+# Functions behind ci\release-build.ps1, which the standard's release.yml runs: the release zip
+# with its manifest, the check of that zip, the asset install.ps1 taken from it, and SHA256SUMS.
+# The standard's own tools check VERSION, CHANGELOG.md and the tags, and write the release notes.
+# CONTRIBUTING.md describes the release contract they keep, and tests\Release.Tests.ps1 tests them. They run in Windows PowerShell 5.1 with git on PATH.
 # Every function takes its inputs as parameters, so importing the module runs nothing.
 
 # Errors stop the module's functions whatever preference the importing session has.
@@ -16,8 +15,6 @@ $ErrorActionPreference = 'Stop'
 $script:ReleaseName = 'local-ai-launcher'
 # The manifest at the top of that folder, which the second git archive pass adds.
 $script:ManifestName = 'local-ai-release.json'
-# The version a dry run builds when there is no VERSION file.
-$script:DryRunVersion = '0.0.0'
 # What .gitattributes marks export-ignore, folders with a trailing '/'. tests\Release.Tests.ps1 checks that the two agree.
 $script:DevPaths = @('.github/', '.githooks/', 'ci/', 'tests/', '.editorconfig', '.gitattributes', '.gitignore', '.gitleaksignore', '.shellcheckrc',
     'PSScriptAnalyzerSettings.psd1', 'CONTRIBUTING.md')
@@ -75,21 +72,6 @@ function Test-ReleaseVersionText {
     return $true
 }
 
-# Return -1, 0 or 1 as the release version $Version is lower than, equal to or greater than $Other, comparing X, Y and Z as numbers.
-# Throws when either is no version X.Y.Z. Pure.
-function Compare-ReleaseVersion {
-    [CmdletBinding()]
-    [OutputType([int])]
-    param(
-        [Parameter(Mandatory)][string]$Version,
-        [Parameter(Mandatory)][string]$Other
-    )
-    foreach ($text in @($Version, $Other)) {
-        if (-not (Test-ReleaseVersionText -Version $text)) { throw "'$text' is no release version X.Y.Z." }
-    }
-    return [Math]::Sign(([version]$Version).CompareTo([version]$Other))
-}
-
 # Return the lowercase hex SHA-256 of $Bytes. Pure.
 function Get-ReleaseSha256 {
     [CmdletBinding()]
@@ -137,224 +119,6 @@ function Invoke-ReleaseGit {
         throw "'git $($ArgumentList -join ' ')' in $RepositoryPath failed with exit code $code`: $((@($printed) + @($output)) -join ' ')"
     }
     return $output.ToArray()
-}
-
-# Return the lines of the section of $Version in the CHANGELOG.md lines $Lines: its '## [$Version]' heading and the lines below it up to
-# the next '## [' heading, without link reference lines such as '[1.2.0]: https://...' and without trailing blank lines. Nothing when no
-# such heading exists. Pure.
-function Get-ReleaseSection {
-    [CmdletBinding()]
-    [OutputType([object[]])]
-    param(
-        [Parameter(Mandatory)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Lines,
-        [Parameter(Mandatory)][string]$Version
-    )
-    $start = -1
-    for ($i = 0; $i -lt $Lines.Count; $i++) {
-        if ($Lines[$i] -ceq "## [$Version]" -or $Lines[$i].StartsWith("## [$Version] ", [StringComparison]::Ordinal)) {
-            $start = $i
-            break
-        }
-    }
-    if ($start -lt 0) { return }
-    $section = New-Object System.Collections.Generic.List[string]
-    $section.Add($Lines[$start])
-    for ($i = $start + 1; $i -lt $Lines.Count; $i++) {
-        if ($Lines[$i].StartsWith('## [', [StringComparison]::Ordinal)) { break }
-        if ($Lines[$i] -cmatch '\A {0,3}\[[^\]]+\]:') { continue }
-        $section.Add($Lines[$i])
-    }
-    while ($section.Count -gt 1 -and $section[$section.Count - 1].Trim().Length -eq 0) { $section.RemoveAt($section.Count - 1) }
-    return , $section.ToArray()
-}
-
-# Return the lines of the CHANGELOG.md text $Text that are not blank between '## [Unreleased]' and the next '## ' heading, without trailing
-# spaces and without link reference lines: the changes that no release names yet. Nothing when that section is empty or missing. Pure.
-function Get-ReleaseUnreleasedLine {
-    [CmdletBinding()]
-    [OutputType([string])]
-    param(
-        [Parameter(Mandatory)][AllowEmptyString()][string]$Text
-    )
-    $inside = $false
-    foreach ($raw in ($Text -split '\r?\n')) {
-        $line = $raw.TrimEnd()
-        if ($line.StartsWith('## ', [StringComparison]::Ordinal)) {
-            if ($inside) { return }
-            $inside = $line -ceq '## [Unreleased]'
-        } elseif ($inside -and $line.Length -gt 0 -and $line -cnotmatch '\A {0,3}\[[^\]]+\]:') {
-            $line
-        }
-    }
-}
-
-# Return one message per release rule that the CHANGELOG.md text $Text breaks, nothing when all hold. '## [Unreleased]' is the first '## '
-# heading and comes once, and an '[Unreleased]: ' link exists. With $Version, the first version heading reads '## [$Version] - YYYY-MM-DD'
-# with a real date, comes once and lists changes, '[Unreleased]: ' compares v$Version with HEAD, and '[$Version]: ' leads to the release
-# v$Version or compares an earlier version with it. Without $Version, as when there is no VERSION file, no version heading may exist. Pure.
-function Get-ReleaseChangelogProblem {
-    [CmdletBinding()]
-    [OutputType([string])]
-    param(
-        [Parameter(Mandatory)][AllowEmptyString()][string]$Text,
-        [string]$Version
-    )
-    # Markdown ignores spaces at a line's end, and .editorconfig keeps them in *.md.
-    $lines = @($Text -split '\r?\n' | ForEach-Object { $_.TrimEnd() })
-    $problems = New-Object System.Collections.Generic.List[string]
-    $headings = @($lines | Where-Object { $_.StartsWith('## ', [StringComparison]::Ordinal) })
-    if ($headings.Count -eq 0) {
-        $problems.Add("CHANGELOG.md has no '## [Unreleased]' heading.")
-    } elseif ($headings[0] -cne '## [Unreleased]') {
-        $problems.Add("The first '## ' heading of CHANGELOG.md must be '## [Unreleased]', but it is '$($headings[0])'.")
-    }
-    $unreleased = @($headings | Where-Object { $_ -ceq '## [Unreleased]' })
-    if ($unreleased.Count -gt 1) { $problems.Add("CHANGELOG.md has $($unreleased.Count) '## [Unreleased]' headings; keep one.") }
-    $versionHeadings = @($headings | Where-Object { $_.StartsWith('## [', [StringComparison]::Ordinal) -and $_ -cne '## [Unreleased]' })
-    $unreleasedLinks = @($lines | Where-Object { $_.StartsWith('[Unreleased]:', [StringComparison]::Ordinal) })
-    if ($unreleasedLinks.Count -eq 0) { $problems.Add("CHANGELOG.md has no '[Unreleased]: ' link line.") }
-
-    if (-not $Version) {
-        if ($versionHeadings.Count -gt 0) {
-            $problems.Add(("There is no VERSION file, but CHANGELOG.md has the version heading '$($versionHeadings[0])'. Add VERSION with " +
-                "that version, or move the entries back under '## [Unreleased]'."))
-        }
-        return $problems.ToArray()
-    }
-
-    $escaped = [regex]::Escape($Version)
-    if ($versionHeadings.Count -eq 0) {
-        $problems.Add(("VERSION names $Version, but CHANGELOG.md has no version heading. Rename '## [Unreleased]' to " +
-            "'## [$Version] - YYYY-MM-DD' and add an empty '## [Unreleased]' above it."))
-    } else {
-        $first = $versionHeadings[0]
-        $parts = [regex]::Match($first, '\A## \[([^\]]*)\] - ([0-9]{4}-[0-9]{2}-[0-9]{2})\z')
-        if (-not $parts.Success) {
-            $problems.Add("The first version heading of CHANGELOG.md must read '## [$Version] - YYYY-MM-DD', but it reads '$first'.")
-        } else {
-            if ($parts.Groups[1].Value -cne $Version) {
-                $problems.Add("The first version heading of CHANGELOG.md names $($parts.Groups[1].Value), but VERSION names $Version.")
-            }
-            $date = [DateTime]::MinValue
-            if (-not [DateTime]::TryParseExact($parts.Groups[2].Value, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture,
-                    [Globalization.DateTimeStyles]::None, [ref]$date)) {
-                $problems.Add("The date in '$first' is no real date YYYY-MM-DD.")
-            }
-        }
-    }
-    $own = @($versionHeadings | Where-Object { $_ -ceq "## [$Version]" -or $_.StartsWith("## [$Version] ", [StringComparison]::Ordinal) })
-    if ($own.Count -gt 1) { $problems.Add("CHANGELOG.md has $($own.Count) headings for $Version; keep one.") }
-    $section = Get-ReleaseSection -Lines $lines -Version $Version
-    if ($section -and @($section | Select-Object -Skip 1 | Where-Object { $_.Trim() }).Count -eq 0) {
-        $problems.Add("The section '$($section[0])' of CHANGELOG.md lists no changes.")
-    }
-    foreach ($link in $unreleasedLinks) {
-        if ($link -cnotmatch "\A\[Unreleased\]: https://\S+/compare/v$escaped\.\.\.HEAD\z") {
-            $problems.Add(("The link '$link' must compare v$Version with HEAD, as " +
-                "'[Unreleased]: https://github.com/OWNER/REPO/compare/v$Version...HEAD' does."))
-        }
-    }
-    $versionLinks = @($lines | Where-Object { $_.StartsWith("[$Version]:", [StringComparison]::Ordinal) })
-    if ($versionLinks.Count -eq 0) {
-        $problems.Add(("CHANGELOG.md has no '[$Version]: ' link line. Add '[$Version]: https://github.com/OWNER/REPO/releases/tag/v$Version', " +
-            "or after the first release '[$Version]: https://github.com/OWNER/REPO/compare/vPREVIOUS...v$Version'."))
-    }
-    foreach ($link in $versionLinks) {
-        if ($link -cnotmatch "\A\[$escaped\]: https://\S+/(releases/tag/v$escaped|compare/v[0-9]+\.[0-9]+\.[0-9]+\.\.\.v$escaped)\z") {
-            $problems.Add("The link '$link' must lead to the release v$Version, or compare an earlier version with it.")
-        }
-    }
-    return $problems.ToArray()
-}
-
-# Return the version that VERSION in the checkout $RepositoryPath names, or $null when there is no VERSION, as before the first release.
-# Throws, listing every breach, unless VERSION holds one line X.Y.Z and a line feed and CHANGELOG.md keeps the rules of
-# Get-ReleaseChangelogProblem. Reads only.
-function Get-ReleaseVersion {
-    [CmdletBinding()]
-    [OutputType([string])]
-    param(
-        [Parameter(Mandatory)][string]$RepositoryPath
-    )
-    $root = Resolve-ReleasePath -Path $RepositoryPath
-    $problems = New-Object System.Collections.Generic.List[string]
-    $version = $null
-    $checkChangelog = $true
-    $versionPath = Join-Path $root 'VERSION'
-    if ([IO.Directory]::Exists($versionPath)) {
-        $problems.Add('VERSION is a folder; it must be a file that holds one line X.Y.Z and a line feed.')
-        $checkChangelog = $false
-    } elseif ([IO.File]::Exists($versionPath)) {
-        # Latin-1 maps each byte to one character, so a BOM or a CR shows in the text.
-        $text = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($versionPath))
-        $line = [regex]::Match($text, '\A([^\r\n]*)\n\z')
-        if ($line.Success -and (Test-ReleaseVersionText -Version $line.Groups[1].Value)) {
-            $version = $line.Groups[1].Value
-        } else {
-            $problems.Add(("VERSION must hold one line X.Y.Z and a line feed, three whole numbers without leading zeros such as 1.2.0, but " +
-                "it holds '$(Format-ReleaseText -Text $text)'."))
-            # The CHANGELOG rules depend on the version, so they wait until VERSION is fixed.
-            $checkChangelog = $false
-        }
-    }
-    if ($checkChangelog) {
-        $changelogPath = Join-Path $root 'CHANGELOG.md'
-        if (-not [IO.File]::Exists($changelogPath)) {
-            $problems.Add('CHANGELOG.md is missing.')
-        } else {
-            $changelog = $null
-            try {
-                $changelog = [IO.File]::ReadAllText($changelogPath, (New-Object Text.UTF8Encoding $false, $true))
-            } catch {
-                $problems.Add("CHANGELOG.md is not UTF-8 text: $($_.Exception.Message)")
-            }
-            if ($null -ne $changelog) {
-                foreach ($problem in @(Get-ReleaseChangelogProblem -Text $changelog -Version $version)) { $problems.Add($problem) }
-            }
-        }
-    }
-    if ($problems.Count -gt 0) {
-        throw ("VERSION and CHANGELOG.md in $root break the release rules in CONTRIBUTING.md:`n  " + ($problems -join "`n  "))
-    }
-    return $version
-}
-
-# Return the release notes of $Version from the CHANGELOG.md text $Text: the section from '## [$Version] - YYYY-MM-DD' up to the next
-# '## [' heading, without link reference lines, with LF line ends and one final LF. Throws when there is no such section or it lists no
-# changes. Pure.
-function Get-ReleaseNotes {
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '',
-        Justification = 'Release notes are one text, which gh release create takes as its notes.')]
-    [CmdletBinding()]
-    [OutputType([string])]
-    param(
-        [Parameter(Mandatory)][AllowEmptyString()][string]$Text,
-        [Parameter(Mandatory)][string]$Version
-    )
-    $section = Get-ReleaseSection -Lines @($Text -split '\r?\n') -Version $Version
-    if (-not $section) { throw "CHANGELOG.md has no section '## [$Version] - YYYY-MM-DD'." }
-    if (@($section | Select-Object -Skip 1 | Where-Object { $_.Trim() }).Count -eq 0) {
-        throw "The section '$($section[0])' of CHANGELOG.md lists no changes."
-    }
-    return ($section -join "`n") + "`n"
-}
-
-# Write the release notes of $Version from CHANGELOG.md in the checkout $RepositoryPath (Get-ReleaseNotes) to the file $Path, as UTF-8
-# without BOM, for gh release create --notes-file. Creates the file's folder.
-function New-ReleaseNotesFile {
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
-        Justification = 'Called by the release workflow and the tests, which offer no -WhatIf.')]
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$RepositoryPath,
-        [Parameter(Mandatory)][string]$Version,
-        [Parameter(Mandatory)][string]$Path
-    )
-    $changelogPath = Join-Path (Resolve-ReleasePath -Path $RepositoryPath) 'CHANGELOG.md'
-    $notes = Get-ReleaseNotes -Text ([IO.File]::ReadAllText($changelogPath, (New-Object Text.UTF8Encoding $false, $true))) -Version $Version
-    $target = Resolve-ReleasePath -Path $Path
-    $null = [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))
-    [IO.File]::WriteAllText($target, $notes, (New-Object Text.UTF8Encoding $false))
 }
 
 # Return $Text as a JSON string literal in ASCII: quotes, backslashes, control characters and every character above 0x7E as escapes. Pure.
@@ -529,15 +293,14 @@ function New-ReleaseZip {
 # every entry inside local-ai-launcher-$Version/, without '..', '\' or a second entry of one name, with no name that Windows changes or
 # refuses, no file where another entry needs a folder, and the size the zip states for it; no export-ignored path; the files every release
 # holds; CRLF line ends only in *.cmd, *.bat, *.ps1, *.psm1 and *.psd1, and no CR in any other file but binary ones; a manifest equal to the
-# one ConvertTo-ReleaseManifest writes for the other files; VERSION holding $Version, or with -NoVersionFile none; and the limits of
+# one ConvertTo-ReleaseManifest writes for the other files; VERSION holding $Version; and the limits of
 # $script:ReleaseLimits. Reads only.
 function Assert-ReleaseZip {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][string]$Version,
-        [Parameter(Mandatory)][string]$Commit,
-        [switch]$NoVersionFile
+        [Parameter(Mandatory)][string]$Commit
     )
     if (-not (Test-ReleaseVersionText -Version $Version)) { throw "'$Version' is no release version X.Y.Z." }
     if ($Commit -cnotmatch '\A[0-9a-f]{40}\z') { throw "'$Commit' is no full commit SHA of 40 lowercase hex digits." }
@@ -630,9 +393,7 @@ function Assert-ReleaseZip {
             $problems.Add("$prefix$relative must end its lines with LF only, but has $($pairs + $bareCr) CR.")
         }
     }
-    if ($NoVersionFile) {
-        if ($files.ContainsKey('VERSION')) { $problems.Add("The zip holds $($prefix)VERSION, but its commit has no VERSION file.") }
-    } elseif (-not $files.ContainsKey('VERSION')) {
+    if (-not $files.ContainsKey('VERSION')) {
         $problems.Add("The zip lacks $($prefix)VERSION.")
     } else {
         $held = $latin1.GetString($files['VERSION'])
@@ -720,111 +481,9 @@ function New-ReleaseChecksumFile {
     [IO.File]::WriteAllText((Resolve-ReleasePath -Path $OutputPath), $builder.ToString(), [Text.Encoding]::ASCII)
 }
 
-# Throw when the git remote $Remote of the repository $RepositoryPath has the tag $Tag, that is, when that version is already released.
-# git ls-remote reads the remote's tags without fetching anything.
-function Assert-ReleaseTagAbsent {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$RepositoryPath,
-        [Parameter(Mandatory)][string]$Tag,
-        [string]$Remote = 'origin'
-    )
-    $root = Resolve-ReleasePath -Path $RepositoryPath
-    $lines = @(Invoke-ReleaseGit -RepositoryPath $root -ArgumentList @('ls-remote', '--tags', $Remote, "refs/tags/$Tag"))
-    $pattern = '\A[0-9a-f]{40,64}\trefs/tags/' + [regex]::Escape($Tag) + '(\^\{\})?\z'
-    if (@($lines | Where-Object { $_ -cmatch $pattern }).Count -gt 0) {
-        throw "Tag $Tag already exists on $Remote, so that version is released. Raise VERSION and the CHANGELOG heading to a new version."
-    }
-}
-
-# Throw unless the release version $Version is greater than the version of every tag vX.Y.Z on the git remote $Remote of the repository
-# $RepositoryPath, so that a release never goes below a published one. Other tags do not count. git ls-remote fetches nothing.
-function Assert-ReleaseVersionNewest {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$RepositoryPath,
-        [Parameter(Mandatory)][string]$Version,
-        [string]$Remote = 'origin'
-    )
-    if (-not (Test-ReleaseVersionText -Version $Version)) { throw "'$Version' is no release version X.Y.Z." }
-    $root = Resolve-ReleasePath -Path $RepositoryPath
-    $released = New-Object System.Collections.Generic.List[string]
-    foreach ($line in @(Invoke-ReleaseGit -RepositoryPath $root -ArgumentList @('ls-remote', '--tags', $Remote, 'refs/tags/v*'))) {
-        # An annotated tag comes twice, the second time with '^{}' for the commit it points to.
-        $tag = [regex]::Match($line, '\A[0-9a-f]{40,64}\trefs/tags/v([^\^]+)(\^\{\})?\z')
-        if ($tag.Success -and (Test-ReleaseVersionText -Version $tag.Groups[1].Value)) { $released.Add($tag.Groups[1].Value) }
-    }
-    if ($released.Contains($Version)) {
-        throw "Tag v$Version already exists on $Remote, so that version is released. Raise VERSION and the CHANGELOG heading to a new version."
-    }
-    $highest = $null
-    foreach ($other in $released) {
-        if ($null -eq $highest -or (Compare-ReleaseVersion -Version $other -Other $highest) -gt 0) { $highest = $other }
-    }
-    if ($null -eq $highest) {
-        Write-Host "$Remote has no release tag yet, so v$Version is the first release."
-    } elseif ((Compare-ReleaseVersion -Version $Version -Other $highest) -lt 0) {
-        throw ("VERSION names $Version, but tag v$highest on $Remote is a higher version. A release must raise VERSION and the CHANGELOG " +
-            'heading above every released version.')
-    } else {
-        Write-Host "v$Version is above v$highest, the highest release tag on $Remote."
-    }
-}
-
-# Return the version that VERSION holds at the commit $Revision of the repository $RepositoryPath, or $null when that commit has no VERSION.
-# Throws when the commit is missing, as in a checkout without fetch-depth 2, or its VERSION holds no version X.Y.Z. Reads only.
-function Get-ReleaseVersionAt {
-    [CmdletBinding()]
-    [OutputType([string])]
-    param(
-        [Parameter(Mandatory)][string]$RepositoryPath,
-        [Parameter(Mandatory)][string]$Revision
-    )
-    try {
-        $commit = @(Invoke-ReleaseGit -RepositoryPath $RepositoryPath -ArgumentList @('rev-parse', '--verify', '--quiet', "$Revision^{commit}"))[0]
-    } catch {
-        throw ("Cannot find the commit $Revision in $RepositoryPath; a pull request's version check needs the checkout's fetch-depth at 2 " +
-            "or more. $($_.Exception.Message)")
-    }
-    $listed = @(Invoke-ReleaseGit -RepositoryPath $RepositoryPath -ArgumentList @('ls-tree', '--name-only', $commit, '--', 'VERSION'))
-    if ($listed -cnotcontains 'VERSION') { return $null }
-    $text = (@(Invoke-ReleaseGit -RepositoryPath $RepositoryPath -ArgumentList @('show', "$($commit):VERSION")) -join "`n").Trim()
-    if (-not (Test-ReleaseVersionText -Version $text)) { throw "VERSION at $Revision holds '$(Format-ReleaseText -Text $text)', which is no version X.Y.Z." }
-    return $text
-}
-
-# On a pull request: when VERSION in the checkout $RepositoryPath differs from VERSION at $BaseRevision, the base branch, throw unless tag
-# v<VERSION> is missing on $Remote and, when the base has a VERSION, VERSION is greater than it. Nothing to check when VERSION is unchanged.
-function Assert-ReleaseVersionBump {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$RepositoryPath,
-        [Parameter(Mandatory)][string]$BaseRevision,
-        [string]$Remote = 'origin'
-    )
-    $root = Resolve-ReleasePath -Path $RepositoryPath
-    $version = [string](Get-ReleaseVersion -RepositoryPath $root)
-    $base = [string](Get-ReleaseVersionAt -RepositoryPath $root -Revision $BaseRevision)
-    if ($version -ceq $base) {
-        Write-Host "VERSION is the same as at $BaseRevision, so no new version needs checking."
-        return
-    }
-    # Without VERSION, Get-ReleaseVersion has checked that CHANGELOG.md names no version either.
-    if (-not $version) {
-        Write-Host "This change removes VERSION $base."
-        return
-    }
-    Assert-ReleaseTagAbsent -RepositoryPath $root -Tag "v$version" -Remote $Remote
-    if ($base -and (Compare-ReleaseVersion -Version $version -Other $base) -le 0) {
-        throw "VERSION goes from $base to $version, but a release must raise it."
-    }
-    $from = if ($base) { "from $base " } else { '' }
-    Write-Host "VERSION goes $($from)to $version, and tag v$version does not exist yet."
-}
-
 # Build the release assets of $Commit for the repository standard's release-build, which runs ci\release-build.ps1 in the checkout
-# $RepositoryPath and checks VERSION, CHANGELOG.md and the tags itself: assets\local-ai-launcher-$Version.zip, checked as
-# Invoke-ReleaseBuild checks it, its src/install.ps1 as assets\install.ps1 and assets\SHA256SUMS of both, and nothing else in
+# $RepositoryPath and checks VERSION, CHANGELOG.md and the tags itself: assets\local-ai-launcher-$Version.zip, checked by
+# Assert-ReleaseZip, its src/install.ps1 as assets\install.ps1 and assets\SHA256SUMS of both, and nothing else in
 # $OutputDirectory. Throws when the zip does not hold the release $Version. Returns @{ Version; Commit; Zip; Sha256; InstallScript }.
 function Invoke-ReleaseHookBuild {
     [CmdletBinding()]
@@ -851,109 +510,11 @@ function Invoke-ReleaseHookBuild {
     }
 }
 
-# The version check, run by hand (CI runs the standard's release-meta), on the checkout $RepositoryPath: Get-ReleaseVersion, with a notice when there is no VERSION, and with
-# -PullRequest also Assert-ReleaseVersionBump against HEAD^1, the base branch side of the pull request's merge commit.
-function Invoke-ReleaseVersionCheck {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$RepositoryPath,
-        [switch]$PullRequest,
-        [string]$Remote = 'origin'
-    )
-    $version = Get-ReleaseVersion -RepositoryPath $RepositoryPath
-    if ($version) {
-        Write-Host "VERSION names $version, and CHANGELOG.md has its section and links."
-    } else {
-        Write-Host '::notice::There is no VERSION file, so no release is prepared. A release pull request adds it; see CONTRIBUTING.md.'
-    }
-    if ($PullRequest) { Assert-ReleaseVersionBump -RepositoryPath $RepositoryPath -BaseRevision 'HEAD^1' -Remote $Remote }
-}
-
-# The full build, run by hand; the release workflow builds through Invoke-ReleaseHookBuild and the standard's own checks.
-# Build the release of $Commit in the checkout $RepositoryPath into the new or empty folder $OutputDirectory: check VERSION and CHANGELOG.md,
-# require X.Y.Z above each tag on $Remote and an empty '## [Unreleased]', write notes.md, build and check assets\local-ai-launcher-X.Y.Z.zip,
-# write its src/install.ps1 as assets\install.ps1 and write assets\SHA256SUMS of both. -DryRun, for pull requests, skips those two
-# requirements, builds the version 0.0.0 without notes when there is no VERSION, and builds the zip again into again\ to show the same bytes.
-# Returns @{ Version; Tag; Commit; Zip; Sha256; InstallScript; Notes; DryRun }.
-function Invoke-ReleaseBuild {
-    [CmdletBinding()]
-    [OutputType([pscustomobject])]
-    param(
-        [Parameter(Mandatory)][string]$RepositoryPath,
-        [Parameter(Mandatory)][string]$Commit,
-        [Parameter(Mandatory)][string]$OutputDirectory,
-        [string]$Remote = 'origin',
-        [switch]$DryRun
-    )
-    $root = Resolve-ReleasePath -Path $RepositoryPath
-    $output = Resolve-ReleasePath -Path $OutputDirectory
-    if ([IO.File]::Exists($output)) { throw "The output folder $output is a file." }
-    if ([IO.Directory]::Exists($output) -and @([IO.Directory]::GetFileSystemEntries($output)).Count -gt 0) {
-        throw "The output folder $output is not empty. Choose a new or empty folder."
-    }
-    $version = Get-ReleaseVersion -RepositoryPath $root
-    $synthetic = $false
-    if (-not $version) {
-        if (-not $DryRun) { throw 'There is no VERSION file, so there is no release to build. A release pull request adds it; see CONTRIBUTING.md.' }
-        $version = $script:DryRunVersion
-        $synthetic = $true
-        Write-Host "::notice::There is no VERSION file, so this dry run builds the version $version."
-    }
-    if (-not $DryRun) {
-        # A release pull request can be merged with a failed version check, so the build compares the released versions itself.
-        Assert-ReleaseVersionNewest -RepositoryPath $root -Version $version -Remote $Remote
-        # The build ships every change on main, so a change still listed under [Unreleased] would ship without a line in the notes.
-        $changelog = [IO.File]::ReadAllText((Join-Path $root 'CHANGELOG.md'), (New-Object Text.UTF8Encoding $false, $true))
-        $waiting = @(Get-ReleaseUnreleasedLine -Text $changelog)
-        if ($waiting.Count -gt 0) {
-            throw ("CHANGELOG.md lists changes under '## [Unreleased]', which v$version would ship while its notes leave them out. Move them " +
-                "into the section of $version, as CONTRIBUTING.md describes for a fix of a draft:`n  " + ($waiting -join "`n  "))
-        }
-    }
-    $notes = $null
-    if (-not $synthetic) {
-        $notes = Join-Path $output 'notes.md'
-        New-ReleaseNotesFile -RepositoryPath $root -Version $version -Path $notes
-    }
-    $assets = Join-Path $output 'assets'
-    $zip = New-ReleaseZip -RepositoryPath $root -Commit $Commit -Version $version -OutputDirectory $assets
-    Assert-ReleaseZip -Path $zip.Path -Version $version -Commit $zip.Commit -NoVersionFile:$synthetic
-    $installScript = Save-ReleaseInstallScript -ZipPath $zip.Path -Version $version -OutputDirectory $assets
-    if ($DryRun) {
-        $again = New-ReleaseZip -RepositoryPath $root -Commit $Commit -Version $version -OutputDirectory (Join-Path $output 'again')
-        if ($again.Sha256 -cne $zip.Sha256) { throw "Two builds of $($zip.Commit) differ: SHA-256 $($zip.Sha256) and $($again.Sha256)." }
-    }
-    New-ReleaseChecksumFile -Path @($zip.Path, $installScript) -OutputPath (Join-Path $assets 'SHA256SUMS')
-    $git = @(Invoke-ReleaseGit -RepositoryPath $root -ArgumentList @('--version')) -join ' '
-    Write-Host "Built $($zip.Path) from $($zip.Commit) with $git`: $($zip.Files) files, SHA-256 $($zip.Sha256), and $installScript from it."
-    return [pscustomobject]@{
-        Version       = $version
-        Tag           = "v$version"
-        Commit        = $zip.Commit
-        Zip           = $zip.Path
-        Sha256        = $zip.Sha256
-        InstallScript = $installScript
-        Notes         = $notes
-        DryRun        = [bool]$DryRun
-    }
-}
-
 Export-ModuleMember -Function @(
-    'Compare-ReleaseVersion'
-    'Get-ReleaseChangelogProblem'
-    'Get-ReleaseUnreleasedLine'
-    'Get-ReleaseVersion'
-    'Get-ReleaseNotes'
-    'New-ReleaseNotesFile'
     'ConvertTo-ReleaseManifest'
     'New-ReleaseZip'
     'Assert-ReleaseZip'
     'Save-ReleaseInstallScript'
     'New-ReleaseChecksumFile'
-    'Assert-ReleaseTagAbsent'
-    'Assert-ReleaseVersionNewest'
-    'Assert-ReleaseVersionBump'
-    'Invoke-ReleaseVersionCheck'
-    'Invoke-ReleaseBuild'
     'Invoke-ReleaseHookBuild'
 )

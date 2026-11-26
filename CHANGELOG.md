@@ -18,6 +18,12 @@ All notable changes to this project are listed here. The format follows
 - README, CONTRIBUTING, SECURITY and the code's comments say the same in plainer words, and the
   README's sections follow the order install, use, check. No command, setting or behaviour changes.
 
+### Removed
+
+- The release functions that nothing has run since the repository standard took over the
+  release checks: the full build and the version check run by hand, with their checks of
+  VERSION, CHANGELOG.md, the notes and the tags, and their tests. Releases build as before.
+
 ## [1.1.1] - 2026-11-25
 
 ### Fixed
