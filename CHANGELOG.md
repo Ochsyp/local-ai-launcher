@@ -20,6 +20,12 @@ All notable changes to this project are listed here. The format follows
 - The README's repository layout lists the live check of the files server and the workflows. The
   packaged-app warning names no app, and the pin comments in `config\defaults.psd1` give the
   current reason only; this changelog keeps the history.
+- The configuration tests check what must hold across files, such as package.json naming
+  Files.ServerVersion and each npm override fitting the range of the package that asks for it,
+  instead of repeating each pinned version, so a plain version bump no longer changes a test.
+- The privacy exemptions for the made-up values of the module's tests cover
+  `tests\LocalAI*.ps1` instead of `tests\LocalAI.Tests.ps1` alone, ready for that file's split
+  by area. They exempt the same three values as before.
 - The module's Pester tests are split by area into seven files, `tests\LocalAI.<Area>.Tests.ps1`,
   which share `tests\LocalAI.TestSetup.ps1`; every test stays. The one file had grown to 1,092 KB,
   so `.github\standard.conf` no longer raises the hooks' 1,024 KB limit for it.
