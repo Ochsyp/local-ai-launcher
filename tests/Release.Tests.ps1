@@ -3,11 +3,10 @@
 # -------------------------------------------------------
 #
 # Pester 6 tests for .github\scripts\LocalAIRelease.psm1 and ci\release-build.ps1, which the
-# standard's release.yml runs: the
-# rules for VERSION and CHANGELOG.md, the release notes, the manifest and SHA256SUMS formats, the
-# asset install.ps1, full builds in git repositories made in TestDrive:, and the export-ignore
-# rules of this repository's .gitattributes. git must be on PATH; every remote is a folder in
-# TestDrive:.
+# standard's release.yml runs: the rules for VERSION and CHANGELOG.md, the release notes, the
+# manifest and SHA256SUMS formats, the asset install.ps1, full builds in git repositories made in
+# TestDrive:, and the export-ignore rules of this repository's .gitattributes. git must be on PATH;
+# every remote is a folder in TestDrive:.
 
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', '',
     Justification = 'Pester shares BeforeAll and BeforeEach variables with the It blocks.')]
@@ -198,7 +197,7 @@ Describe 'Get-ReleaseChangelogProblem' {
         @(Get-ReleaseChangelogProblem -Text $text -Version $Version) | Should -BeNullOrEmpty
     }
 
-    # Built names the release in the text (none when empty), Old and New change it, and Version is what VERSION holds.
+    # Built is the release the CHANGELOG.md text holds (none when empty), Old and New change that text, and Version is what VERSION holds.
     It 'reports <Case>' -ForEach @(
         @{ Case = 'a version heading without VERSION'; Built = '1.2.3'; Version = ''; Old = ''; New = ''
             Problem = "There is no VERSION file, but CHANGELOG.md has the version heading '## [1.2.3] - 2026-05-04'." }
@@ -831,7 +830,7 @@ Describe 'Invoke-ReleaseBuild' {
         $below = Initialize-BuildCheckout -Name 'below' -Version '1.2.2'
         { Invoke-ReleaseBuild -RepositoryPath $below -Commit 'HEAD' -OutputDirectory (Join-Path $base 'below-out') } |
             Should -Throw -ExpectedMessage 'VERSION names 1.2.2, but tag v1.2.3 on origin is a higher version.*'
-        # A fix merged after the release pull request, whose entry went under [Unreleased] instead of into the section of 1.2.4.
+        # A fix merged after the release pull request, with its entry under [Unreleased] instead of in the section of 1.2.4.
         $waiting = Initialize-BuildCheckout -Name 'waiting' -Version '1.2.4'
         $changelog = (Get-TestChangelog -Version '1.2.4').Replace("## [Unreleased]`n", "## [Unreleased]`n`n### Fixed`n`n- The fix of a draft.`n")
         Write-ReleaseTestFile (Join-Path $waiting 'CHANGELOG.md') $changelog

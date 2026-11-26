@@ -113,33 +113,43 @@ Run these from the repository root before you push.
   for example `bats .github/standard/tests/hooks.bats`. `.github/standard/bin/install-tools bats`
   installs the pinned bats and prints its folder.
 
-CI adds the rest. The `ci` workflow runs the job `standard` (the standard's copies, the config,
-actionlint, the standard's suites, the privacy rules over the tree, `VERSION` against
-`CHANGELOG.md`, and the pull request's title and changelog entry), the stages `lint` and `test`
-(`ci/lint.ps1` and `ci/test.ps1` on Windows), `hooks-windows`, and the gate `all-passed`. The
-`secret-scan` workflow runs the job `scan`. `release.yml` builds the release twice and compares the
-builds for a pull request that changes `VERSION`, `.gitattributes`, the config, the release
-workflows or tools, or `ci/release-build.ps1`; a change to `.github/scripts/` alone gets no dry run,
-and `tests/Release.Tests.ps1` checks it. CI fails on any skipped bats
-test. A Pester test skips only where the runner lacks what it needs, such as 8.3 short names;
-the Pester summary line shows how many skipped.
+CI adds the rest:
 
-On a CI runner, `ci/test.ps1` ends with `ci/files-server-live.ps1`, which installs the pinned mcpo
-and files server and fails unless they offer exactly `Files.AllowedTools` and one folder. It then
-changes `Files.Root` and fails unless `start`'s own code restarts mcpo, which must then serve only
-the new folder. Last it starts mcpo with no hidden tools and fails unless the server's
-`--read-only` alone leaves exactly the ten read tools that `Get-LiveReadOnlyTool` in that script
-lists; a server upgrade that adds a read tool updates that list too. Its last line says whether to
-re-run the job (a failed install step) or look at the change (a real difference).
+- The `ci` workflow runs the job `standard` (the standard's copies, the config, actionlint, the
+  standard's suites, the privacy rules over the tree, `VERSION` against `CHANGELOG.md`, and the
+  pull request's title and changelog entry), the stages `lint` and `test` (`ci/lint.ps1` and
+  `ci/test.ps1` on Windows), `hooks-windows`, and the gate `all-passed`.
+- The `secret-scan` workflow runs the job `scan`.
+- `release.yml` builds the release twice and compares the builds for a pull request that changes
+  `VERSION`, `.gitattributes`, the config, the release workflows or tools, or
+  `ci/release-build.ps1`. A change to `.github/scripts/` alone gets no dry run;
+  `tests/Release.Tests.ps1` checks it.
+
+CI fails on any skipped bats test. A Pester test skips only where the runner lacks what it needs,
+such as 8.3 short names. The Pester summary line shows how many skipped.
+
+On a CI runner, `ci/test.ps1` ends with `ci/files-server-live.ps1`. That script installs the
+pinned mcpo and files server, and fails unless each of these holds:
+
+- They offer exactly `Files.AllowedTools` and one folder.
+- After it changes `Files.Root`, `start`'s own code restarts mcpo, which must then serve only the
+  new folder.
+- When it starts mcpo with no hidden tools, the server's `--read-only` alone leaves exactly the
+  ten read tools that `Get-LiveReadOnlyTool` in that script lists.
+
+A server upgrade that adds a read tool updates that list too. The script's last line says whether
+to re-run the job (a failed install step) or look at the change (a real difference).
 
 ## Test data
 
 The tests use made-up values only: the Windows homes of users `User` and `Test`, addresses from
 `192.0.2.0/24` and the link-local test address of `Test-LocalHostName`, and placeholder names
-and tokens. The privacy rules run with the pack `base`. `.github/standard.conf` exempts these
-made-up values and two findings of the rules that are no private data: the folder suffixes
-`.local-ai-clone`, `.local-ai-old-venv` and `.local-ai-removing`, and GitHub's support address
-in the sign-off of Dependabot's commits. A comment above each exemption says what it covers.
+and tokens. The privacy rules run with the pack `base`.
+
+`.github/standard.conf` exempts these made-up values. It also exempts two findings of the rules
+that are not private data: the folder suffixes `.local-ai-clone`, `.local-ai-old-venv` and
+`.local-ai-removing`, and GitHub's support address in the sign-off of Dependabot's commits. A
+comment above each exemption says what it covers.
 
 <!-- standard:begin releasing -->
 ## Releasing
@@ -169,12 +179,15 @@ Sessions prepare release pull requests. They never create a tag, and never publi
 delete a release.
 <!-- standard:end releasing -->
 
-In this repository, the session also points the README's *Install from a release* at the new
-release in each release pull request: the `install.ps1` one-liner and its script block form name
+In this repository, each release pull request also points the README's *Install from a release*
+at the new release. The `install.ps1` one-liner and its script block form name
 `releases/download/vX.Y.Z/install.ps1`, so each always gets the same file. `release-prepare`
-leaves these two lines to the session. The build runs `ci/release-build.ps1` on Windows, which
-builds the zip, `install.ps1` and `SHA256SUMS` with `.github/scripts/LocalAIRelease.psm1`.
-Leave v1.0.0 and v1.0.1 as they are: the `verify` job also runs when a release is edited, and
+leaves these two lines to the session.
+
+The build runs `ci/release-build.ps1` on Windows. It builds the zip, `install.ps1` and
+`SHA256SUMS` with `.github/scripts/LocalAIRelease.psm1`.
+
+Leave v1.0.0 and v1.0.1 as they are. The `verify` job also runs when a release is edited, and
 those two releases attest only their zip, so marking one as a pre-release would fail that run.
 
 ## Release contract
@@ -194,8 +207,8 @@ one of them is a MAJOR change. An added asset is a MINOR change, since `update` 
   `git archive --format=zip --prefix=local-ai-launcher-X.Y.Z/` of the built commit, made with
   `TZ=UTC`. The export-ignore lines in `.gitattributes` keep out `.github`, `.githooks`, `ci`,
   `tests`, `.editorconfig`, `.gitattributes`, `.gitignore`, `.gitleaksignore`, `.shellcheckrc`,
-  `PSScriptAnalyzerSettings.psd1` and this file. The eol attributes apply: `*.cmd`, `*.ps1`, `*.psm1` and `*.psd1` have CRLF line ends,
-  every other file LF.
+  `PSScriptAnalyzerSettings.psd1` and this file. The eol attributes apply: `*.cmd`, `*.ps1`,
+  `*.psm1` and `*.psd1` have CRLF line ends, every other file LF.
 - A second `git archive` pass adds `local-ai-launcher-X.Y.Z/local-ai-release.json` with
   `--add-file`, which gives it the commit time as every other entry has. This manifest lists
   every other file of the folder by its path there, with forward slashes, in ordinal order, and

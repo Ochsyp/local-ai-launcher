@@ -294,18 +294,18 @@ Describe 'config\files-server' {
             $manifest.overrides[$package] | Should -MatchExactly '^\d+\.\d+\.\d+$' -Because "$package is pinned exactly"
             $lock.packages["node_modules/$package"].version | Should -BeExactly $manifest.overrides[$package]
         }
-        # 2.3.1, the SDK the server ran on from 2.0.1 to 2.3.0, satisfies the server's ^2.3.1.
+        # 2.3.1 is the SDK that server versions 2.0.1 to 2.3.0 run on, and it satisfies the server's ^2.3.1.
         $manifest.overrides['@modelcontextprotocol/server'] | Should -BeExactly '2.3.1'
         $lock.packages["node_modules/$name"].dependencies['@modelcontextprotocol/server'] | Should -BeExactly '^2.3.1'
     }
 
     It 'holds minimatch at 11.0.8 and brace-expansion at 5.0.13, which fix GHSA-hqmv-qgp3-jx75, GHSA-cf2h-pxjq-68xw and GHSA-6jwq-xf8q-xcwh, and locks no glob' {
-        # The server's own ^11.0.4 and minimatch's own ^5.0.12 admit the versions before those fixes, so overrides hold both.
+        # The server's own ^11.0.4 and minimatch's own ^5.0.12 also admit unfixed versions, so the overrides pin both.
         $manifest.overrides['minimatch'] | Should -BeExactly '11.0.8'
         $manifest.overrides['brace-expansion'] | Should -BeExactly '5.0.13'
         $lock.packages["node_modules/$name"].dependencies['minimatch'] | Should -BeExactly '^11.0.4'
         $lock.packages['node_modules/minimatch'].dependencies['brace-expansion'] | Should -BeExactly '^5.0.12'
-        # The server no longer depends on glob, so GHSA-3g3m-2fjr-6pw4 no longer applies.
+        # The server does not depend on glob, so GHSA-3g3m-2fjr-6pw4 does not apply.
         $lock.packages["node_modules/$name"].dependencies.ContainsKey('glob') | Should -BeFalse
         # One copy each of minimatch and brace-expansion, and none of glob, so no older one stays nested under another package.
         $copies = @($lock.packages.Keys | Where-Object { $_ -match '(^|/)node_modules/(glob|minimatch|brace-expansion)$' } | Sort-Object)

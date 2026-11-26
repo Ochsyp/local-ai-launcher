@@ -280,7 +280,7 @@ BeforeAll {
             $this.Kinds[$Name] = $Kind
             $this.Writes.Add("set $Name")
         }
-        # Its second argument, whether a missing value throws, goes to $args.
+        # DeleteValue's second argument, whether a missing value throws, lands in $args and is ignored.
         $key | Add-Member -MemberType ScriptMethod -Name DeleteValue -Value {
             param([string]$Name)
             $this.Values.Remove($Name)
@@ -2279,7 +2279,7 @@ Describe 'Wait-OllamaServer' {
         BeforeEach {
             $appExe = 'C:\Users\User\AppData\Local\Programs\Ollama\ollama app.exe'
             $serve = [pscustomobject]@{ Id = 200; Name = 'ollama'; Path = 'C:\Users\User\AppData\Local\Programs\Ollama\ollama.exe'; StartTicks = 555 }
-            # Apps lists what Win32_Process holds; Start adds what Start-OllamaApp leaves running and Returns the PID it gives back.
+            # Apps lists what Win32_Process holds. Start-OllamaApp adds the PIDs in Start to it and gives back the PID in Returns.
             $world = @{ Apps = New-Object System.Collections.Generic.List[object]; Fails = 2; Calls = 0; Start = @(100); Returns = 100; Setup = 0 }
             Mock Resolve-OllamaAppPath -ModuleName LocalAI -MockWith { $appExe }
             Mock Get-OllamaAppProcess -ModuleName LocalAI -MockWith { $world.Apps.ToArray() }
@@ -4573,7 +4573,7 @@ Describe 'Install-ComfyUI' {
         $null = Install-ComfyUI -Settings $settings -RepoRoot $TestDrive 6>$null
         Mock Get-Process -ModuleName LocalAI -MockWith { [pscustomobject]@{ Id = 7804; Path = $python } }
         $null = Install-ComfyUI -Settings $settings -RepoRoot $TestDrive 6>$null
-        # Only the first run, which installed, looked.
+        # Only the first run, which installs, looks.
         Should -Invoke Get-Process -ModuleName LocalAI -Times 1 -Exactly
     }
 
@@ -6949,7 +6949,7 @@ Describe 'Start-LocalAI' {
         }
 
         # Return the hash of the Open WebUI environment and inherited names a start computes for $Settings and $Paths with images and file
-        # tools off, as Use-LocalAIService records it; -EnvironmentOnly leaves the names out, as the launcher before InheritEnvironment did.
+        # tools off, as Use-LocalAIService records it; -EnvironmentOnly leaves the names out, as a launcher without InheritEnvironment records it.
         function Get-TestWebEnvironmentHash([hashtable]$Settings, [hashtable]$Paths, [hashtable]$OpenWebUI, [switch]$EnvironmentOnly) {
             & (Get-Module LocalAI) {
                 param($Settings, $Paths, $OpenWebUI, $EnvironmentOnly)
@@ -10321,7 +10321,7 @@ Describe 'Get-LocalAIStatus' {
                     $settings.Files.Root = Join-Path $TestDrive "$leaf-other"
                 }
                 'Files.DisabledTools' { $settings.Files.DisabledTools = @($settings.Files.DisabledTools) + 'search_files' }
-                # Nothing listens on the new port, which status reports as it does today.
+                # Nothing listens on the new port, so status also finds the file tools down and exits with 2.
                 'Ports.Files' { $settings.Ports.Files = 18435 }
             }
             $run = Invoke-StatusVerb -Context $context
@@ -13351,7 +13351,7 @@ Describe 'Update-LocalAI' {
                 $apps.List = @([pscustomobject]@{ Id = 300; Path = $appExe; StartTicks = [DateTime]::UtcNow.Ticks; ParentId = 9 })
                 'upgraded'
             }
-            # The recorded app runs until the upgrade; the app that replaces it, or one the wait after it started, is the one Recorded names.
+            # Before the upgrade the recorded app matches its record; after it, the app whose PID Recorded holds matches: its replacement, or one the wait started.
             $apps.Runs = $true
             $apps.Recorded = 300
             Mock Get-RecordedProcessState -ModuleName LocalAI -MockWith {
@@ -15893,7 +15893,7 @@ Describe 'Update-LocalAI with -ActivateLauncher' {
 
     It 'gives an install whose Start menu folder holds the shortcuts of an earlier version Update Local AI, for the shim of the install folder' {
         [IO.File]::WriteAllText((Join-Path $install.Root 'local-ai.cmd'), 'shim')
-        # The Start, Stop and Status shortcuts an earlier version made: this version's, without Update Local AI.
+        # The shortcuts an earlier version made: this version's Start, Stop and Status, without Update Local AI.
         $null = Set-LocalAIShortcut -Context @{ Settings = $settings; Paths = $paths; RepoRoot = $context.RepoRoot; InstallRoot = $install.Root; Remove = $false } 6>$null
         $update = Join-Path $shortcutFolder 'Update Local AI.lnk'
         Remove-Item -LiteralPath $update
@@ -15917,7 +15917,7 @@ Describe 'Update-LocalAI with -ActivateLauncher' {
     ) {
         . $Setup
         [IO.File]::WriteAllText((Join-Path $install.Root 'local-ai.cmd'), 'shim')
-        # Dropped with a warning wherever ComfyUI's start is planned, as for the descriptions, which leave that warning unprinted.
+        # ComfyUI's start drops this argument with a warning. The shortcut descriptions plan that start too, and their warning is neither printed nor counted.
         $settings.ComfyUI.Args = @('--enable-manager')
         & $addStart
         $run = Invoke-UpdateVerb -Context $context

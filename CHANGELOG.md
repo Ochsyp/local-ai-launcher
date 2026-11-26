@@ -10,6 +10,8 @@ All notable changes to this project are listed here. The format follows
 ### Changed
 
 - Repository standard 1.2.0: the copies and blocks of this release.
+- README, CONTRIBUTING, SECURITY and the code's comments say the same in plainer words, and the
+  README's sections follow the order install, use, check. No command, setting or behaviour changes.
 
 ## [1.1.1] - 2026-11-25
 

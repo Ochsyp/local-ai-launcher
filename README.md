@@ -2,9 +2,14 @@
 
 [![CI](https://github.com/Ochsyp/local-ai-launcher/actions/workflows/ci.yml/badge.svg)](https://github.com/Ochsyp/local-ai-launcher/actions/workflows/ci.yml)
 
-A launcher for a local AI stack on one Windows PC. **Ollama** serves the chat model
-`local-chat`, **Open WebUI** is the chat front end, **ComfyUI** draws images, an **image gate**
-frees the GPU for each image, and optional **file tools** let the model read one folder.
+A launcher for a local AI stack on one Windows PC:
+
+- **Ollama** serves the chat model `local-chat`.
+- **Open WebUI** is the chat front end.
+- **ComfyUI** draws images.
+- An **image gate** frees the GPU for each image.
+- Optional **file tools** let the model read one folder.
+
 `local-ai.cmd` installs, starts, stops, checks, updates and removes the stack.
 
 ## What it runs
@@ -18,30 +23,36 @@ frees the GPU for each image, and optional **file tools** let the model read one
 | File tools (mcpo and the files server) | `http://127.0.0.1:8189` | `Files.Root` names a folder |
 
 The launcher starts every service on `127.0.0.1` only. Ollama is the one exception: the Ollama
-app chooses its own bind address. The launcher never sets `OLLAMA_HOST`, and `install`,
-`start` and `status` warn when Ollama listens beyond loopback. If that happens, turn off *Expose Ollama to
+app chooses its own bind address. The launcher never sets `OLLAMA_HOST`. `install`, `start` and
+`status` warn when Ollama listens beyond loopback. If that happens, turn off *Expose Ollama to
 the network* in the Ollama app's settings and restart the app.
 
 The launcher never runs `ollama serve`. When Ollama does not answer, `install`, `start`,
 `update` and `uninstall` start the Ollama app hidden, as the `ollama` program does:
 `ollama app.exe --hide --fast-startup` from the folder of `ollama.exe`. When the app is not
-there, they run `ollama list` instead. They only wait, and start nothing, while Ollama's
-installer runs, when `Ollama.Url` names another computer, or while another program holds its
-port.
+there, they run `ollama list` instead. They start nothing and only wait in these cases:
+
+- while Ollama's installer runs;
+- when `Ollama.Url` names another computer;
+- while another program holds its port.
 
 The launcher records in `state.json` an Ollama app that it started, and `local-ai stop` quits
-that app again. That includes the app Ollama's installer starts when `install` installs Ollama,
-and the one it starts again when `update -Tools` upgrades an app the launcher started. An app
-started through `ollama list`, or one the launcher cannot tell apart from another app, is not
-recorded; the launcher says so, and `stop` leaves it running. An Ollama that already ran keeps
-running. So does an app the launcher started while another program has a model loaded in it or
-is still connected to it, while the Ollama window is open, or while it runs in another Windows
-session, whose windows `stop` cannot see; `stop` then says so.
+that app again. This includes the app Ollama's installer starts when `install` installs Ollama,
+and the one it starts again when `update -Tools` upgrades an app the launcher started.
+
+`stop` leaves these Ollama apps running:
+
+- An Ollama that already ran.
+- An app started through `ollama list`, or one the launcher cannot tell apart from another app.
+  The launcher does not record such an app, and says so.
+- An app the launcher started, while another program has a model loaded in it or is still
+  connected to it, while the Ollama window is open, or while it runs in another Windows session,
+  whose windows `stop` cannot see. `stop` then says so.
 
 After you point `Ollama.Url` at another server, run `local-ai stop` before `start` or `update`.
 Until then `status` names the app the launcher recorded for the old server, and `stop` quits it.
-Once `start` runs, also the start that `update` runs for its check, the launcher forgets that
-app, and it keeps running until you quit it from its tray icon.
+When `start` runs, also the start that `update` runs for its check, the launcher forgets that
+app. The app then keeps running until you quit it from its tray icon.
 
 ## Requirements
 
@@ -82,16 +93,18 @@ uv then installs Open WebUI and mcpo as uv tools, and the Pythons they need.
 
 `local-ai` works in any window once the launcher's folder is on your Path, as `install.ps1
 -AddToPath` sets up, and in `cmd.exe` in the launcher's folder. Elsewhere run `local-ai.cmd` by
-its path. Write `local-ai` without quotes: found through the Path as `"local-ai"`, the release
-install's `local-ai.cmd` refuses to run, as `cmd.exe` then names it the wrong folder. In
-`cmd.exe`, a `local-ai.cmd` in the working folder runs before the one on the Path; PowerShell
-runs none from there. The launcher's own messages write commands as `local-ai`. `local-ai.cmd`
-without a verb runs `start`.
+its path. `local-ai.cmd` without a verb runs `start`. The launcher's own messages write
+commands as `local-ai`.
+
+Write `local-ai` without quotes. When `cmd.exe` finds it through the Path as `"local-ai"`, it
+names the wrong folder as the file's own, and the release install's `local-ai.cmd` refuses to
+run. In `cmd.exe`, a `local-ai.cmd` in the working folder runs before the one on the Path.
+PowerShell runs none from there.
 
 `local-ai.cmd` sets the execution policy `RemoteSigned` for its own run only, so the PC's
 policy stays as it is. The window pauses after `status`, after `update` and after any exit code
 other than 0, so a window that a shortcut opened stays readable. With `-Json` it never pauses.
-`start` waits for a key only after it said that a newer launcher is out; see
+`start` waits for a key only after it reports that a newer launcher is out; see
 [The launcher](#the-launcher).
 
 ### Install from a release
@@ -133,9 +146,10 @@ file `current`, which names the active version. Its options:
 - `-Shortcuts` runs `local-ai shortcuts`.
 
 It refuses a draft, a prerelease, a release that is not immutable and any failed check, and then
-changes nothing. It also refuses inside a packaged app, and while another version is installed
-and whole: `local-ai update` moves between versions. To set up the active version anew, for
-example after `local-ai.cmd` was deleted, run it again with `-Tag` and that version.
+changes nothing. It also refuses to run inside a packaged app. It refuses while another version
+is installed and whole, because `local-ai update` moves between versions. To set up the active
+version anew, for example after `local-ai.cmd` was deleted, run it again with `-Tag` and that
+version.
 
 `install.ps1` also runs straight from the release, in one line:
 
@@ -149,8 +163,8 @@ To pass options, make a script block of it:
 & ([scriptblock]::Create((irm https://github.com/Ochsyp/local-ai-launcher/releases/download/v1.1.1/install.ps1))) -AddToPath -Shortcuts
 ```
 
-The address names a release, so it always gets the same `install.ps1`, which that release can no
-longer change. That script still installs the latest release unless you pass `-Tag`.
+The address names one release, so it always gets the same `install.ps1`. A published release
+cannot change that file. The script still installs the latest release unless you pass `-Tag`.
 
 **Warning:** the one-liner runs the script as soon as it arrives, before you or anything else can
 check it. It trusts GitHub and the HTTPS connection alone. The steps above check the file first.
@@ -170,6 +184,27 @@ git.
 2. Open a console window or Windows Terminal in the repository folder, and run
    `.\local-ai.cmd install` there. To update the launcher's code, run `git pull` on `main`.
 
+## Where to run it
+
+Run `local-ai.cmd` from a console window, Windows Terminal or the Start menu shortcuts.
+
+Launcher 1.1.0 and older fail from PowerShell 7 with "The term 'Get-FileHash' is not
+recognized". Their `local-ai.cmd` hands PowerShell 7's module path to Windows PowerShell, which
+then cannot load its own commands. Later versions clear that path. For an older version, clear
+it for that one command, as in `cmd /d /c "set PSModulePath=& local-ai update"`, or run it from
+Windows PowerShell or the Start menu shortcuts. Run `install.ps1` of 1.1.0 and older from
+Windows PowerShell too.
+
+Do not run it from a terminal inside a packaged app, such as the Claude desktop app. Windows
+puts the folders that such an app's processes create in `%LOCALAPPDATA%` and `%APPDATA%` into
+the package's private store. Other windows never see them there. The launcher detects this:
+every verb but `status` then refuses to run and changes nothing, and `status` reports it.
+`install.ps1` refuses as well.
+
+A private copy of `%LOCALAPPDATA%\local-ai` below `%LOCALAPPDATA%\Packages` also blocks every
+verb but `status`. Check whether the copy holds logs or state that the real folder lacks, then
+move it out of `%LOCALAPPDATA%\Packages`.
+
 ## Commands
 
 | Command | What it does |
@@ -182,10 +217,11 @@ git.
 | `local-ai uninstall [-RemoveData]` | Removes what `install` set up, after you confirm. `-RemoveData` also deletes the data folders. |
 | `local-ai shortcuts [-Remove]` | Creates the Start menu shortcuts, or with `-Remove` deletes them. |
 
-A switch that does not belong to the verb is an error. `start` does not wait: while any other
-launcher run is active, it stops at once with exit code 1. `install`, `stop`, `update`,
-`uninstall` and `shortcuts` wait up to 300 s for another run to finish. `status` runs beside
-any of them.
+A switch that does not belong to the verb is an error.
+
+`start` does not wait: while any other launcher
+run is active, it stops at once with exit code 1. `install`, `stop`, `update`, `uninstall` and
+`shortcuts` wait up to 300 s for another run to finish. `status` runs beside any of them.
 
 ### Exit codes
 
@@ -209,36 +245,6 @@ By verb:
 
 `status` advice lines never change the exit code.
 
-## What status checks
-
-`status` reads only. It never starts the Ollama app. Its sections are:
-
-- **Launcher**: the version that `VERSION` names, the repository and state folder, another run
-  in progress, settings that do not load, and packaged-app redirection. Whether the launcher is a
-  release install, a git checkout or another folder. For a release install: its folder and the
-  version that `current` names, whether every file of that version matches its manifest
-  (degraded when not), whether the version before is kept for a rollback, and the latest release
-  that the last check found, with a line when a newer one is out and the date of a check older
-  than 7 days. It reads that from `state.json` and never asks GitHub. `-Json` adds
-  `launcher.kind`, `launcher.latest`, `launcher.checkedAt`, `launcher.updateAvailable` and
-  `launcher.checkError`.
-- **Ollama**: the version, whether the launcher started the Ollama app, so that `stop` quits
-  it, whether it listens beyond loopback, the loaded models and their share of VRAM, whether
-  `local-chat` exists, and superseded aliases it still holds.
-- **Services**: each service's process, port, version and pin. An advice line names a running
-  service that still uses older settings than `start` would give it now, with the command that
-  fixes it; Open WebUI is compared only while every other service runs. A change `start` does not
-  record, such as `ComfyUI.Args` or a new `files.key`, shows no line.
-- **GPU and Ollama environment**: what `nvidia-smi` reports, and `OLLAMA_KV_CACHE_TYPE`.
-- **File tools folder**: whether `start` would serve `Files.Root`, and why not.
-- **Pins**: what `install-stamp.json` records against the pins. A difference names
-  `local-ai update`; a missing part names `local-ai install`. A ComfyUI venv on the Microsoft
-  Store Python counts as a difference, since `update` makes it anew.
-- **Doctor checks**: the PowerShell version, Group Policy execution policies, launcher files
-  that carry the download mark (`Zone.Identifier`), and the page file.
-- **Logs**: the log files, the last error of the newest launcher run, and partial downloads
-  left behind.
-
 ## Start menu shortcuts
 
 `local-ai shortcuts` creates four shortcuts in
@@ -250,41 +256,26 @@ By verb:
 - **Update Local AI** runs `local-ai.cmd update`. It shows the plan and asks before it changes
   anything, and its window stays open until you press a key.
 
-They use the Ollama app's icon when it is installed. `install` creates no shortcuts. For a
-release install they run `local-ai.cmd` in `%LOCALAPPDATA%\Programs\local-ai-launcher`, which
-runs the active version, so they keep working after an update. For a git clone they point at the
-clone, so run `local-ai shortcuts` again after you move it.
-`local-ai shortcuts -Remove` deletes the four shortcuts, and the folder when it is then empty.
-`Shortcuts.Folder` sets another folder.
+They use the Ollama app's icon when it is installed. `install` creates no shortcuts.
+`Shortcuts.Folder` sets another folder. `local-ai shortcuts -Remove` deletes the four
+shortcuts, and the folder when it is then empty.
 
-When `update` makes another launcher version active and the folder holds the **Start Local AI**
-of this install, which runs `local-ai.cmd` in `%LOCALAPPDATA%\Programs\local-ai-launcher`, it
-brings the shortcuts up to date as `local-ai shortcuts` does. So an install whose shortcuts an
-earlier version created gets **Update Local AI** with its next update. When that fails, `update`
-warns and returns 2, and `local-ai shortcuts` tries again. Shortcuts that point at a git clone
-or another folder stay as they are. A git clone never changes versions this way, so run
-`local-ai shortcuts` there after a `git pull` that adds a shortcut.
+For a release install, the shortcuts run `local-ai.cmd` in
+`%LOCALAPPDATA%\Programs\local-ai-launcher`, which runs the active version, so they keep working
+after an update. For a git clone they point at the clone, so run `local-ai shortcuts` again
+after you move it.
 
-## Where to run it
+`update` brings the shortcuts up to date, as `local-ai shortcuts` does, when both hold:
 
-Run `local-ai.cmd` from a console window, Windows Terminal or the Start menu shortcuts.
+- it makes another launcher version active;
+- the folder holds the **Start Local AI** of this install, which runs `local-ai.cmd` in
+  `%LOCALAPPDATA%\Programs\local-ai-launcher`.
 
-From PowerShell 7, launcher 1.1.0 and older fail with "The term 'Get-FileHash' is not
-recognized": `local-ai.cmd` hands PowerShell 7's module path to Windows PowerShell, which then
-cannot load its own commands. Later versions clear that path. For an older version, clear it for
-that one command, as in `cmd /d /c "set PSModulePath=& local-ai update"`, or run it from Windows
-PowerShell or the Start menu shortcuts. Run `install.ps1` of 1.1.0 and older from Windows
-PowerShell too.
-
-Do not run it from a terminal inside a packaged app, such as the Claude desktop app. Windows
-puts the folders that such an app's processes create in `%LOCALAPPDATA%` and `%APPDATA%` into
-the package's private store. Other windows never see them there. The launcher detects this.
-Every verb but `status` then refuses to run and changes nothing, and `status` reports it.
-`install.ps1` refuses as well.
-
-A private copy of `%LOCALAPPDATA%\local-ai` below `%LOCALAPPDATA%\Packages` also blocks every
-verb but `status`. Check whether the copy holds logs or state that the real folder lacks, then
-move it out of `%LOCALAPPDATA%\Packages`.
+So an install whose shortcuts an earlier version created gets **Update Local AI** with its next
+update. When that fails, `update` warns and returns 2, and `local-ai shortcuts` tries again.
+Shortcuts that point at a git clone or another folder stay as they are. A git clone never
+changes versions this way, so run `local-ai shortcuts` there after a `git pull` that adds a
+shortcut.
 
 ## Settings
 
@@ -341,18 +332,26 @@ change. After you change a pin, `status` shows under **Pins** whether `install` 
 applies it.
 
 Open WebUI, ComfyUI, the image gate and mcpo do not inherit your whole environment. Open WebUI,
-ComfyUI and the image gate get only the variables that Windows and Python need, those the
-launcher sets for them, and a few more: for Open WebUI the Hugging Face cache names, such as
-`HF_HOME`, and `HF_HUB_OFFLINE`; for ComfyUI `CUDA_VISIBLE_DEVICES`, `CUDA_DEVICE_ORDER`,
-`PYTORCH_CUDA_ALLOC_CONF`, `PYTORCH_ALLOC_CONF` and `CUDA_PATH`. [SECURITY.md](SECURITY.md)
-lists them all. So a setting in your Windows user variables reaches Open WebUI only through
-`OpenWebUI.Env`, or through `OpenWebUI.InheritEnvironment`, which passes the window's value on.
+ComfyUI and the image gate get only these variables:
+
+- the variables that Windows and Python need;
+- those the launcher sets for them;
+- for Open WebUI, the Hugging Face cache names, such as `HF_HOME`, and `HF_HUB_OFFLINE`;
+- for ComfyUI, `CUDA_VISIBLE_DEVICES`, `CUDA_DEVICE_ORDER`, `PYTORCH_CUDA_ALLOC_CONF`,
+  `PYTORCH_ALLOC_CONF` and `CUDA_PATH`.
+
+[SECURITY.md](SECURITY.md) lists them all. So a setting in your Windows user variables reaches
+Open WebUI only through `OpenWebUI.Env`, or through `OpenWebUI.InheritEnvironment`, which passes
+the window's value on.
+
 For a proxy, `OpenWebUI.InheritEnvironment = @('HTTPS_PROXY')` keeps a password in the proxy
-address out of `settings.psd1`, but Open WebUI and the tools and functions inside it can still
-read it. The settings check refuses a name that ends in `_TOKEN` or `_API_KEY`, and
-`PYTHONHOME`, `PYTHONPATH`, `PYTHONSTARTUP`, `PYTHONUSERBASE`, `NODE_OPTIONS` and `NODE_PATH`:
-none of these services inherits those. The Ollama app is the exception: when the launcher
-starts it, it inherits the whole environment of that window.
+address out of `settings.psd1`. Open WebUI and the tools and functions inside it can still read
+it.
+
+The settings check refuses a name that ends in `_TOKEN` or `_API_KEY`, and `PYTHONHOME`,
+`PYTHONPATH`, `PYTHONSTARTUP`, `PYTHONUSERBASE`, `NODE_OPTIONS` and `NODE_PATH`: none of these
+services inherits those. The Ollama app is the exception: when the launcher starts it, it
+inherits the whole environment of that window.
 
 ## Signing in
 
@@ -379,10 +378,10 @@ SHA-256. Open WebUI's image button then renders 1024x1024 images in 6 steps thro
 - ComfyUI runs with its core nodes only and with `--offline`. The launcher drops flags such as
   `--listen`, `--enable-manager` and `--enable-cors-header` from `ComfyUI.Args`.
 - The image gate runs on ComfyUI's `.venv` too.
-- `install` keeps a `.venv` that it finds in place, such as one the earlier scripts made. When
-  that venv runs on the Microsoft Store Python, whose launches can fail or hang until Windows
-  restarts, ComfyUI and the image gate fail with it. `status` and `start` warn about such a venv,
-  and `local-ai update` makes it anew; see [Updates and backups](#updates-and-backups).
+- `install` keeps a `.venv` that it finds in place, such as one the earlier scripts made. Such
+  a venv may run on the Microsoft Store Python, whose launches can fail or hang until Windows
+  restarts. ComfyUI and the image gate then fail with it. `status` and `start` warn about such a
+  venv, and `local-ai update` makes it anew; see [Updates and backups](#updates-and-backups).
 - Images are on only for a `start` that launches ComfyUI. Otherwise the image button is off.
 - Image editing is off, because no editing workflow is set up.
 - The workflow ends in a preview node, which ComfyUI keeps only in its temp folder until its
@@ -430,11 +429,13 @@ The file tools let the model read one folder. To turn them on:
 4. Run `local-ai start`.
 
 Open WebUI offers them as **Workspace files**: `read_text_file`, `list_directory`,
-`search_files`, `get_file_info` and `list_allowed_directories`. The tools are read-only. The
-launcher starts the files server with `--read-only`, so it offers only the tools the server
-marks read-only, also in a later release. mcpo also hides every write tool, `append_file` and
-`copy_file` among them, and the settings check refuses a `Files.DisabledTools` that leaves one
-out. Only the admin account gets the tools.
+`search_files`, `get_file_info` and `list_allowed_directories`. Only the admin account gets the
+tools.
+
+The tools are read-only. The launcher starts the files server with `--read-only`, so it offers
+only the tools the server marks read-only, also in a later release. mcpo also hides every write
+tool, `append_file` and `copy_file` among them. The settings check refuses a
+`Files.DisabledTools` that leaves one out.
 
 Each `start` checks the folder first. It leaves the file tools off, with a warning, when
 `Files.Root`:
@@ -455,11 +456,12 @@ The check does not follow links inside the folder; the files server refuses thos
 outside it. Files added while mcpo runs are not checked. `status` shows under **File tools
 folder** whether `start` would serve the folder.
 
-When mcpo is already running and its settings changed, such as `Files.Root`, or `install`
-replaced the files server, `start` restarts it and says so, so the change applies in that start.
-A file-tool call running at that moment fails; ask again. Open WebUI keeps running, so after a
-new `Ports.Files` or `files.key` run `local-ai stop`, then `local-ai start`: Open WebUI still
-holds the old address or key.
+`start` restarts a running mcpo, and says so, when its settings changed, such as `Files.Root`,
+or when `install` replaced the files server. The change then applies in that start. A file-tool
+call running at that moment fails; ask again.
+
+Open WebUI keeps running through that restart and still holds the old address or key. So after
+a new `Ports.Files` or `files.key`, run `local-ai stop`, then `local-ai start`.
 
 Know these limits:
 
@@ -473,9 +475,9 @@ Know these limits:
 - `read_text_file` returns a whole file unless the model asks for its head or tail. A text file
   of about 300 KB overflows `local-chat`'s 32K context and leaves the answer unusable.
 - `search_files` stops with an error once it has visited more than 100000 entries, as in a
-  folder that grew after the check of `start`, or when one folder takes more than 15 s to
-  answer. A narrower path or exclude patterns get past that. After its results it names the
-  folders it could not read. A plain name among its exclude patterns, such as `node_modules`,
+  folder that grew after the check of `start`. It also stops when one folder takes more than
+  15 s to answer. A narrower path or exclude patterns get past that. After its results it names
+  the folders it could not read. A plain name among its exclude patterns, such as `node_modules`,
   leaves out that folder at any depth.
 - The mcpo API key lives in `%LOCALAPPDATA%\local-ai\files.key`, which only your account may
   open. mcpo 0.0.20 takes the key only on its command line, so other programs that run as the
@@ -518,17 +520,24 @@ ollama launch qwen --model local-chat --config --yes
 For a release install, `local-ai update`, or the Start menu shortcut **Update Local AI**, first
 asks GitHub for the latest release of `Launcher.Repo`, and waits at most 15 s. It takes only a
 release tagged `vX.Y.Z` that is no draft or prerelease and is immutable. When that release is
-newer than the version that runs, `update` downloads its zip into `staging`, checks the zip's
-SHA-256 against the digest GitHub lists and every file against the manifest, which must name
-the commit of the tag, and moves the release into `versions\vX.Y.Z`. That needs no question, and
-changes nothing that runs. Then it hands over to the new version, whose `update` shows the plan
-and asks once. The plan starts with `Launcher: vOLD -> vNEW (<repository>, sha256:<digest>)`,
-then lists the parts against the new version's pins. On yes it stops what runs, points `current`
-at the new version, brings the Start menu shortcuts up to date when there are any (see
-[Start menu shortcuts](#start-menu-shortcuts)), then updates the parts. When only the launcher
-changes, it points `current` at once, and what runs keeps running until the next start. On no
-nothing changes, the new version waits in `versions` for the next run, and `update` returns 2.
-When not everything can be stopped, nothing changes either, and `update` returns 1.
+newer than the version that runs, `update`:
+
+1. downloads its zip into `staging`;
+2. checks the zip's SHA-256 against the digest GitHub lists, and every file against the
+   manifest, which must name the commit of the tag;
+3. moves the release into `versions\vX.Y.Z`. Up to here it asks no question and changes
+   nothing that runs.
+4. hands over to the new version, whose `update` shows the plan and asks once. The plan starts
+   with `Launcher: vOLD -> vNEW (<repository>, sha256:<digest>)`, then lists the parts against
+   the new version's pins.
+
+On yes, it stops what runs, points `current` at the new version, brings the Start menu shortcuts
+up to date when there are any (see [Start menu shortcuts](#start-menu-shortcuts)), then updates
+the parts. When only the launcher changes, it points `current` at once, and what runs keeps
+running until the next start.
+
+On no, nothing changes, the new version waits in `versions` for the next run, and `update`
+returns 2. When not everything can be stopped, nothing changes either, and `update` returns 1.
 
 - `update` says when the launcher is at the latest release, and never installs an older one.
 - When the release or its zip fails a check, `update` stops with `Update changed nothing` and
@@ -539,30 +548,37 @@ When not everything can be stopped, nothing changes either, and `update` returns
   `Launcher.KeepVersions` (2). It never deletes the new version, the active one, the one before
   it or the one that runs, so the default of 2 keeps three.
 
-`local-ai update -Rollback` goes back to the version before, which `status` names, as long as
-that version is still in `versions` and matches its manifest. It downloads no launcher. It shows
-the plan, warns, and asks you to type `rollback`. Then it runs that version's `update`, which
-checks the parts as every `update` does: Ollama must answer, and a ComfyUI that goes back to
-another tag needs the network for that check. Its plan starts with `Launcher: vNEW -> vOLD` and
-asks once. Only its yes points `current` back and brings the parts back to that version's pins.
-On no, when that version does not accept your `settings.psd1`, when a part cannot be checked, or
-when not everything can be stopped, the launcher stays as it is, and `update -Rollback` can run
-again. After a rollback, Open WebUI may meet data that the newer version has already migrated;
-the backups in `%LOCALAPPDATA%\local-ai\backups` are the fallback.
+`local-ai update -Rollback` goes back to the version before, which `status` names. That version
+must still be in `versions` and match its manifest. It downloads no launcher. It shows the plan,
+warns, and asks you to type `rollback`. Then it runs that version's `update`, which checks the
+parts as every `update` does: Ollama must answer, and a ComfyUI that goes back to another tag
+needs the network for that check. Its plan starts with `Launcher: vNEW -> vOLD` and asks once.
+Only its yes points `current` back and brings the parts back to that version's pins.
+
+The launcher stays as it is, and `update -Rollback` can run again, in these cases:
+
+- you answer no;
+- that version does not accept your `settings.psd1`;
+- a part cannot be checked;
+- not everything can be stopped.
+
+After a rollback, Open WebUI may meet data that the newer version has already migrated. The
+backups in `%LOCALAPPDATA%\local-ai\backups` are the fallback.
 
 `start` checks for a newer release too, at most once per `Launcher.CheckIntervalHours` (24) and
 for at most 5 s. When one is out, it prints one line that names `local-ai update` and the Start
-menu shortcut **Update Local AI**. Only a start that runs the check prints it, so the line shows
-at most once per interval, not at every start while a newer release is out; `status` shows what
-the last check found at any time. When `start` printed the line and ends with exit code 0, it
-waits for a key before it returns, so that a window a shortcut opened stays open to read it. It
-waits only in a console window that reads the keyboard and shows the output, never when its
-input or output is redirected, as when a program runs it or reads what it prints. Nor does it
-wait when the `powershell.exe` that runs `src\local-ai.ps1` has `-NonInteractive`, but
-`local-ai.cmd` starts its PowerShell without it. So a scheduled task that runs `local-ai start`
-where nobody can press a key redirects its input, as `cmd /c "local-ai start < NUL"` does. The
-check installs nothing and never changes the exit code.
+menu shortcut **Update Local AI**. Only a start that runs the check prints it. So the line shows
+at most once per interval, not at every start while a newer release is out. `status` shows what
+the last check found at any time. The check installs nothing and never changes the exit code.
 `Launcher.CheckForUpdates = $false` turns that check off.
+
+When `start` printed the line and ends with exit code 0, it waits for a key before it returns.
+So a window that a shortcut opened stays open to read it. It waits only in a console window that
+reads the keyboard and shows the output. It never waits when its input or output is redirected,
+as when a program runs it or reads what it prints. Nor does it wait when the `powershell.exe`
+that runs `src\local-ai.ps1` has `-NonInteractive`, but `local-ai.cmd` starts its PowerShell
+without it. So a scheduled task that runs `local-ai start` where nobody can press a key should
+redirect its input, as `cmd /c "local-ai start < NUL"` does.
 
 A git checkout never updates its own code: `update` says so and goes on with the parts. Run `git
 pull` on `main` instead, or install a release. A release zip that you extracted by hand does not
@@ -591,9 +607,9 @@ shows the plan and asks. Then it:
 When everything already matches its pin, `update` changes nothing else but still makes that
 offer.
 
-`update` leaves Ollama as it found it. When Ollama did not answer at its start, `update` quits
-the Ollama app it started again at its end, also when it ends early, unless the stack runs then.
-An Ollama that answered at its start keeps running.
+`update` leaves Ollama as it found it. An Ollama that answered at its start keeps running. When
+Ollama did not answer at its start, `update` quits the Ollama app it started when it ends, also
+when it ends early, unless the stack runs then.
 
 To make ComfyUI's `.venv` anew, `update` moves it aside to `<ComfyUI.Dir>.local-ai-old-venv`,
 creates a new one on a uv-managed Python and installs the same pinned packages into it. uv takes
@@ -629,11 +645,12 @@ Git, Node.js and every other Ollama model, and prints the `winget uninstall` com
 Your data stays as well.
 
 For a release install, it then removes the entry of `%LOCALAPPDATA%\Programs\local-ai-launcher`
-from your user Path, and that folder goes once the window has closed. A hidden process waits for
-the window, then deletes that folder and nothing else. It keeps the folder when `install.ps1` set
-it up again in the meantime. After 15 minutes it gives up, and
-`%TEMP%\local-ai-uninstall-cleanup.log` says why; then delete the folder by hand. When an
-earlier step failed, uninstall keeps the launcher, so that you can run it again.
+from your user Path. That folder goes once the window has closed: a hidden process waits for the
+window, then deletes that folder and nothing else. It keeps the folder when `install.ps1` set it
+up again in the meantime. After 15 minutes it gives up, and
+`%TEMP%\local-ai-uninstall-cleanup.log` says why; then delete the folder by hand.
+
+When an earlier step failed, uninstall keeps the launcher, so that you can run it again.
 
 `local-ai uninstall -RemoveData` also deletes, after you type `delete`:
 
@@ -647,6 +664,47 @@ It never deletes `Files.Root`, `OLLAMA_MODELS`, a ComfyUI checkout that `install
 clone, your profile or other system folders, or the launcher's own folder unless it is a release
 install in `%LOCALAPPDATA%\Programs\local-ai-launcher`. `stop`, `status` and `uninstall` also
 work when `settings.psd1` does not load.
+
+## What status checks
+
+`status` reads only. It never starts the Ollama app. Its sections are:
+
+- **Launcher**: the version that `VERSION` names, the repository and state folder, another run
+  in progress, settings that do not load, and packaged-app redirection. It also says whether the
+  launcher is a release install, a git checkout or another folder. For a release install it
+  shows:
+  - its folder and the version that `current` names;
+  - whether every file of that version matches its manifest (degraded when not);
+  - whether the version before is kept for a rollback;
+  - the latest release that the last check found, with a line when a newer one is out and the
+    date of a check older than 7 days. It reads that from `state.json` and never asks GitHub.
+
+  `-Json` adds `launcher.kind`, `launcher.latest`, `launcher.checkedAt`,
+  `launcher.updateAvailable` and `launcher.checkError`.
+- **Ollama**: the version, whether the launcher started the Ollama app, so that `stop` quits
+  it, whether it listens beyond loopback, the loaded models and their share of VRAM, whether
+  `local-chat` exists, and superseded aliases it still holds.
+- **Services**: each service's process, port, version and pin. An advice line names a running
+  service that still uses older settings than `start` would give it now, with the command that
+  fixes it; Open WebUI is compared only while every other service runs. A change `start` does not
+  record, such as `ComfyUI.Args` or a new `files.key`, shows no line.
+- **GPU and Ollama environment**: what `nvidia-smi` reports, and `OLLAMA_KV_CACHE_TYPE`.
+- **File tools folder**: whether `start` would serve `Files.Root`, and why not.
+- **Pins**: what `install-stamp.json` records against the pins. A difference names
+  `local-ai update`; a missing part names `local-ai install`. A ComfyUI venv on the Microsoft
+  Store Python counts as a difference, since `update` makes it anew.
+- **Doctor checks**: the PowerShell version, Group Policy execution policies, launcher files
+  that carry the download mark (`Zone.Identifier`), and the page file.
+- **Logs**: the log files, the last error of the newest launcher run, and partial downloads
+  left behind.
+
+## Logs
+
+The service logs are in `%LOCALAPPDATA%\local-ai\logs`: `open-webui.log`, `comfyui.log`,
+`imagegate.log` and `files.log`, each with an `.err.log`. The launcher keeps 5 rotated copies
+of each (`Logs.Keep`). Each run also writes a transcript there. Those of `status` and
+`uninstall` go to `%TEMP%`. The newest 20 transcripts of each verb are kept, for at most 14
+days. When a verb stops on an error, it prints the path of its transcript.
 
 ## Where data lives
 
@@ -662,14 +720,6 @@ Nothing is written inside this repository, or inside the folder of a release ver
 | ComfyUI, its `.venv` and the checkpoint | `%USERPROFILE%\ComfyUI` (`ComfyUI.Dir`) |
 | The chat model | Ollama's store (`OLLAMA_MODELS`, else `%USERPROFILE%\.ollama\models`) |
 | Start menu shortcuts | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Local AI` |
-
-## Logs
-
-The service logs are in `%LOCALAPPDATA%\local-ai\logs`: `open-webui.log`, `comfyui.log`,
-`imagegate.log` and `files.log`, each with an `.err.log`. The launcher keeps 5 rotated copies
-of each (`Logs.Keep`). Each run also writes a transcript there. Those of `status` and
-`uninstall` go to `%TEMP%`. The newest 20 transcripts of each verb are kept, for at most 14
-days. When a verb stops on an error, it prints the path of its transcript.
 
 ## Releases
 
@@ -712,15 +762,15 @@ the zip leaves out, describes how a release is made and what each one holds.
 
 Use the stack only on a single-user PC you trust.
 
-- Every service the launcher starts listens on `127.0.0.1` only, and `install`, `start` and
-  `status` warn when Ollama, whose app picks its own address, listens beyond loopback. Any program on this PC can
-  reach those ports. Ollama and ComfyUI have no sign-in. Never expose the ports beyond the
-  machine.
+- Every service the launcher starts listens on `127.0.0.1` only. Ollama's app picks its own
+  address, and `install`, `start` and `status` warn when Ollama listens beyond loopback.
+- Any program on this PC can reach those ports. Ollama and ComfyUI have no sign-in. Never expose
+  the ports beyond the machine.
 - Open WebUI asks for a sign-in, and its CORS setting allows only its own local address.
 - `update` installs only immutable releases of `Launcher.Repo`, and `install.ps1` those of
-  `Ochsyp/local-ai-launcher`, whose zip matches the digest GitHub lists and whose files match the
-  manifest. Nothing is signed with Authenticode; [SECURITY.md](SECURITY.md) describes what that
-  trusts.
+  `Ochsyp/local-ai-launcher`. The release's zip must match the digest GitHub lists, and its files
+  must match the manifest. Nothing is signed with Authenticode; [SECURITY.md](SECURITY.md)
+  describes what that trusts.
 - The file tools' key is readable by other programs of the same user; see
   [File tools](#file-tools).
 - Open WebUI gets `NO_PROXY` with `127.0.0.1`, `localhost` and `::1` added, so no proxy sees
@@ -728,11 +778,11 @@ Use the stack only on a single-user PC you trust.
 - Open WebUI, ComfyUI, the image gate and mcpo inherit only the environment variables on their
   allow-lists, so a secret in any other variable, such as `AWS_SECRET_ACCESS_KEY`, is not in
   their environment. Code inside them runs as your Windows user, so it can still read your user
-  variables in the registry. When the launcher starts the Ollama app, the app and the Ollama
-  server it runs inherit the whole environment of that window until the app quits; `local-ai
-  stop` quits it unless it keeps it running for one of the reasons in
-  [What it runs](#what-it-runs). An app that already ran keeps the environment it started with.
-  See [Settings](#settings).
+  variables in the registry. See [Settings](#settings).
+- When the launcher starts the Ollama app, the app and the Ollama server it runs inherit the
+  whole environment of that window until the app quits. `local-ai stop` quits it unless it keeps
+  it running for one of the reasons in [What it runs](#what-it-runs). An app that already ran
+  keeps the environment it started with.
 
 [SECURITY.md](SECURITY.md) has the security policy, where secrets live and the known limits.
 

@@ -11,9 +11,9 @@
 #   powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\install.ps1 [-Tag vX.Y.Z] [-AddToPath] [-Shortcuts]
 #   irm https://github.com/Ochsyp/local-ai-launcher/releases/download/vX.Y.Z/install.ps1 | iex
 #   & ([scriptblock]::Create((irm <that address>))) -Tag vX.Y.Z -AddToPath
-# So it never calls exit, which would close the window under iex, never reads its own path, and
-# keeps its functions and variables inside the script block below. A failure throws, which ends a
-# run as a file with exit code 1 and leaves a window under iex open.
+# Because it may run under iex, it never calls exit, which would close the window, never reads its
+# own path, and keeps its functions and variables inside the script block below. A failure throws,
+# which ends a run as a file with exit code 1 and leaves a window under iex open.
 #
 # The lines from BEGIN LAUNCHER RELEASE FUNCTIONS to END LAUNCHER RELEASE FUNCTIONS are a copy of
 # the block of that name in src\LocalAI.psm1, which tests\LocalAI.Tests.ps1 compares with it.
@@ -778,9 +778,9 @@ public static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UInt
 }
 # END LAUNCHER RELEASE FUNCTIONS
 
-    # Set up the install folder $Root for the version $Tag, which $Folder holds, through that version's own src\LocalAI.psm1: its Install-LocalAILauncher writes
-    # the shim and current. It runs in Windows PowerShell with the execution policy RemoteSigned for that run only, as local-ai.cmd does, on this console, so
-    # that neither this window's execution policy nor its session matters or changes. Waits for it and returns its exit code.
+    # Set up the install folder $Root for the version $Tag in $Folder through that version's own src\LocalAI.psm1, whose Install-LocalAILauncher writes
+    # the shim and current. It runs in Windows PowerShell on this console with the execution policy RemoteSigned for that run only, as local-ai.cmd does,
+    # so this window's execution policy and session neither matter nor change. Waits for it and returns its exit code.
     function Invoke-LauncherSetup {
         [CmdletBinding()]
         [OutputType([int])]
@@ -796,7 +796,8 @@ public static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UInt
         $powershell = [IO.Path]::Combine($env:SystemRoot, 'System32\WindowsPowerShell\v1.0\powershell.exe')
         # No Windows path holds a double quote, so one pair of them carries the command whole.
         $line = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -Command `"$command`""
-        # Without PSModulePath, as PowerShell 7's names its own modules first, which Windows PowerShell cannot load: it would lack Get-FileHash.
+        # Clear PSModulePath, so Windows PowerShell builds its own. PowerShell 7's lists its own modules first, which Windows PowerShell cannot
+        # load, so the child would lack Get-FileHash.
         $savedModulePath = $env:PSModulePath
         try {
             $env:PSModulePath = $null
@@ -804,16 +805,16 @@ public static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UInt
         } finally {
             $env:PSModulePath = $savedModulePath
         }
-        # 5.1 reports no ExitCode unless the handle was opened while the process ran.
+        # Windows PowerShell 5.1 reports no ExitCode unless the handle was opened while the process ran.
         $null = $process.Handle
         $process.WaitForExit()
         return [int]$process.ExitCode
     }
 
-    # Install the launcher release $Tag of the GitHub repository $Repo, or its latest release, into $LocalAppData\Programs\local-ai-launcher, as the top of this
-    # file describes, and print the next step: local-ai install, or local-ai status when install-stamp.json in $LocalAppData\local-ai records the parts
-    # already. Refuses inside an app package's container, which a probe of $LocalAppData or $ShellLocalAppData, the known
-    # folder, shows, and while another version that is whole runs there, as moving between versions is update's job. Throws on any failure, saying what changed.
+    # Install the launcher release $Tag of the GitHub repository $Repo, or its latest release, into $LocalAppData\Programs\local-ai-launcher, as the top of
+    # this file describes, then print the next step: local-ai install, or local-ai status when install-stamp.json in $LocalAppData\local-ai records the parts.
+    # Refuses inside an app package's container, which a probe of $LocalAppData or of the known folder $ShellLocalAppData shows. Refuses too while another
+    # whole version is active there, as moving between versions is update's job. Throws on any failure, saying what changed.
     function Install-LauncherFromRelease {
         [CmdletBinding()]
         param(
@@ -830,7 +831,7 @@ public static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UInt
             throw "install.ps1 needs Windows PowerShell 5.1 or later, but this is PowerShell $running. Nothing was changed."
         }
 
-        # As local-ai does for its verbs: the container redirects the known folder also while %LOCALAPPDATA% names another one.
+        # Probe both, as local-ai does for its verbs: the container redirects the known folder even while %LOCALAPPDATA% names another one.
         $redirection = Get-AppDataRedirection -LocalAppData $LocalAppData
         $sameFolder = [string]::Equals(([string]$ShellLocalAppData).TrimEnd('\'), ([string]$LocalAppData).TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)
         if (-not $redirection -and $ShellLocalAppData -and -not $sameFolder) { $redirection = Get-AppDataRedirection -LocalAppData $ShellLocalAppData }
