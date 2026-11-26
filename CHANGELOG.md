@@ -23,6 +23,9 @@ All notable changes to this project are listed here. The format follows
 - The configuration tests check what must hold across files, such as package.json naming
   Files.ServerVersion and each npm override fitting the range of the package that asks for it,
   instead of repeating each pinned version, so a plain version bump no longer changes a test.
+- The privacy exemptions for the made-up values of the module's tests cover
+  `tests\LocalAI*.ps1` instead of `tests\LocalAI.Tests.ps1` alone, ready for that file's split
+  by area. They exempt the same three values as before.
 
 ### Removed
 
