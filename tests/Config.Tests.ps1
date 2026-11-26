@@ -9,7 +9,8 @@
 # image path needs, the files server's package.json and lockfile must pin Files.ServerVersion and
 # overrides that fit the ranges of the packages that ask for them, the launcher's own releases
 # come from its repository, and source files must stay ASCII. The checks hold across files and
-# forms; a pin's value lives in its own file only, so a version bump changes no test.
+# forms, and a pin's value lives in its own file only, so a version bump changes no test unless
+# it changes what the launcher relies on, such as the files server's list of tools.
 
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', '',
     Justification = 'Pester shares BeforeDiscovery and BeforeAll variables with the It blocks.')]
@@ -53,6 +54,7 @@ Describe 'config\defaults.psd1' {
         $settings = Get-LocalAISettings -DefaultsPath $defaultsPath
         $settings.ComfyUI.Ref | Should -MatchExactly '^v\d+\.\d+\.\d+$'
         $settings.ComfyUI.Commit | Should -MatchExactly '^[0-9a-f]{40}$'
+        $settings.ComfyUI.Repo | Should -BeExactly 'https://github.com/Comfy-Org/ComfyUI.git'
     }
 
     It 'pins the checkpoint download to a full Hugging Face commit' {
@@ -295,19 +297,21 @@ Describe 'config\files-server' {
     }
 
     It 'holds each override within the range of every package in the lockfile that asks for it' {
-        $asked = 0
         foreach ($package in $manifest.overrides.Keys) {
+            $asked = 0
             foreach ($key in @($lock.packages.Keys | Where-Object { $_ })) {
-                $wanted = $lock.packages[$key].dependencies
-                if ($wanted -and $wanted.ContainsKey($package)) {
-                    $asked++
-                    Test-NpmRange -Version $manifest.overrides[$package] -Range $wanted[$package] |
-                        Should -BeTrue -Because "$key asks for $package $($wanted[$package])"
+                foreach ($kind in 'dependencies', 'peerDependencies', 'optionalDependencies') {
+                    $wanted = $lock.packages[$key][$kind]
+                    if ($wanted -and $wanted.ContainsKey($package)) {
+                        $asked++
+                        Test-NpmRange -Version $manifest.overrides[$package] -Range $wanted[$package] |
+                            Should -BeTrue -Because "$key asks for $package $($wanted[$package]) in $kind"
+                    }
                 }
             }
+            # A package nothing asks for gains nothing from an override.
+            $asked | Should -BeGreaterThan 0 -Because "some package must ask for $package"
         }
-        # Each overridden package is asked for at least once, or its override does nothing.
-        $asked | Should -BeGreaterOrEqual $manifest.overrides.Count
     }
 
     It 'reads the npm ranges the lockfile uses' {

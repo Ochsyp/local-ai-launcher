@@ -22,7 +22,7 @@ All notable changes to this project are listed here. The format follows
   current reason only; this changelog keeps the history.
 - The configuration tests check what must hold across files, such as package.json naming
   Files.ServerVersion and each npm override fitting the range of the package that asks for it,
-  instead of repeating each pinned version. A version bump no longer changes a test.
+  instead of repeating each pinned version, so a plain version bump no longer changes a test.
 
 ### Removed
 
