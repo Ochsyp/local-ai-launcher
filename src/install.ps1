@@ -16,7 +16,7 @@
 # which ends a run as a file with exit code 1 and leaves a window under iex open.
 #
 # The lines from BEGIN LAUNCHER RELEASE FUNCTIONS to END LAUNCHER RELEASE FUNCTIONS are a copy of
-# the block of that name in src\LocalAI.psm1, which tests\LocalAI.Tests.ps1 compares with it.
+# the block of that name in src\LocalAI.psm1, which tests\LocalAI.Launcher.Tests.ps1 compares with it.
 # Change the two together.
 
 & {
