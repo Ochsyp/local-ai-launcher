@@ -58,6 +58,11 @@
         Version              = '0.12.4'
         # 0.12.4 requires Python >=3.11,<3.13.
         Python               = '3.12'
+        # Passed as --exclude-newer: Open WebUI's dependencies resolve to their newest release
+        # uploaded before this time, one minute after open-webui 0.12.4's last file. Move it with
+        # Version. Empty lifts it. install-stamp.json records it, and update reinstalls Open WebUI
+        # when it changes.
+        ExcludeNewer         = '2026-10-25T08:10:00Z'
         # DATA_DIR and working directory, so .webui_secret_key stays beside webui.db. A full path
         # on a drive letter. When install finds no open-webui tool but a webui.db here, it copies
         # webui.db and .webui_secret_key to %LOCALAPPDATA%\local-ai\backups first.
@@ -342,7 +347,10 @@
     HfCli     = @{
         # huggingface_hub for `hf download`, run through uvx. Pin a release at least 14 days old
         # that is not yanked.
-        Version = '2.2.0'
+        Version      = '2.2.0'
+        # Passed as --exclude-newer: hf's dependencies resolve as they stood one minute after
+        # huggingface_hub 2.2.0's last file. Move it with Version. Empty lifts it.
+        ExcludeNewer = '2026-10-08T15:31:00Z'
     }
 
     Winget    = @{

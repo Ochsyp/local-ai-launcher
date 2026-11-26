@@ -81,7 +81,8 @@ Describe 'Get-LocalAISettings' {
     Ports     = @{ OpenWebUI = 8080; ComfyUI = 8188; ImageGate = 8190 }
     Model     = @{ Alias = 'local-chat'; Source = 'hf.co/Org/Chat-GGUF:Q6_K'; Sha256 = ''; SupersededAliases = @('old-chat') }
     Shortcuts = @{ Folder = '%LOCALAI_TEST_DIR%\menu' }
-    OpenWebUI = @{ DataDir = '%LOCALAI_TEST_DIR%\data'; HealthTimeoutSeconds = 600; InheritEnvironment = @(); Env = @{ WEBUI_AUTH = 'True' } }
+    OpenWebUI = @{ DataDir = '%LOCALAI_TEST_DIR%\data'; HealthTimeoutSeconds = 600; InheritEnvironment = @(); Env = @{ WEBUI_AUTH = 'True' }; ExcludeNewer = '2026-10-25T08:10:00Z' }
+    HfCli     = @{ Version = '2.2.0'; ExcludeNewer = '2026-10-08T15:31:00Z' }
     Images    = @{ Enabled = $true; Steps = 6; Resolution = '1024x1024'; Revision = '561086c22aba3925b1e8803a73857f061635c7c3'; UnloadChat = $true; UnloadTimeoutSeconds = 30 }
     ComfyUI   = @{ Args = @('--one', '--two'); Dir = '%LOCALAI_TEST_DIR%\ComfyUI'; Commit = '483dae4326356b81de05d27aca3f433dd323cc25'; ExcludeNewer = '2026-10-23T00:07:14Z'
         InheritEnvironment = @() }

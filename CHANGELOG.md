@@ -14,6 +14,11 @@ All notable changes to this project are listed here. The format follows
 
 ### Changed
 
+- Open WebUI and the `hf` CLI install their dependencies as they stood at a fixed time, as mcpo
+  and ComfyUI already do: the new settings `OpenWebUI.ExcludeNewer` and `HfCli.ExcludeNewer`, one
+  minute after each pinned release. `install-stamp.json` records Open WebUI's, `status` shows when
+  it differs, and `update` then reinstalls the same Open WebUI version, after a backup. Installs
+  from before this release recorded none, so the first `update` reinstalls Open WebUI 0.12.4 once.
 - Repository standard 1.2.0: the copies and blocks of this release.
 - README, CONTRIBUTING, SECURITY and the code's comments say the same in plainer words, and the
   README's sections follow the order install, use, check. No command, setting or behaviour changes.

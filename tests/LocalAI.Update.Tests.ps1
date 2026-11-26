@@ -1408,10 +1408,13 @@ Describe 'Update-OpenWebUITool' {
         $result.ToolDir | Should -Be 'C:\uv\tools'
     }
 
-    It 'reinstalls as of OpenWebUI.ExcludeNewer and records it, and puts an old version back as of its own recorded cut-off' {
+    It 'reinstalls as of OpenWebUI.ExcludeNewer and records it' {
         $null = & $run 6>$null
         Should -Invoke Install-UvTool -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Package -eq 'open-webui==0.12.4' -and $ExcludeNewer -ceq '2026-10-25T08:10:00Z' }
         (Read-LocalAIState -Path $paths.InstallStamp).OpenWebUI.ExcludeNewer | Should -BeExactly '2026-10-25T08:10:00Z'
+    }
+
+    It 'puts an old version back as of its own recorded cut-off when the reinstall fails' {
         $recorded = $old.Clone()
         $recorded.ExcludeNewer = '2026-10-01T00:00:00Z'
         Write-LocalAIState -Path $paths.InstallStamp -State @{ OpenWebUI = $recorded }
@@ -1561,6 +1564,8 @@ Describe 'Undo-OpenWebUIUpdate' {
         $entry.Python | Should -Be '3.11.17'
         $entry.ContainsKey('PreviousVersion') | Should -BeFalse
         $entry.ContainsKey('ExcludeNewer') | Should -BeFalse
+        $entry.ToolDir | Should -Be 'C:\uv\tools'
+        $entry.DataDir | Should -Be $dataDir
     }
 
     It 'puts the previous version back as of the cut-off it was installed with, and records that' {
@@ -1568,8 +1573,6 @@ Describe 'Undo-OpenWebUIUpdate' {
         $null = & $run
         @($order) | Should -Contain "cut-off '2026-10-01T00:00:00Z'"
         (Read-LocalAIState -Path $paths.InstallStamp).OpenWebUI.ExcludeNewer | Should -BeExactly '2026-10-01T00:00:00Z'
-        $entry.ToolDir | Should -Be 'C:\uv\tools'
-        $entry.DataDir | Should -Be $dataDir
     }
 
     It 'reinstalls nothing when the stack cannot be stopped, and says how to roll back by hand' {

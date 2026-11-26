@@ -153,7 +153,7 @@ function Expand-LocalAISetting {
 # and OpenWebUI.InheritEnvironment and ComfyUI.InheritEnvironment naming no variable Test-LocalAIWithheldName matches.
 function Test-LocalAISetting {
     param([hashtable]$Settings)
-    # Ports 1024 to 65535, *Sha256, ComfyUI.Commit and ExcludeNewer, Images.Revision, Model.Alias and SupersededAliases, Logs.Keep, Update.KeepBackups,
+    # Ports 1024 to 65535, *Sha256, ComfyUI.Commit and the ExcludeNewer times, Images.Revision, Model.Alias and SupersededAliases, Logs.Keep, Update.KeepBackups,
     # *TimeoutSeconds, the folders (OpenWebUI.DataDir, ComfyUI.Dir, Shortcuts.Folder, Files.Root), Images.Resolution and Steps, winget Scopes, Files,
     # the InheritEnvironment lists, and Launcher.Repo, CheckIntervalHours and KeepVersions.
     $rules = @(
@@ -206,6 +206,10 @@ function Test-LocalAISetting {
         @{ Like = 'Files.McpoWith'; Text = "must list package requirements such as 'mcp==1.30.0'"
             Test = { param($v) @($v | Where-Object { -not ($_ -is [string] -and $_ -cmatch '^[A-Za-z0-9][A-Za-z0-9._-]*\s*(?:===|==|!=|~=|<=|>=|<|>)\s*[A-Za-z0-9.*+!_-]+(?:\s*,\s*(?:===|==|!=|~=|<=|>=|<|>)\s*[A-Za-z0-9.*+!_-]+)*\z') }).Count -eq 0 } }
         @{ Like = 'Files.McpoExcludeNewer'; Text = "must be empty or a UTC time such as '2026-10-13T00:00:00Z'"
+            Test = { param($v) $v -is [string] -and $v -cmatch '^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)?\z' } }
+        @{ Like = 'OpenWebUI.ExcludeNewer'; Text = "must be empty or a UTC time such as '2026-10-25T08:10:00Z'"
+            Test = { param($v) $v -is [string] -and $v -cmatch '^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)?\z' } }
+        @{ Like = 'HfCli.ExcludeNewer'; Text = "must be empty or a UTC time such as '2026-10-08T15:31:00Z'"
             Test = { param($v) $v -is [string] -and $v -cmatch '^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)?\z' } }
         # Open WebUI splits its tool filter list at ','.
         @{ Like = 'Files.*Tools'; Text = 'must list tool names made of lowercase letters, digits and "_"'
@@ -1830,7 +1834,11 @@ function Install-LocalAI {
             ProjectorDigest = $state.Model.ProjectorDigest
             ModelfileSha256 = $state.Model.ModelfileSha256
         }
+        $recordedWeb = $stamp['OpenWebUI']
         $stamp['OpenWebUI'] = Get-OpenWebUIStampEntry -Tool $openWebUI -ToolDir ([string]$openWebUI.ToolDir) -DataDir $settings.OpenWebUI.DataDir
+        # As of when its packages were resolved: this run's cut-off when it installed Open WebUI, else what was recorded, if anything.
+        $cutoff = if ($openWebUI.ContainsKey('ExcludeNewer')) { $openWebUI.ExcludeNewer } else { Get-OpenWebUIRecordedCutoff -Recorded $recordedWeb }
+        if ($null -ne $cutoff) { $stamp['OpenWebUI'].ExcludeNewer = $cutoff }
         # The file and image entries are written back step by step, so a run that fails or is stopped part-way leaves none
         # that start would trust. Saved before those parts, so start can bring up chat even when they fail.
         $recordedFiles = $stamp['Files']
@@ -1994,6 +2002,37 @@ function Backup-OpenWebUIData {
     return $target
 }
 
+# Return the cut-off install-stamp.json's OpenWebUI entry $Recorded holds: the UTC time its packages were resolved as of, '' for none, or
+# $null when it records none, as installs before 1.2.0 do. Pure.
+function Get-OpenWebUIRecordedCutoff {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()][object]$Recorded)
+    if ($Recorded -isnot [hashtable] -or $null -eq $Recorded['ExcludeNewer']) { return $null }
+    return [string]$Recorded['ExcludeNewer']
+}
+
+# True when the cut-off $Recorded (from Get-OpenWebUIRecordedCutoff) differs from OpenWebUI.ExcludeNewer $Pin: another time, or none recorded
+# while $Pin names one. A lifted pin with nothing recorded is no difference. Pure.
+function Test-OpenWebUICutoffDrift {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([AllowNull()][object]$Recorded, [AllowEmptyString()][string]$Pin)
+    if ($null -eq $Recorded) { return [bool]$Pin }
+    return [string]$Recorded -cne $Pin
+}
+
+# Return how Open WebUI's packages were or will be resolved for the cut-off $Cutoff: as of that time, as uv picks them that day for '', or at
+# an unrecorded time for $null. Pure.
+function Format-OpenWebUICutoff {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()][object]$Cutoff)
+    if ($null -eq $Cutoff) { return 'resolved at an unrecorded time' }
+    if ([string]$Cutoff) { return "resolved as of $Cutoff" }
+    return 'resolved as uv picks them that day'
+}
+
 # Return install-stamp.json's OpenWebUI entry for the uv tool $Tool (@{ Version; Path; Python }) in the tool folder $ToolDir, run on the data
 # folder $DataDir as a full path, plus the keys of $Extra. uninstall removes the tool only from ToolDir, and -RemoveData with settings.psd1 that
 # do not load deletes only that DataDir. Pure.
@@ -2017,9 +2056,10 @@ function Get-OpenWebUIStampEntry {
     return $entry
 }
 
-# Install the uv tool open-webui when absent: OpenWebUI.Version on OpenWebUI.Python, after an InstallBytes free-space check and a
-# backup of any webui.db; an installed one is never changed, as update owns its one-way migrations. Returns @{ Version; Path; Python;
-# ToolDir (uv's tool folder) } as uv lists it; throws when uv fails or lists no entry point.
+# Install the uv tool open-webui when absent: OpenWebUI.Version on OpenWebUI.Python, its packages resolved as of OpenWebUI.ExcludeNewer, after
+# an InstallBytes free-space check and a backup of any webui.db; an installed one is never changed, as update owns its one-way migrations.
+# Returns @{ Version; Path; Python; ToolDir (uv's tool folder) } as uv lists it, and ExcludeNewer, the cut-off used, only when it installed
+# now; throws when uv fails or lists no entry point.
 function Install-OpenWebUI {
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -2031,6 +2071,7 @@ function Install-OpenWebUI {
     $python = $Settings.OpenWebUI.Python
     $tool = Get-UvTool -Name 'open-webui'
     $toolDir = Get-UvToolDir
+    $cutoff = $null
     if (-not $tool) {
         Test-FreeSpace -Path $toolDir -RequiredBytes $Settings.OpenWebUI.InstallBytes
         # The pin's first start migrates an existing database one way.
@@ -2038,7 +2079,8 @@ function Install-OpenWebUI {
         $backup = Backup-OpenWebUIData -DataDir $dataDir -BackupRoot $Paths.Backups
         if ($backup) { Write-Host "$dataDir holds a database; it is backed up to $backup before Open WebUI $pin migrates it." }
         Write-Host "Installing Open WebUI $pin on Python $python with uv..."
-        $tool = Install-UvTool -Name 'open-webui' -Package "open-webui==$pin" -Python $python
+        $cutoff = [string]$Settings.OpenWebUI.ExcludeNewer
+        $tool = Install-UvTool -Name 'open-webui' -Package "open-webui==$pin" -Python $python -ExcludeNewer $cutoff
     } elseif ($tool.Version -ne $pin) {
         # Only a warning: the pin's first start would migrate the database one way.
         Write-Warning ("Open WebUI $($tool.Version) is installed, but OpenWebUI.Version pins $pin; it is left as it is. Run " +
@@ -2047,7 +2089,9 @@ function Install-OpenWebUI {
         Write-Host "Open WebUI $pin is installed."
     }
     if (-not $tool.Path) { throw "'uv tool list' shows no open-webui entry point for the open-webui tool. Reinstall it with uv." }
-    return @{ Version = $tool.Version; Path = $tool.Path; Python = $tool.Python; ToolDir = $toolDir }
+    $result = @{ Version = $tool.Version; Path = $tool.Path; Python = $tool.Python; ToolDir = $toolDir }
+    if ($null -ne $cutoff) { $result.ExcludeNewer = $cutoff }
+    return $result
 }
 
 # Return the base URL's Open WebUI version: GET /health must answer {"status": true} and GET
@@ -2567,8 +2611,11 @@ function Install-ImageModel {
         if (-not $present) {
             Write-Host ("Downloading {0} ({1:0.0} GB) from {2} at {3}..." -f $images.File, ($size / 1GB), $images.Repo, $images.Revision)
             # hf takes a token from HF_TOKEN or its token file, never from this command line.
-            $null = Invoke-Native -FilePath 'uvx' -ArgumentList '--from', "huggingface_hub==$($Settings.HfCli.Version)", 'hf', 'download',
-                $images.Repo, $images.File, '--revision', $images.Revision, '--local-dir', $staging -Console
+            # uvx resolves huggingface_hub's dependencies as of HfCli.ExcludeNewer.
+            $from = @('--from', "huggingface_hub==$($Settings.HfCli.Version)")
+            if ($Settings.HfCli.ExcludeNewer) { $from += @('--exclude-newer', $Settings.HfCli.ExcludeNewer) }
+            $null = Invoke-Native -FilePath 'uvx' -ArgumentList ($from + @('hf', 'download', $images.Repo, $images.File, '--revision', $images.Revision,
+                    '--local-dir', $staging)) -Console
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "'hf download' finished, but $path does not exist." }
         }
         $length = (Get-Item -LiteralPath $path -ErrorAction Stop).Length
@@ -3882,7 +3929,7 @@ function Get-LocalAIService {
         TimeoutSeconds   = $Settings.OpenWebUI.HealthTimeoutSeconds
         Pin              = @{ Setting = 'OpenWebUI.Version'; Version = $Settings.OpenWebUI.Version; Stamped = $OpenWebUI.Version; Running = $true
             Hint = '; it backs up the data folder first' }
-        Repair           = "uv tool install --python $python open-webui==$version --reinstall"
+        Repair           = "uv tool install --python $python open-webui==$version$(if ($OpenWebUI.ExcludeNewer) { " --exclude-newer $($OpenWebUI.ExcludeNewer)" }) --reinstall"
         Required         = $true
     }
 }
@@ -5619,6 +5666,12 @@ function Get-StatusPinSection {
         if ($minor -ne $pins.Python) {
             & $differ 'Open WebUI' 'OpenWebUI.Python' $pins.Python $web.Python "Open WebUI runs on Python $($web.Python), but OpenWebUI.Python pins $($pins.Python)."
         }
+        $cutoff = Get-OpenWebUIRecordedCutoff -Recorded $web
+        if (Test-OpenWebUICutoffDrift -Recorded $cutoff -Pin ([string]$pins.ExcludeNewer)) {
+            $cutoffPin = if ($pins.ExcludeNewer) { "pins $($pins.ExcludeNewer)" } else { 'is empty' }
+            & $differ 'Open WebUI' 'OpenWebUI.ExcludeNewer' ([string]$pins.ExcludeNewer) ([string]$cutoff) ("Open WebUI's packages were " +
+                "$(Format-OpenWebUICutoff -Cutoff $cutoff), but OpenWebUI.ExcludeNewer $cutoffPin.")
+        }
     }
     if ($Settings.Images.Enabled) {
         $comfy = $Stamp['ComfyUI']
@@ -6639,29 +6692,33 @@ function Save-UvFreeze {
 }
 
 # Reinstall Open WebUI $Version on Python $Python with uv for a rollback, under the package list $Constraints (from Save-UvFreeze) when it exists, so every package
-# comes back at the version it had; when that fails, or there is no list, as uv resolves them today. Returns Get-UvTool's entry; throws when uv fails both ways.
+# comes back at the version it had; when that fails, or there is no list, as uv resolves them anew. Both resolve as of the cut-off $ExcludeNewer that version
+# was installed with, if any. Returns Get-UvTool's entry; throws when uv fails both ways.
 function Restore-OpenWebUITool {
     [CmdletBinding()]
     [OutputType([hashtable])]
     param(
         [Parameter(Mandatory)][string]$Version,
         [Parameter(Mandatory)][string]$Python,
-        [string]$Constraints
+        [string]$Constraints,
+        [string]$ExcludeNewer
     )
-    $install = @{ Name = 'open-webui'; Package = "open-webui==$Version"; Python = $Python; Reinstall = $true }
+    $install = @{ Name = 'open-webui'; Package = "open-webui==$Version"; Python = $Python; ExcludeNewer = $ExcludeNewer; Reinstall = $true }
     if ($Constraints -and (Test-Path -LiteralPath $Constraints -PathType Leaf)) {
         try {
             return Install-UvTool @install -Constraints $Constraints
         } catch {
+            $anew = if ($ExcludeNewer) { "anew, as of $ExcludeNewer" } else { 'as uv picks them today' }
             Write-Host ("Reinstalling Open WebUI $Version with its saved package list failed ($($_.Exception.Message)); trying without it, so its packages " +
-                'resolve as uv picks them today.') -ForegroundColor Yellow
+                "resolve $anew.") -ForegroundColor Yellow
         }
     }
     return Install-UvTool @install
 }
 
 # Return Open WebUI's part of update's plan: @{ Name; Display; Changes (one 'old -> new' text each); Problem (why update cannot run); Reinstall (uv lists another
-# version, or a Python of another minor, than OpenWebUI.Version and .Python); Tool (Get-UvTool's entry) }. A record in install-stamp.json $Stamp that differs
+# version, or a Python of another minor, than OpenWebUI.Version and .Python, or install-stamp.json another cut-off than OpenWebUI.ExcludeNewer, Test-OpenWebUICutoffDrift);
+# Tool (Get-UvTool's entry) }. A record in install-stamp.json $Stamp that differs
 # from what uv lists is a change of its own. Runs 'uv tool list' only.
 function Get-OpenWebUIUpdatePlan {
     [CmdletBinding()]
@@ -6679,9 +6736,15 @@ function Get-OpenWebUIUpdatePlan {
         return $plan
     }
     $recorded = $Stamp['OpenWebUI']
+    $cutoff = Get-OpenWebUIRecordedCutoff -Recorded $recorded
     if ($tool.Version -ne $pins.Version -or (Get-PythonMinor -Version $tool.Python) -ne $pins.Python) {
         $plan.Reinstall = $true
         $plan.Changes.Add("$($tool.Version) on Python $($tool.Python) -> $($pins.Version) on Python $($pins.Python), after a backup of its data")
+    } elseif (Test-OpenWebUICutoffDrift -Recorded $cutoff -Pin ([string]$pins.ExcludeNewer)) {
+        # The same version again, its packages resolved as of the pinned time.
+        $plan.Reinstall = $true
+        $plan.Changes.Add(("$($tool.Version) on Python $($tool.Python): packages $(Format-OpenWebUICutoff -Cutoff $cutoff) -> " +
+                "$(Format-OpenWebUICutoff -Cutoff ([string]$pins.ExcludeNewer)), after a backup of its data"))
     } elseif ($recorded -isnot [hashtable] -or $recorded.Version -ne $tool.Version -or $recorded.Python -ne $tool.Python -or $recorded.Path -ne $tool.Path) {
         $plan.Changes.Add("install-stamp.json records $($recorded.Version) on Python $($recorded.Python) -> $($tool.Version) on Python $($tool.Python), as uv lists it")
     }
@@ -7187,10 +7250,17 @@ function Update-OpenWebUITool {
     $pins = $Settings.OpenWebUI
     $old = $Plan.Tool
     $previous = @{ Version = $old.Version; Path = $old.Path; Python = $old.Python }
+    # The old version's own cut-off, which a rollback reinstalls it with and records again.
+    $oldCutoff = Get-OpenWebUIRecordedCutoff -Recorded (Read-LocalAIState -Path $Paths.InstallStamp)['OpenWebUI']
+    $oldExtra = @{}
+    if ($null -ne $oldCutoff) {
+        $previous.ExcludeNewer = $oldCutoff
+        $oldExtra.ExcludeNewer = $oldCutoff
+    }
     $dataDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($pins.DataDir)
     if (-not $Plan.Reinstall) {
         $stamp = Read-LocalAIState -Path $Paths.InstallStamp
-        $stamp['OpenWebUI'] = Get-OpenWebUIStampEntry -Tool $previous -ToolDir $ToolDir -DataDir $dataDir
+        $stamp['OpenWebUI'] = Get-OpenWebUIStampEntry -Tool $previous -ToolDir $ToolDir -DataDir $dataDir -Extra $oldExtra
         Write-LocalAIState -Path $Paths.InstallStamp -State $stamp
         return @{ Done = "Open WebUI: install-stamp.json records $($old.Version) on Python $($old.Python), as uv lists it"; Previous = $null; Backup = $null; Constraints = $null
             ToolDir = $ToolDir }
@@ -7209,7 +7279,7 @@ function Update-OpenWebUITool {
     Test-FreeSpace -Path $ToolDir -RequiredBytes $pins.InstallBytes
     Write-Host "Reinstalling Open WebUI $($pins.Version) on Python $($pins.Python) with uv..."
     try {
-        $new = Install-UvTool -Name 'open-webui' -Package "open-webui==$($pins.Version)" -Python $pins.Python -Reinstall
+        $new = Install-UvTool -Name 'open-webui' -Package "open-webui==$($pins.Version)" -Python $pins.Python -ExcludeNewer ([string]$pins.ExcludeNewer) -Reinstall
         if ($new.Version -ne $pins.Version -or (Get-PythonMinor -Version $new.Python) -ne $pins.Python -or -not $new.Path) {
             throw "uv lists Open WebUI $($new.Version) on Python $($new.Python) afterwards, not $($pins.Version) on Python $($pins.Python) with an entry point."
         }
@@ -7218,9 +7288,9 @@ function Update-OpenWebUITool {
         # With another Python minor, uv deletes the old environment before it downloads, so a failed download leaves no Open WebUI at all.
         Write-Host "Reinstalling Open WebUI $($pins.Version) failed; putting back $($old.Version) on Python $($old.Python)..." -ForegroundColor Yellow
         try {
-            $back = Restore-OpenWebUITool -Version $old.Version -Python $old.Python -Constraints $constraints
+            $back = Restore-OpenWebUITool -Version $old.Version -Python $old.Python -Constraints $constraints -ExcludeNewer ([string]$oldCutoff)
             $stamp = Read-LocalAIState -Path $Paths.InstallStamp
-            $stamp['OpenWebUI'] = Get-OpenWebUIStampEntry -Tool $back -ToolDir $ToolDir -DataDir $dataDir
+            $stamp['OpenWebUI'] = Get-OpenWebUIStampEntry -Tool $back -ToolDir $ToolDir -DataDir $dataDir -Extra $oldExtra
             Write-LocalAIState -Path $Paths.InstallStamp -State $stamp
             $after = "Open WebUI $($back.Version) on Python $($back.Python) is installed again, and its data was not touched."
         } catch {
@@ -7232,7 +7302,7 @@ function Update-OpenWebUITool {
     }
     $stamp = Read-LocalAIState -Path $Paths.InstallStamp
     $stamp['OpenWebUI'] = Get-OpenWebUIStampEntry -Tool $new -ToolDir $ToolDir -DataDir $dataDir -Extra @{
-        PreviousVersion = $old.Version; PreviousPython = $old.Python; Backup = $backup
+        PreviousVersion = $old.Version; PreviousPython = $old.Python; Backup = $backup; ExcludeNewer = [string]$pins.ExcludeNewer
     }
     Write-LocalAIState -Path $Paths.InstallStamp -State $stamp
     # The caller prunes the older backups once the new version passed its check.
@@ -7260,20 +7330,22 @@ function Undo-OpenWebUIUpdate {
     $previous = $Change.Previous
     $dataDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Context.Settings.OpenWebUI.DataDir)
     $list = if ($Change.Constraints) { " -c `"$($Change.Constraints)`"" } else { '' }
-    $reinstall = "uv tool install --python $($previous.Python) open-webui==$($previous.Version)$list --reinstall"
+    $cut = if ($previous.ExcludeNewer) { " --exclude-newer $($previous.ExcludeNewer)" } else { '' }
+    $reinstall = "uv tool install --python $($previous.Python) open-webui==$($previous.Version)$cut$list --reinstall"
     $restore = "move $dataDir aside and copy what $($Change.Backup) holds into it, but local-ai-backup.json and open-webui-packages.txt"
     # The stack starts again afterwards, against the same Ollama.
     if ((Stop-LocalAI -Context $Context -KeepOllama) -ne 0) {
         return "It could not be stopped for the rollback, so the new version stays; once it is stopped, reinstall the previous one with: $reinstall. Then $restore."
     }
     try {
-        $tool = Restore-OpenWebUITool -Version $previous.Version -Python $previous.Python -Constraints $Change.Constraints
+        $tool = Restore-OpenWebUITool -Version $previous.Version -Python $previous.Python -Constraints $Change.Constraints -ExcludeNewer ([string]$previous.ExcludeNewer)
     } catch {
         return ("Reinstalling Open WebUI $($previous.Version) failed ($($_.Exception.Message)), so its data was left as the new version used it. Reinstall it " +
             "with: $reinstall. Then $restore.")
     }
     $stamp = Read-LocalAIState -Path $paths.InstallStamp
-    $stamp['OpenWebUI'] = Get-OpenWebUIStampEntry -Tool $tool -ToolDir ([string]$Change.ToolDir) -DataDir $dataDir
+    $extra = if ($null -ne $previous.ExcludeNewer) { @{ ExcludeNewer = [string]$previous.ExcludeNewer } } else { @{} }
+    $stamp['OpenWebUI'] = Get-OpenWebUIStampEntry -Tool $tool -ToolDir ([string]$Change.ToolDir) -DataDir $dataDir -Extra $extra
     Write-LocalAIState -Path $paths.InstallStamp -State $stamp
     $done = "Open WebUI $($tool.Version) on Python $($tool.Python) is installed again"
     try {
