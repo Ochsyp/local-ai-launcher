@@ -316,7 +316,7 @@ Common keys:
 | `OpenWebUI.Env` | a table | Open WebUI's environment for every start. Any key is accepted, and an empty value removes the variable. |
 | `OpenWebUI.InheritEnvironment` | `@()` | More variable names that Open WebUI inherits from the window that runs `start`, such as `HTTPS_PROXY`. |
 | `OpenWebUI.DataDir` | `'%LOCALAPPDATA%\open-webui'` | Open WebUI's database, uploads and secret key. |
-| `OpenWebUI.ExcludeNewer`, `HfCli.ExcludeNewer` | a UTC time | Open WebUI's and the `hf` CLI's dependencies install as they stood at this time, as mcpo's and ComfyUI's do. Empty lifts it. A change makes `update` reinstall Open WebUI, after a backup. |
+| `OpenWebUI.ExcludeNewer`, `HfCli.ExcludeNewer` | a UTC time | Open WebUI's and the `hf` CLI's dependencies install as they stood at this time, as mcpo's and ComfyUI's do. uv then finds no release newer than this time, the pinned one included, so when you raise `OpenWebUI.Version` or `HfCli.Version`, move this time past that release too, or empty it. Empty lifts it. A change makes `update` reinstall Open WebUI, after a backup. |
 | `ComfyUI.Dir` | `'%USERPROFILE%\ComfyUI'` | The ComfyUI checkout, at most 133 characters. |
 | `ComfyUI.InheritEnvironment` | `@()` | More variable names that ComfyUI, not the image gate, inherits from the window that runs `start`. |
 | `Update.KeepBackups` | 3 | How many of its own Open WebUI backups `update` keeps. |
