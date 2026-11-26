@@ -871,7 +871,8 @@ config\defaults.psd1                every default setting and version pin
 config\local-chat.Modelfile         builds the local-chat alias in Ollama
 config\comfyui\                     the image workflow, its node mapping for Open WebUI, and the torch pins
 config\files-server\                package.json and lockfile of the files server
-tests\LocalAI.Tests.ps1             Pester tests for the module and install.ps1
+tests\LocalAI.<Area>.Tests.ps1      Pester tests for the module and install.ps1, one file per area
+tests\LocalAI.TestSetup.ps1         the setup and helpers those tests share
 tests\Config.Tests.ps1              Pester checks on the tracked configuration
 tests\Release.Tests.ps1             Pester tests for the release scripts and the export-ignore rules
 tests\FilesServerLive.Tests.ps1     Pester tests for the live check of the files server

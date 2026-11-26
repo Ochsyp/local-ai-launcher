@@ -128,6 +128,11 @@ CI adds the rest:
 CI fails on any skipped bats test. A Pester test skips only where the runner lacks what it needs,
 such as 8.3 short names. The Pester summary line shows how many skipped.
 
+The module's Pester tests are split by area into `tests\LocalAI.<Area>.Tests.ps1`, which share
+`tests\LocalAI.TestSetup.ps1`. A new test checks the key words of a message, not its whole
+sentence, unless the line is one that people or scripts rely on, such as `update`'s
+`Launcher: <from> -> <to>`.
+
 On a CI runner, `ci/test.ps1` ends with `ci/files-server-live.ps1`. That script installs the
 pinned mcpo and files server, and fails unless each of these holds:
 
@@ -231,7 +236,7 @@ one of them is a MAJOR change. An added asset is a MINOR change, since `update` 
   byte, with CRLF line ends. It runs as a file and through `irm <address> | iex`, so it never
   calls `exit` and never reads its own path. It holds a copy of the lines from
   `# BEGIN LAUNCHER RELEASE FUNCTIONS` to `# END LAUNCHER RELEASE FUNCTIONS` of
-  `src\LocalAI.psm1`, which `tests\LocalAI.Tests.ps1` compares, so it checks and stages a
+  `src\LocalAI.psm1`, which `tests\LocalAI.Launcher.Tests.ps1` compares, so it checks and stages a
   release as `update` does.
 - The asset `SHA256SUMS` holds one line per other asset: the SHA-256 in lowercase hex, two
   spaces and the file name, then a line feed, in ASCII.
