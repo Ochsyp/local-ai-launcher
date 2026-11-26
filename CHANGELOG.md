@@ -20,10 +20,10 @@ All notable changes to this project are listed here. The format follows
 - The README's repository layout lists the live check of the files server and the workflows. The
   packaged-app warning names no app, and the pin comments in `config\defaults.psd1` give the
   current reason only; this changelog keeps the history.
-
 - The module's Pester tests are split by area into seven files, `tests\LocalAI.<Area>.Tests.ps1`,
   which share `tests\LocalAI.TestSetup.ps1`; every test stays. The one file had grown to 1,092 KB,
   so `.github\standard.conf` no longer raises the hooks' 1,024 KB limit for it.
+
 ### Removed
 
 - The release functions that nothing has run since the repository standard took over the
