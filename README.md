@@ -15,8 +15,9 @@ A launcher for a local AI stack on one Windows PC:
 ## Who it is for
 
 One person on a single-user Windows 10 or 11 PC they trust, with an NVIDIA GPU, who wants chat and
-images that stay on that PC. Every service the launcher starts listens on `127.0.0.1` only, so the
-stack is not for sharing over a network. [Requirements](#requirements) lists what the PC needs.
+images that stay on that PC. The launcher starts its services on `127.0.0.1` only, and the Ollama
+app chooses its own address, so the stack is not for sharing over a network.
+[Requirements](#requirements) lists what the PC needs.
 
 ## What it runs
 
@@ -194,7 +195,7 @@ git.
 
 Run `local-ai.cmd` from a console window, Windows Terminal or the Start menu shortcuts.
 
-For launcher 1.1.0 and older run from PowerShell 7, see [What can go wrong](#what-can-go-wrong).
+Launcher 1.1.0 and older fail when run from PowerShell 7; see [What can go wrong](#what-can-go-wrong).
 
 Do not run it from a terminal inside a packaged app, such as the Claude desktop app. Windows
 puts the folders that such an app's processes create in `%LOCALAPPDATA%` and `%APPDATA%` into
@@ -725,14 +726,16 @@ days. When a verb stops on an error, it prints the path of its transcript.
 - **`status` warns that Ollama listens beyond loopback.** Turn off *Expose Ollama to the network*
   in the Ollama app's settings and restart the app. See [What it runs](#what-it-runs).
 - **A reload of `local-chat` after an image fails with `CUDA error: shared object initialization
-  failed`.** The system-managed page file is too small. Set a fixed page file of about 20 GB or
-  more; see [Page file](#page-file).
+  failed`.** On a PC with little RAM, a system-managed page file that Windows has shrunk is too
+  small. Set a fixed page file of about 20 GB or more; see [Page file](#page-file).
 - **ComfyUI and the image gate fail or hang.** Their `.venv` runs on the Microsoft Store Python.
   `status` and `start` warn about it, and `local-ai update` makes it anew. See [Images](#images).
 - **The file tools stay off, with a warning.** `start` refused `Files.Root`. `status` shows why
   under **File tools folder**. See [File tools](#file-tools).
-- **A file-tool call fails.** `start` restarted mcpo at that moment; ask again. After a new
-  `Ports.Files` or `files.key`, run `local-ai stop`, then `local-ai start`. See
+- **A file-tool call fails while `start` restarts mcpo.** The call running at that moment fails;
+  ask again. See [File tools](#file-tools).
+- **Open WebUI still uses the old address or key of the file tools.** It keeps running when
+  `Ports.Files` or `files.key` changes. Run `local-ai stop`, then `local-ai start`. See
   [File tools](#file-tools).
 - **A change in *Admin Settings* reverts at the next start.** `OpenWebUI.Env` wins over the
   database, so put any lasting Open WebUI setting there. See [Settings](#settings).
