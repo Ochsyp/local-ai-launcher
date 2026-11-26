@@ -1,7 +1,7 @@
 # Security policy
 
-This is a single-maintainer project. The launcher is meant for a single-user Windows PC that
-you trust.
+The launcher is meant for a single-user Windows PC that you trust. The project has a single
+maintainer.
 
 <!-- standard:begin reporting -->
 ## Reporting a vulnerability
@@ -112,14 +112,20 @@ environment until `local-ai stop`.
 The Ollama app is not a service the launcher starts with an allow-list. When Ollama does not
 answer, the launcher starts the app, itself or through `ollama list` when the app is not beside
 `ollama.exe`. The app and the Ollama server it runs then inherit the whole environment of that
-window. `local-ai stop` quits an app that the launcher started and recorded, which ends that,
-unless another program has a model loaded in it or is still connected to it, its window is
-open, or it runs in another Windows session; the app then keeps that environment until it is
-quit. An app started through `ollama list`, or one the launcher cannot tell apart from another
-app, is not recorded, so `stop` leaves it running. `start`, also when `update` runs it, forgets
-an app recorded for a server that `Ollama.Url` no longer names, and `stop` then leaves that app
-running too. An Ollama app that already ran keeps the environment it started with, and `stop`
-leaves it running.
+window.
+
+`local-ai stop` quits an app that the launcher started and recorded, which ends that. These apps
+keep running, and with them the environment they inherited:
+
+- An app the launcher started, while another program has a model loaded in it or is still
+  connected to it, its window is open, or it runs in another Windows session. The app then keeps
+  that environment until it is quit.
+- An app started through `ollama list`, or one the launcher cannot tell apart from another app.
+  It is not recorded, so `stop` leaves it running.
+- An app recorded for a server that `Ollama.Url` no longer names. `start`, also when `update`
+  runs it, forgets such an app, and `stop` then leaves it running too.
+- An Ollama app that already ran. It keeps the environment it started with, and `stop` leaves it
+  running.
 
 ## Secrets
 
@@ -167,7 +173,7 @@ control.
   files.
 - The `local-ai.cmd` in `%LOCALAPPDATA%\Programs\local-ai-launcher` runs only from that folder.
   When `cmd.exe` finds it through the Path under a quoted name such as `"local-ai"`, it names the
-  working folder as the file's own; the file then refuses, so it never runs a version that
+  working folder as the file's own. The file then refuses, so it never runs a version that
   another folder holds. That does not cover a `local-ai.cmd` in the working folder itself:
   unless `NoDefaultCurrentDirectoryInExePath` is set, `cmd.exe` runs that one before the one on
   the Path, with or without quotes. In a folder you do not trust, run `local-ai` from
