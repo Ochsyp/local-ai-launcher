@@ -2,10 +2,10 @@
 #                 LOCAL AI MODULE TESTS: CORE
 # -------------------------------------------------------
 #
-# Pester 6 tests for src\LocalAI.psm1: paths, version, settings, JSON and state files, logs, Invoke-
-# Native, the lock, the keep-awake request, the verb dispatch of Invoke-LocalAI, the packaged-app
-# check and the loopback helpers. tests\LocalAI.TestSetup.ps1 imports the module and holds the
-# shared helpers.
+# Pester 6 tests for src\LocalAI.psm1: paths, version, settings, JSON and state files, logs,
+# Invoke-Native, the lock, the keep-awake request, the verb dispatch of Invoke-LocalAI, the
+# packaged-app check and the loopback helpers. tests\LocalAI.TestSetup.ps1 imports the module and
+# holds the shared helpers.
 
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', '',
     Justification = 'Pester shares BeforeAll and BeforeEach variables with the It blocks.')]

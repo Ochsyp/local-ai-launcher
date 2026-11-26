@@ -3,9 +3,9 @@
 # -------------------------------------------------------
 #
 # Pester 6 tests for src\LocalAI.psm1 at start: the mcpo config, the files server checks, the Open
-# WebUI environment, the service table, ports and processes, Start-LocalAIService, Wait-
-# LocalAIService and Start-LocalAI. tests\LocalAI.TestSetup.ps1 imports the module and holds the
-# shared helpers.
+# WebUI environment, the service table, ports and processes, Start-LocalAIService,
+# Wait-LocalAIService and Start-LocalAI. tests\LocalAI.TestSetup.ps1 imports the module and holds
+# the shared helpers.
 
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', '',
     Justification = 'Pester shares BeforeAll and BeforeEach variables with the It blocks.')]
