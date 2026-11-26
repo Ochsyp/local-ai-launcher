@@ -14,9 +14,9 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
-  # The files server's package.json and package-lock.json. Config.Tests.ps1 pins the versions in
-  # them, so its update pull request also needs Files.ServerVersion and those tests changed. The
-  # 14 days match the launcher's rule for new versions.
+  # The files server's package.json and package-lock.json. Config.Tests.ps1 checks that
+  # package.json names Files.ServerVersion, so an update of the server itself also changes that
+  # setting. The 14 days match the launcher's rule for new versions.
   - package-ecosystem: npm
     directory: /config/files-server
     schedule:
