@@ -142,8 +142,8 @@ keep running, and with them the environment they inherited:
 - If a secret is ever committed, rotate it first, then remove it from history: deleting the
   file leaves it in earlier commits.
 
-The check that refuses every verb but `status` inside a packaged app, such as an app from the
-Microsoft Store, keeps the launcher's files out of that app's private store. It is not a security
+The check that refuses every verb but `status` in a terminal built into a packaged app keeps the
+launcher's files out of that app's private store. It is not a security
 control.
 
 ## Launcher updates

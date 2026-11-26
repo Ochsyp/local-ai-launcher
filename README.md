@@ -197,9 +197,10 @@ Run `local-ai.cmd` from a console window, Windows Terminal or the Start menu sho
 
 Launcher 1.1.0 and older fail when run from PowerShell 7; see [What can go wrong](#what-can-go-wrong).
 
-Do not run it from a terminal inside a packaged app, such as an app from the Microsoft Store. Windows
-puts the folders that such an app's processes create in `%LOCALAPPDATA%` and `%APPDATA%` into
-the package's private store. Other windows never see them there. The launcher detects this:
+Do not run it from a terminal built into a packaged app, one that Windows runs in the app's own
+container; the console window and Windows Terminal are fine. Windows puts the folders that
+such an app's processes create in `%LOCALAPPDATA%` and `%APPDATA%` into the package's private
+store. Other windows never see them there. The launcher detects this:
 every verb but `status` then refuses to run and changes nothing, and `status` reports it.
 `install.ps1` refuses as well.
 
@@ -728,7 +729,7 @@ days. When a verb stops on an error, it prints the path of its transcript.
   in the Ollama app's settings and restart the app. See [What it runs](#what-it-runs).
 - **A reload of `local-chat` after an image fails with `CUDA error: shared object initialization
   failed`.** On a PC with little RAM, a system-managed page file that Windows has shrunk is too
-  small. Set a fixed page file of about 20 GB or more; see [Page file](#page-file).
+  small. A fixed page file of about 20 GB or more should avoid it; see [Page file](#page-file).
 - **ComfyUI and the image gate fail or hang.** Their `.venv` runs on the Microsoft Store Python.
   `status` and `start` warn about it, and `local-ai update` makes it anew. See [Images](#images).
 - **The file tools stay off, with a warning.** `start` refused `Files.Root`. `status` shows why

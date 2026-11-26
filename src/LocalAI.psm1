@@ -10066,7 +10066,7 @@ function Invoke-LocalAI {
             if ($Rollback) { throw '-ActivateLauncher does not go with -Rollback.' }
         }
 
-        # A process inside an app package's container, such as a terminal inside a packaged app, has its new AppData folders put into the package's
+        # A process inside an app package's container, such as a shell that a packaged app starts, has its new AppData folders put into the package's
         # private store, where other windows never see them (Get-AppDataRedirection). So before the lock, the transcript, the settings or the state, a
         # verb whose Redirected is Refuse stops there, and while a private copy of Root exists; status runs and reports both.
         $resolve = $ExecutionContext.SessionState.Path

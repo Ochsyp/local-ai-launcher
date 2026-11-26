@@ -18,8 +18,8 @@ All notable changes to this project are listed here. The format follows
 - README, CONTRIBUTING, SECURITY and the code's comments say the same in plainer words, and the
   README's sections follow the order install, use, check. No command, setting or behaviour changes.
 - The README's repository layout lists the live check of the files server and the workflows. The
-  example of a packaged app is now an app from the Microsoft Store, and the pin comments in
-  `config\defaults.psd1` give the current reason only; this changelog keeps the history.
+  packaged-app warning names no app, and the pin comments in `config\defaults.psd1` give the
+  current reason only; this changelog keeps the history.
 
 ## [1.1.1] - 2026-11-25
 
