@@ -211,6 +211,8 @@ Describe 'Get-LocalAISettings' {
         @{ Name = 'an mcpo requirement without a version'; Text = "@{ Files = @{ McpoWith = @('mcp') } }"; Message = "*'Files.McpoWith' = 'mcp' must list package requirements such as 'mcp==1.30.0'*" }
         @{ Name = 'an mcpo requirement that is an option'; Text = "@{ Files = @{ McpoWith = @('mcp==1.30.0', '--index-url=http://x') } }"; Message = "*'Files.McpoWith'*must list package requirements*" }
         @{ Name = 'an mcpo cut-off date without a time'; Text = "@{ Files = @{ McpoExcludeNewer = '2026-10-13' } }"; Message = "*'Files.McpoExcludeNewer' = '2026-10-13' must be empty or a UTC time*" }
+        @{ Name = 'an Open WebUI cut-off date without a time'; Text = "@{ OpenWebUI = @{ ExcludeNewer = '2026-10-25' } }"; Message = "*'OpenWebUI.ExcludeNewer' = '2026-10-25' must be empty or a UTC time*" }
+        @{ Name = 'an hf cut-off in local time'; Text = "@{ HfCli = @{ ExcludeNewer = '2026-10-08T15:31:00+02:00' } }"; Message = "*'HfCli.ExcludeNewer' = '2026-10-08T15:31:00+02:00' must be empty or a UTC time*" }
         @{ Name = 'a tool name with a comma'; Text = "@{ Files = @{ AllowedTools = @('read_text_file,write_file') } }"; Message = "*'Files.AllowedTools'*must list tool names made of lowercase letters, digits and `"_`"*" }
         @{ Name = 'a tool name in capitals'; Text = "@{ Files = @{ DisabledTools = @('Write_File', 'write_file', 'edit_file', 'create_directory', 'move_file', 'append_file', 'copy_file') } }"; Message = "*'Files.DisabledTools'*must list tool names*" }
         @{ Name = 'an empty deny pattern'; Text = "@{ Files = @{ DenyPatterns = @('*.key', ' ') } }"; Message = "*'Files.DenyPatterns'*must list file or folder name patterns, none of them empty*" }
