@@ -3,11 +3,10 @@
 # -------------------------------------------------------
 #
 # Functions behind ci\release-build.ps1, which the standard's release.yml runs, and behind the full
-# build and the version check run by hand: the rules for
-# VERSION and CHANGELOG.md, the release notes, the release zip with its manifest, the check of
-# that zip, the asset install.ps1 taken from it, and SHA256SUMS. CONTRIBUTING.md describes the
-# release contract they keep, and tests\Release.Tests.ps1 tests them. They run in Windows
-# PowerShell 5.1 with git on PATH.
+# build and the version check run by hand: the rules for VERSION and CHANGELOG.md, the release
+# notes, the release zip with its manifest, the check of that zip, the asset install.ps1 taken
+# from it, and SHA256SUMS. CONTRIBUTING.md describes the release contract they keep, and
+# tests\Release.Tests.ps1 tests them. They run in Windows PowerShell 5.1 with git on PATH.
 # Every function takes its inputs as parameters, so importing the module runs nothing.
 
 # Errors stop the module's functions whatever preference the importing session has.
@@ -268,9 +267,9 @@ function Get-ReleaseChangelogProblem {
     return $problems.ToArray()
 }
 
-# Return the version that VERSION in the checkout $RepositoryPath names, or $null when there is no VERSION, as before the first release,
-# once VERSION holds one line X.Y.Z and a line feed and CHANGELOG.md keeps the rules of Get-ReleaseChangelogProblem. Throws listing what
-# breaks them. Reads only.
+# Return the version that VERSION in the checkout $RepositoryPath names, or $null when there is no VERSION, as before the first release.
+# Throws, listing every breach, unless VERSION holds one line X.Y.Z and a line feed and CHANGELOG.md keeps the rules of
+# Get-ReleaseChangelogProblem. Reads only.
 function Get-ReleaseVersion {
     [CmdletBinding()]
     [OutputType([string])]
@@ -721,8 +720,8 @@ function New-ReleaseChecksumFile {
     [IO.File]::WriteAllText((Resolve-ReleasePath -Path $OutputPath), $builder.ToString(), [Text.Encoding]::ASCII)
 }
 
-# Throw when the git remote $Remote of the repository $RepositoryPath has the tag $Tag, as once that version is released. git ls-remote
-# reads the remote's tags without fetching anything.
+# Throw when the git remote $Remote of the repository $RepositoryPath has the tag $Tag, that is, when that version is already released.
+# git ls-remote reads the remote's tags without fetching anything.
 function Assert-ReleaseTagAbsent {
     [CmdletBinding()]
     param(

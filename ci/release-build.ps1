@@ -3,8 +3,8 @@
 #   ci/release-build.ps1 --version X.Y.Z --commit SHA --out DIR [--dry-run]
 # and checks VERSION, CHANGELOG.md, the tags, SHA256SUMS and the two builds of a dry run itself.
 # It writes DIR\assets\local-ai-launcher-X.Y.Z.zip, install.ps1 and SHA256SUMS through
-# Invoke-ReleaseHookBuild of .github\scripts\LocalAIRelease.psm1, the code that built every
-# earlier release. Exits 0 when the build worked, 1 when it failed, 64 for wrong arguments.
+# Invoke-ReleaseHookBuild of .github\scripts\LocalAIRelease.psm1. Exits 0 when the build worked,
+# 1 when it failed, 64 for wrong arguments.
 
 $ErrorActionPreference = 'Stop'
 $usage = 'usage: ci/release-build.ps1 --version X.Y.Z --commit SHA --out DIR [--dry-run]'

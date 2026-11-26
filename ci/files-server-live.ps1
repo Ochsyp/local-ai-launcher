@@ -3,7 +3,8 @@
 # launcher's own settings, and fails unless they offer exactly Files.AllowedTools and that folder.
 # Then it changes Files.Root, and fails unless start's own code restarts mcpo, which must serve the
 # new folder alone. Last it starts mcpo with no hidden tools, and fails unless the server's --read-only
-# alone withholds every tool but Get-LiveReadOnlyTool. Outside CI it exits 2 and installs nothing.
+# alone withholds every tool but those Get-LiveReadOnlyTool lists. Outside CI it exits 2 and installs
+# nothing.
 # Exits 0 when the check passes, else 1.
 
 [CmdletBinding()]
