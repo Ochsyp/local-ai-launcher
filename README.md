@@ -197,9 +197,10 @@ Run `local-ai.cmd` from a console window, Windows Terminal or the Start menu sho
 
 Launcher 1.1.0 and older fail when run from PowerShell 7; see [What can go wrong](#what-can-go-wrong).
 
-Do not run it from a terminal inside a packaged app, such as the Claude desktop app. Windows
-puts the folders that such an app's processes create in `%LOCALAPPDATA%` and `%APPDATA%` into
-the package's private store. Other windows never see them there. The launcher detects this:
+Do not run it from a terminal built into a packaged app, one that Windows runs in the app's own
+container; the console window and Windows Terminal are fine. Windows puts the folders that
+such an app's processes create in `%LOCALAPPDATA%` and `%APPDATA%` into the package's private
+store. Other windows never see them there. The launcher detects this:
 every verb but `status` then refuses to run and changes nothing, and `status` reports it.
 `install.ps1` refuses as well.
 
@@ -414,7 +415,8 @@ with little RAM and a system-managed page file that Windows has shrunk, a reload
 with `CUDA error: shared object initialization failed`.
 
 Set a fixed page file of about 20 GB or more under *System Properties > Advanced > Performance
-Settings > Advanced > Virtual memory > Change*. The launcher never changes the page file.
+Settings > Advanced > Virtual memory > Change*. That should avoid the error; it is not measured yet.
+The launcher never changes the page file.
 `status` gives this advice while images unload chat and the page file is system-managed or
 smaller than 20 GB.
 
@@ -727,7 +729,7 @@ days. When a verb stops on an error, it prints the path of its transcript.
   in the Ollama app's settings and restart the app. See [What it runs](#what-it-runs).
 - **A reload of `local-chat` after an image fails with `CUDA error: shared object initialization
   failed`.** On a PC with little RAM, a system-managed page file that Windows has shrunk is too
-  small. Set a fixed page file of about 20 GB or more; see [Page file](#page-file).
+  small. A fixed page file of about 20 GB or more should avoid it; see [Page file](#page-file).
 - **ComfyUI and the image gate fail or hang.** Their `.venv` runs on the Microsoft Store Python.
   `status` and `start` warn about it, and `local-ai update` makes it anew. See [Images](#images).
 - **The file tools stay off, with a warning.** `start` refused `Files.Root`. `status` shows why
@@ -872,16 +874,21 @@ config\files-server\                package.json and lockfile of the files serve
 tests\LocalAI.Tests.ps1             Pester tests for the module and install.ps1
 tests\Config.Tests.ps1              Pester checks on the tracked configuration
 tests\Release.Tests.ps1             Pester tests for the release scripts and the export-ignore rules
+tests\FilesServerLive.Tests.ps1     Pester tests for the live check of the files server
 tests\test_image_gate.py            unittest tests for the image gate
 tests\run-checks.ps1                runs PSScriptAnalyzer and the Pester tests
 tests\requirements.txt              Python packages the image gate tests need
-ci\lint.ps1, ci\test.ps1            the CI stages lint and test: run-checks.ps1 and the image gate tests
+tests\requirements-live.txt         the uv that only the live check uses, pinned with a hash
+ci\lint.ps1, ci\test.ps1            the CI stages lint and test: run-checks.ps1, the image gate tests,
+                                    and on CI the live check of the files server
+ci\files-server-live.ps1            the live check: installs the pinned mcpo and files server and checks them
 ci\release-build.ps1                the release build that the standard's release.yml runs
 PSScriptAnalyzerSettings.psd1       PSScriptAnalyzer rules
 .githooks\                          the standard's hooks: no commit or push to main, no private data
 .github\standard.conf               this repository's settings for the repository standard
 .github\standard\                   the standard's tools and tests; MANIFEST lists every copy
 .github\                            CI, secret scan, Dependabot and the pull request template
+.github\workflows\                  the standard's workflows: ci, release, image and secret-scan
 .github\workflows\release.yml       the standard's release workflow: builds, drafts and checks releases
 .github\scripts\                    the zip build behind ci\release-build.ps1
 .editorconfig, .gitattributes       editor settings and line endings

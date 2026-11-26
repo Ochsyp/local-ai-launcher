@@ -63,7 +63,7 @@
         # webui.db and .webui_secret_key to %LOCALAPPDATA%\local-ai\backups first.
         DataDir              = '%LOCALAPPDATA%\open-webui'
         # Free space install wants, plus 10 percent, on the uv tools drive before it installs Open
-        # WebUI: the 0.12.3 tool environment as measured (1937858153 bytes), a uv-managed Python
+        # WebUI: the tool environment, measured with 0.12.3 (1937858153 bytes), a uv-managed Python
         # (73088127) and the embedding model the first start downloads (976948716).
         InstallBytes         = 2987894996
         # How long start waits for /health and /api/version. Open WebUI opens its port only after
@@ -267,25 +267,19 @@
         Python               = '3.12'
         # Passed with --with, since mcpo 0.0.20 sets no upper bounds. mcp 2.x lacks streamablehttp_client,
         # which mcpo imports at startup (open-webui/mcpo#303), and FastAPI 0.145.0 and later lack the
-        # **extra that mcpo's FastAPI(ssl_certfile=...) call needs. pydantic needs no cap: 2.14.1 works with
-        # server-filesystem 2.0.1, whose tool schemas 2.1.0 keeps; 2.2.0 only makes read_text_file's head
-        # and tail integers, which mcpo maps to int, and 2.3.0 only adds descriptions. mcpo served 2.3.0's
-        # five offered tools on 2026-11-14.
+        # **extra that mcpo's FastAPI(ssl_certfile=...) call needs. pydantic needs no cap: 2.14.1 maps the
+        # tool schemas of server-filesystem 2.3.0, and mcpo serves its five offered tools.
         McpoWith             = @('mcp==1.30.0', 'fastapi<0.145')
         # Passed as --exclude-newer: mcpo's other dependencies resolve to their newest release
-        # uploaded before this time (44 packages, tested with server-filesystem 2.0.1). Empty lifts
-        # it, and the fastapi cap above still holds: on 2026-10-27 that resolved FastAPI 0.144.0 with
-        # mcp 1.30.0 (44 packages), and mcpo started and served the tools.
+        # uploaded before this time. Empty lifts it, and the fastapi cap above still holds.
         McpoExcludeNewer     = '2026-10-13T00:00:00Z'
         # @modelcontextprotocol/server-filesystem, which needs node >= 24. Must equal the version that
         # ServerPackage\package.json pins; install runs npm ci on that folder's lockfile.
-        # Every release from 2.0.1 on has the 2026-10-25 path-check fixes (GHSA-7rgq-gccq-qphx,
-        # GHSA-4gxg-m5jx-9j57), which affect the read tools of 1.0.0 and 2.0.0. 2.3.0 (2026-11-11) fixes
-        # GHSA-p9cv-8g75-4xcg, a race between read_text_file's path check and its open: reads enter the
-        # checked folder and open the file there, which closes the race on Linux and macOS and, by its own
-        # account, only narrows it on Windows. It also fixes GHSA-7m4x-rv66-mxhh in move_file, which
-        # DisabledTools hides. 2.3.0 was taken on 2026-11-14 for its advisory fixes, before it was 14 days
-        # old (2026-11-25T07:10Z), at the maintainer's word.
+        # 2.3.0 has the path-check fixes of every release from 2.0.1 on (GHSA-7rgq-gccq-qphx,
+        # GHSA-4gxg-m5jx-9j57). It also fixes GHSA-p9cv-8g75-4xcg, a race between read_text_file's path
+        # check and its open, which it closes on Linux and macOS and only narrows on Windows, and
+        # GHSA-7m4x-rv66-mxhh in move_file, which DisabledTools hides. It was taken early for these
+        # security fixes; CHANGELOG.md (1.1.0, Security) holds the details.
         # How 2.3.0 behaves, by the release each part came with:
         # - 2.1.0: it serves a path that spells Root in another letter case, get_file_info has a hardLinks
         #   line, and search_files stops once it visits more than 100000 entries or waits 15 s on one
@@ -305,17 +299,15 @@
         # before mcpo connects; DisabledTools and start's route check stay a second guard. --read-only-dir
         # must stay unused: it adds a block to list_allowed_directories, which start's check reads as a
         # second folder.
-        # The overrides in ServerPackage\package.json hold @modelcontextprotocol/server and core at 2.3.1
-        # (2026-10-05), the SDK the server ran on from 2.0.1 to 2.3.0, which server-filesystem's ^2.3.1
-        # accepts. They hold minimatch at 11.0.8 (2026-11-11) and brace-expansion at 5.0.13 (2026-11-11),
-        # which fix GHSA-hqmv-qgp3-jx75 and GHSA-cf2h-pxjq-68xw in minimatch and GHSA-6jwq-xf8q-xcwh in
-        # brace-expansion, patterns that could tie up search_files, and GHSA-c859-jr93-m5j4 in minimatch's
-        # escape(), which the server does not call. The server's own ^11.0.4 and minimatch's own ^5.0.12
-        # admit the versions before those fixes, and npm audit does not list these advisories yet, so the
-        # overrides keep a lockfile made again from falling back to them. Both were taken before they were
-        # 14 days old, at the maintainer's word, as was @isaacs/nonrecursive-glob-match 1.1.0 (2026-11-05),
-        # which minimatch 11.0.8 needs. The lockfile was made with npm's --before 2026-11-11T12:28:00Z, so
-        # it holds nothing newer. 2.2.0 and later need no glob, so GHSA-3g3m-2fjr-6pw4 does not apply.
+        # The overrides in ServerPackage\package.json hold @modelcontextprotocol/server and core at 2.3.1,
+        # which server-filesystem's ^2.3.1 accepts. They hold minimatch at 11.0.8 and brace-expansion at
+        # 5.0.13, which fix GHSA-hqmv-qgp3-jx75 and GHSA-cf2h-pxjq-68xw in minimatch and
+        # GHSA-6jwq-xf8q-xcwh in brace-expansion, patterns that could tie up search_files, and
+        # GHSA-c859-jr93-m5j4 in minimatch's escape(), which the server does not call. The server's own
+        # ^11.0.4 and minimatch's own ^5.0.12 also admit unfixed versions, so the overrides keep a remade
+        # lockfile on the fixed ones. minimatch 11.0.8 needs @isaacs/nonrecursive-glob-match 1.1.0, taken
+        # early with it. The lockfile was made with npm's --before 2026-11-11T12:28:00Z, so it holds
+        # nothing newer. 2.2.0 and later need no glob, so GHSA-3g3m-2fjr-6pw4 does not apply.
         ServerVersion        = '2.3.0'
         ServerPackage        = 'config\files-server'
         # The tools Open WebUI offers the model, as the server names them. Open WebUI sees them under

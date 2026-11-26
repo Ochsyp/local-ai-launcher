@@ -63,7 +63,7 @@ function Find-PackageStoreCopy {
 }
 
 # Return @{ Package; Store } when Windows puts a folder made directly in $LocalAppData into an app package's private store instead, else $null. It does that
-# for a process inside the Claude desktop app's container, which has no package identity to ask about. Makes the empty folder $ProbeName to find out, and
+# for a process inside an app package's container, which has no package identity to ask about. Makes the empty folder $ProbeName to find out, and
 # always deletes it again, and the empty probes a killed run left; never throws, so a probe that cannot be made or a failed lookup returns $null too.
 function Get-AppDataRedirection {
     [CmdletBinding()]

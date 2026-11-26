@@ -182,7 +182,7 @@ delete a release.
 In this repository, each release pull request also points the README's *Install from a release*
 at the new release. The `install.ps1` one-liner and its script block form name
 `releases/download/vX.Y.Z/install.ps1`, so each always gets the same file. `release-prepare`
-leaves these two lines to the session.
+leaves these two lines to whoever prepares the release.
 
 The build runs `ci/release-build.ps1` on Windows. It builds the zip, `install.ps1` and
 `SHA256SUMS` with `.github/scripts/LocalAIRelease.psm1`.
@@ -198,9 +198,7 @@ one of them is a MAJOR change. An added asset is a MINOR change, since `update` 
 
 - `VERSION` at the repository root holds one line `X.Y.Z` and a line feed. It is the only
   launcher version; `VERSION` in `src\image_gate.py` is the image gate's own protocol version.
-  Without `VERSION`, as in a git checkout before the first release, no release is prepared: CI
-  passes with a notice, and `status -Json` reports `launcher.version` as null. A missing
-  `VERSION` while `CHANGELOG.md` has a version heading is an error.
+  Without `VERSION`, `status -Json` reports `launcher.version` as null.
 - The tag and the release title are `vX.Y.Z`. The release notes are the CHANGELOG section from
   `## [X.Y.Z] - YYYY-MM-DD` up to the next `## [` heading, without the link reference lines.
 - The asset `local-ai-launcher-X.Y.Z.zip` is
