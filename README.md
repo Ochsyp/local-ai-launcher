@@ -161,13 +161,13 @@ version.
 `install.ps1` also runs straight from the release, in one line:
 
 ```powershell
-irm https://github.com/Ochsyp/local-ai-launcher/releases/download/v1.1.1/install.ps1 | iex
+irm https://github.com/Ochsyp/local-ai-launcher/releases/download/v1.2.0/install.ps1 | iex
 ```
 
 To pass options, make a script block of it:
 
 ```powershell
-& ([scriptblock]::Create((irm https://github.com/Ochsyp/local-ai-launcher/releases/download/v1.1.1/install.ps1))) -AddToPath -Shortcuts
+& ([scriptblock]::Create((irm https://github.com/Ochsyp/local-ai-launcher/releases/download/v1.2.0/install.ps1))) -AddToPath -Shortcuts
 ```
 
 The address names one release, so it always gets the same `install.ps1`. A published release
