@@ -49,7 +49,7 @@ function Get-LocalAIVersion {
     )
     $path = $RepoRoot
     try {
-        # Combine, unlike Join-Path, does not refuse a drive this PC does not have now.
+        # Combine, unlike Join-Path, accepts a drive letter that is not present at the moment.
         $path = [IO.Path]::Combine($RepoRoot, 'VERSION')
         if (-not [IO.File]::Exists($path)) { return $null }
         $text = [IO.File]::ReadAllText($path).Trim()
@@ -212,7 +212,7 @@ function Test-LocalAISetting {
             Test = { param($v) @($v | Where-Object { -not ($_ -is [string] -and $_ -cmatch '^[a-z0-9_]+\z') }).Count -eq 0 } }
         @{ Like = 'Files.DenyPatterns'; Text = 'must list file or folder name patterns, none of them empty'
             Test = { param($v) @($v | Where-Object { -not ($_ -is [string] -and $_.Trim()) }).Count -eq 0 } }
-        # OpenWebUI's and ComfyUI's, not a key of the open map OpenWebUI.Env. Start-LocalAIService compares whole names, so a
+        # OpenWebUI.InheritEnvironment and ComfyUI.InheritEnvironment, not a key of the open map OpenWebUI.Env. Start-LocalAIService compares whole names, so a
         # pattern such as HF_* or a %VAR% left unexpanded would match nothing.
         @{ Like = '*UI.InheritEnvironment'; Text = "must list variable names such as 'HTTPS_PROXY': letters, digits, '_', '.', '-' and parentheses"
             Test = { param($v) @($v | Where-Object { -not ($_ -is [string] -and $_ -cmatch '^[A-Za-z_][A-Za-z0-9_.()-]*\z') }).Count -eq 0 } }
@@ -499,7 +499,7 @@ function Invoke-Native {
             # The program inherits this console, so progress bars draw, and a process it leaves
             # running, such as the Ollama app, holds no pipe for this call to wait on. Process.Start
             # keeps the handle CreateProcess returns: the Process that Start-Process -NoNewWindow
-            # gives in 5.1 holds none, so a program that ended before this call opened one lost its
+            # gives in 5.1 holds none, so a program that ends before this call opens one loses its
             # exit code. WaitForExit waits for the program alone, where Start-Process -Wait also
             # waits for every child process.
             $startInfo = New-Object Diagnostics.ProcessStartInfo -ArgumentList $program[0].Path
@@ -808,7 +808,7 @@ function Get-LoopbackClient {
     )
     $connections = @(Get-NetTCPConnection -State Established -RemotePort $Port -ErrorAction SilentlyContinue -ErrorVariable failures)
     foreach ($failure in @($failures)) {
-        # The no-match error, collected as in Get-TcpListener.
+        # Collect the no-match error, as Get-TcpListener does, so the transcript does not log it.
         if ($failure.FullyQualifiedErrorId -notlike 'CmdletizationQuery_NotFound*') { throw $failure }
     }
     $ids = @(foreach ($connection in $connections) {
@@ -1321,7 +1321,7 @@ function Wait-OllamaServer {
                 # The app serves this PC only.
                 $blocked = 'remote'
             } else {
-                # As the CLI starts the app only when the connection is refused: its server could not take a port another program holds.
+                # The CLI starts the app only when the connection is refused, as the app's server could not take a port another program holds.
                 try { $holder = Get-PortOwner -Port $uri.Port } catch { $holder = $null }
                 $blocked = if ($holder) { 'held' } else { $null }
             }
@@ -1347,7 +1347,7 @@ function Wait-OllamaServer {
                         Write-Verbose "The Ollama apps cannot be listed, so local-ai records no app it starts now: $($_.Exception.Message)"
                     }
                 }
-                # A second early, as Win32_Process and this clock are read apart.
+                # One second early, because Win32_Process and this clock are read at different moments.
                 $since = [DateTime]::UtcNow.AddSeconds(-1).Ticks
                 Write-Host "Ollama does not answer at $Url; starting the Ollama app..."
                 try {
@@ -3067,10 +3067,10 @@ function Get-FilesServerRefusedName {
     }
 }
 
-# Return $true when Files.Root may be served: an existing folder, as a full drive-letter path through no link and with no name the files server refuses
-# (Get-FilesServerRefusedName), no drive root, not $UserProfile or above it, not in or around Paths.Root, $RepoRoot, $ToolDir, OpenWebUI.DataDir or ComfyUI.Dir
-# (8.3 names expanded), holding within $MaxEntries entries only folders it can list, no name Files.DenyPatterns matches (any case) and no hard link with a
-# name outside it; links inside are not followed. Else warns once, $false.
+# Return $true when start may serve Files.Root; else warn once and return $false. It must be an existing folder, as a full drive-letter path through no
+# link and with no name the files server refuses (Get-FilesServerRefusedName). It must be no drive root, not $UserProfile or above it, and not in or
+# around Paths.Root, $RepoRoot, $ToolDir, OpenWebUI.DataDir or ComfyUI.Dir (8.3 names expanded). Within $MaxEntries entries it must hold only folders
+# it can list, no name Files.DenyPatterns matches (any case) and no hard link with a name outside it. Links inside are not followed.
 function Test-FilesRoot {
     [CmdletBinding()]
     [OutputType([bool])]
@@ -3399,7 +3399,7 @@ function Get-FilesStartProblem {
         Write-Warning ("$lock is not the lockfile install ran npm ci with, so the files server may lack packages it needs. Run " +
             "'local-ai install', which runs npm ci again.")
     }
-    # The service's pin warns about Files.McpoVersion.
+    # Files.McpoVersion is left out, as the service's pin check warns about it.
     $drift = @(Get-McpoPinDrift -Settings $Settings -Recorded $files | Where-Object { $_ -ne 'Files.McpoVersion' })
     if ($drift.Count -gt 0) {
         Write-Warning ("install set up mcpo for another $($drift -join ', ') than settings.psd1 names, so mcpo runs with packages those pins " +
@@ -3630,11 +3630,11 @@ function Get-LocalAIInheritedName {
     }
 }
 
-# Return the service table in start order: optional ComfyUI from $ComfyUI (stamp: Commit, Python) for Images.Enabled and an $ImageWorkflow, with
-# Images.UnloadChat the image gate, for Files.Root mcpo from $Files (McpoPath, McpoVersion, Key, and with Server also ServerVersion and LockSha256,
-# which set the entry's ConfigSha256), then required Open WebUI from $OpenWebUI. Identity takes the entry and returns the version to show
-# or throws; Pin and Repair name the pin and the install; InheritEnvironment names the variables each may inherit from this window. Warns for dropped
-# Args or gate.
+# Return the service table in start order. ComfyUI, from $ComfyUI (stamp: Commit, Python), comes with Images.Enabled and an $ImageWorkflow, and the
+# image gate with it when Images.UnloadChat is on. mcpo, from $Files (McpoPath, McpoVersion, Key, and with Server also ServerVersion and LockSha256,
+# which set the entry's ConfigSha256), comes with Files.Root. Open WebUI, from $OpenWebUI, comes last and is the one required service.
+# In each entry, Identity takes the entry and returns the version to show or throws; Pin and Repair name the pin and the install; InheritEnvironment
+# names the variables it may inherit from this window. Warns when it drops a ComfyUI.Args entry or leaves out the image gate.
 function Get-LocalAIService {
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -3944,7 +3944,7 @@ function Start-LocalAIService {
     } finally {
         foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process') }
     }
-    # 5.1 reports no ExitCode unless the handle was opened while the process ran.
+    # Windows PowerShell 5.1 reports no ExitCode unless the handle was opened while the process ran.
     $null = $process.Handle
     # The program started is $shell. Read at once, a new process's Path can be empty, or ntdll.dll while only that is loaded, which no later check
     # of the PID would match, so stop would find nothing to end.
@@ -4369,10 +4369,11 @@ function Stop-RecordedFilesService {
     return $result -eq 'stopped'
 }
 
-# The start verb: install first when install-stamp.json lacks Ollama, Model or OpenWebUI, else wait for Ollama; record in state.json at once an Ollama app
-# either started (Save-OllamaRecord); check Ollama has Model.Alias; stop a recorded mcpo this start leaves out; launch ComfyUI, the image gate and mcpo,
-# restarting an mcpo whose settings changed and waiting for the last two at once, then Open WebUI using those that answered; open the browser, then
-# check ComfyUI. Adds each service it launched to Context.Launched (a List[string]). Returns 0; 2 on warnings; 1 when Open WebUI fails.
+# The start verb. It runs install first when install-stamp.json lacks Ollama, Model or OpenWebUI, else waits for Ollama, and records in state.json at once
+# an Ollama app either one started (Save-OllamaRecord). It checks that Ollama has Model.Alias and stops a recorded mcpo this start leaves out. It launches
+# ComfyUI, the image gate and mcpo, restarting an mcpo whose settings changed and waiting for the gate and mcpo at once, then Open WebUI with those that
+# answered. Then it opens the browser and checks ComfyUI. Adds each service it launched to Context.Launched (a List[string]).
+# Returns 0; 2 on warnings; 1 when Open WebUI fails.
 function Start-LocalAI {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'A launcher verb, which offers no -WhatIf.')]
@@ -4394,11 +4395,11 @@ function Start-LocalAI {
     $alias = $settings.Model.Alias
     if ($installed) {
         Write-Host "install-stamp.json does not record $($missing -join ', '), so install runs first."
-        # It records any Ollama app it started at once.
+        # Install records any Ollama app it starts in state.json at once.
         $null = Install-LocalAI -Context $Context -WarningVariable +warned
         $stamp = Read-LocalAIState -Path $paths.InstallStamp
     } else {
-        # install has just done both.
+        # When install ran instead, it has already waited for Ollama and checked its bind.
         $wait = Wait-OllamaServer -Url $url -PassThru -How 'start'
         # Saved before any later step can throw, so stop quits the app this wait started. A server that was down held no model; otherwise the recorded
         # Url and Alias stay until the checks below pass, as stop unloads the alias they name.
@@ -4688,7 +4689,7 @@ function Stop-OllamaApp {
     try {
         $open = Test-OllamaAppWindowOpen -ProcessId $id
     } catch {
-        # As where Add-Type is not allowed; without the windows, neither the check nor the quit can run.
+        # Such as where Add-Type is blocked. Without the window list, neither the check nor the quit can run.
         return & $report 'failed' ("Cannot tell whether the Ollama app local-ai started (PID $id) has a window open, so it was not quit: " +
             "$($_.Exception.Message) Quit it from its tray icon.")
     }
@@ -5053,7 +5054,7 @@ function Get-LocalAIServicePlan {
     if ($Settings.Images.Enabled) {
         $comfyUI = $Stamp['ComfyUI']
         if ($comfyUI -isnot [hashtable] -or -not $comfyUI.Python) {
-            # GetFullPath and Combine, unlike the provider and Join-Path, do not refuse a drive this PC does not have now.
+            # GetFullPath and Combine, unlike the provider and Join-Path, accept a drive letter that is not present at the moment.
             $comfyUI = @{ Python = [IO.Path]::Combine([IO.Path]::GetFullPath([string]$Settings.ComfyUI.Dir), '.venv\Scripts\python.exe'); Commit = $null }
         }
         # Only Open WebUI's image keys take it.
@@ -5169,7 +5170,7 @@ function Get-StatusOllamaSection {
             & $add 'info' ("state.json records an Ollama app local-ai started (PID $($App.Pid)), but it no longer runs, or was restarted by an update or by " +
                 'you; local-ai stop drops that record.')
         } elseif ($appState) {
-            # stop goes by the server state.json records, which Ollama.Url no longer names once it changed after the last start.
+            # stop goes by the server state.json records, which differs from Ollama.Url when that setting changed after the last start.
             $quit = if ($appState -eq 'unreadable') { "run 'local-ai stop' from an elevated window to quit it" } else { 'local-ai stop quits it' }
             & $add 'info' "state.json records an Ollama app local-ai started (PID $($App.Pid)) for port $($App.Port) on this PC, not for $Url; $quit."
         }
@@ -5820,7 +5821,7 @@ function Get-StatusLogSection {
 
     $parts = @()
     $comfyDir = if ($Settings) { [string]$Settings.ComfyUI.Dir } elseif ($Stamp['ComfyUI'] -is [hashtable]) { [string]$Stamp['ComfyUI'].Dir } else { '' }
-    # Combine, unlike Join-Path, does not refuse a drive this PC does not have now.
+    # Combine, unlike Join-Path, accepts a drive letter that is not present at the moment.
     if ($comfyDir) { $parts = @(Find-LocalAIFile -Root ([IO.Path]::Combine($comfyDir, 'models')) -Extension '.part') }
     $data.partFiles = @($parts | ForEach-Object { [ordered]@{ path = [string]$_.FullName; bytes = [long]$_.Length } })
     if ($parts.Count -gt 0) {
@@ -6100,7 +6101,7 @@ function Set-LocalAIShortcut {
 
 # For update, once it made another launcher version active: when Shortcuts.Folder holds this install's Start Local AI.lnk, the one that runs the shim
 # local-ai.cmd in the install folder, rewrite the launcher's shortcuts there (Set-LocalAIShortcut) for the launcher Context.RepoRoot and Context.InstallRoot
-# name, so that they match that version, as one that adds Update Local AI. A folder without that shortcut gets none, and one whose Start Local AI runs another
+# name, so that they match that version, such as one that adds Update Local AI. A folder without that shortcut gets none, and one whose Start Local AI runs another
 # local-ai.cmd, such as a git clone's, stays as it is. Returns the text of its warning when reading that shortcut or writing the shortcuts fails, else nothing.
 # update counts that text instead of a -WarningVariable, which would also collect the warnings Get-LocalAIShortcutSpec silences, such as one for ComfyUI.Args.
 function Update-LocalAIShortcut {
@@ -6198,11 +6199,11 @@ function Read-LocalAIConsoleKey {
     return [int]$Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown,AllowCtrlC').VirtualKeyCode
 }
 
-# Keep this console window open until the person at it presses a key, as the pause of local-ai.cmd does, so that the last lines stay readable in a window a
-# Start menu shortcut opened. Waits only when this window can ask (Test-LocalAIConsoleInput), shows what this run prints (Test-LocalAIConsoleOutput), and
-# PowerShell runs without -NonInteractive (Test-LocalAINonInteractive), whose ReadKey would still wait. So a program or a test that redirects the input or
-# reads the output never waits, nor does a powershell.exe -NonInteractive that runs local-ai.ps1 itself; local-ai.cmd starts its PowerShell without
-# -NonInteractive. Keys typed before are dropped first. Returns nothing and never throws.
+# Keep this console window open until the person at it presses a key, as the pause of local-ai.cmd does, so the last lines stay readable in a window a
+# Start menu shortcut opened. Drops the keys typed before. Returns nothing and never throws.
+# It waits only when this window can ask (Test-LocalAIConsoleInput), shows what this run prints (Test-LocalAIConsoleOutput), and PowerShell runs without
+# -NonInteractive (Test-LocalAINonInteractive), under which ReadKey would still wait. So a program or a test that redirects the input or reads the output
+# never waits, nor does a powershell.exe -NonInteractive that runs local-ai.ps1 itself. local-ai.cmd starts its PowerShell without -NonInteractive.
 function Wait-LocalAIConsoleKey {
     [CmdletBinding()]
     param()
@@ -6706,7 +6707,7 @@ function Get-ComfyUIPinDrift {
         $shown = if ($Origin) { $Origin } else { 'none' }
         @{ Setting = 'ComfyUI.Repo'; Pinned = $comfy.Repo; Installed = $Origin; Text = "origin $shown -> $($comfy.Repo)" }
     }
-    # install creates a venv on a uv-managed Python, but keeps one found in place, such as one the earlier scripts made on the Microsoft Store Python.
+    # install creates a venv on a uv-managed Python, but keeps one found in place, such as one made on the Microsoft Store Python.
     $base = Get-VenvBasePython -Venv ([IO.Path]::Combine($Dir, '.venv'))
     if ($base -and $base.Store) {
         @{ Setting = 'ComfyUI.Python'; Pinned = "uv-managed $($comfy.Python)"; Installed = $base.Home; Rebuild = $true
@@ -6716,7 +6717,7 @@ function Get-ComfyUIPinDrift {
         @{ Setting = 'ComfyUI.Ref'; Pinned = $comfy.Ref; Installed = ''; Text = "venv: the requirements of $($comfy.Ref), installed by uv as install does" }
         return
     }
-    # As Install-ComfyUI judges the venv. Combine, unlike Join-Path, does not refuse a drive this PC does not have now.
+    # As Install-ComfyUI judges the venv. Combine, unlike Join-Path, accepts a drive letter that is not present at the moment.
     $constraints = Resolve-RepoPath -Path $comfy.Constraints -RepoRoot $RepoRoot
     $wanted = [ordered]@{
         RequirementsSha256 = (Get-LocalAIFileSha256 -Path ([IO.Path]::Combine($Dir, 'requirements.txt')))
@@ -7436,14 +7437,15 @@ function Write-LocalAIUpdatePlan {
     }
 }
 
-# The update verb, with the PC kept awake: when anything differs from its pin (Get-LocalAIUpdatePlan), show the plan and ask, stop the stack but not Ollama,
-# update each part and, with -Tools, the winget packages; then start the stack to check it, roll Open WebUI back when the new version fails, offer to remove
-# superseded aliases while Ollama still answers, and leave the stack running only when it ran before. Ollama ends as update found it: the app its first wait
-# started, recorded as start records it, is quit again unless the stack runs, also after an early return or a throw. In the run another launcher version
-# handed over to (Context.ActivateLauncher, Get-LauncherActivation), the plan starts with the launcher's change, asked about with the parts, and a yes makes
-# this version active (Enable-LauncherVersion) once the stop and the check for busy programs passed, before any part changes, and without a stop when
-# nothing else differs; the launcher's Start menu shortcuts then follow it (Update-LocalAIShortcut). Context.Warnings count as warnings.
-# Returns 0; 2 when degraded or declined, or when that quit fails; 1 on a failure.
+# The update verb, with the PC kept awake. When anything differs from its pin (Get-LocalAIUpdatePlan), it shows the plan and asks, stops the stack but
+# not Ollama, and updates each part and, with -Tools, the winget packages. Then it starts the stack to check it, rolls Open WebUI back when the new version
+# fails, offers to remove superseded aliases while Ollama still answers, and leaves the stack running only when it ran before.
+# Ollama ends as update found it: the app its first wait started, recorded as start records it, is quit again unless the stack runs, also after an early
+# return or a throw.
+# In a run another launcher version handed over to (Context.ActivateLauncher, Get-LauncherActivation), the plan starts with the launcher's change, asked
+# about with the parts. A yes makes this version active (Enable-LauncherVersion) before any part changes, once the stop and the check for busy programs
+# passed, or without a stop when nothing else differs. The launcher's Start menu shortcuts then follow it (Update-LocalAIShortcut).
+# Context.Warnings count as warnings. Returns 0; 2 when degraded or declined, or when that quit fails; 1 on a failure.
 function Update-LocalAI {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'A launcher verb, which asks through Confirm-LocalAIAction instead of -WhatIf.')]
@@ -7733,7 +7735,7 @@ function Update-LocalAI {
                 }
                 $failure = if ($failure) { "$failure $why" } else { $why }
             } elseif ($webChange) {
-                # Only now, so a failed update never loses an older backup, and never the one it made.
+                # Pruned only here, once the check passed, so a failed update never loses an older backup or the one it made.
                 foreach ($removed in @(Remove-OldOpenWebUIBackup -BackupRoot $paths.Backups -Keep $settings.Update.KeepBackups -Current $webChange.Backup -WarningVariable +warned)) {
                     Write-Host "Deleted the older backup $removed, as Update.KeepBackups keeps $($settings.Update.KeepBackups)."
                 }
@@ -7986,7 +7988,7 @@ function Get-LocalAIUninstallPlan {
     )
     $items = New-Object System.Collections.Generic.List[hashtable]
     $kept = New-Object System.Collections.Generic.List[string]
-    # Combine, unlike Join-Path, does not refuse a drive this PC does not have now, such as an unplugged disk.
+    # Combine, unlike Join-Path, accepts a drive letter that is not present at the moment, such as an unplugged disk.
     $folder = [string]$Settings.Shortcuts.Folder
     if ($folder -match '^[A-Za-z]:\\') {
         $folder = Resolve-FolderPath -Path $folder
@@ -7996,8 +7998,8 @@ function Get-LocalAIUninstallPlan {
         $kept.Add("the shortcuts: Shortcuts.Folder '$folder' is not a full path on a drive letter.")
     }
 
-    # Only a tool whose install-stamp.json entry exists, in the folder it records; an older entry without one is looked for beside mcpo, which install
-    # puts beside open-webui, then where uv puts tools now.
+    # Only a tool that has an install-stamp.json entry counts, looked for in the folder that entry records. An entry that records no folder is looked for
+    # beside mcpo, which install puts beside open-webui, then in uv's tool folder (Get-UvToolDir).
     $web = if ($Stamp['OpenWebUI'] -is [hashtable]) { $Stamp['OpenWebUI'] } else { $null }
     $files = if ($Stamp['Files'] -is [hashtable]) { $Stamp['Files'] } else { $null }
     $uvDir = $null
@@ -8278,7 +8280,7 @@ function Uninstall-LocalAI {
         if ($data.Count -gt 0 -and -not (Confirm-LocalAIAction -Question 'Delete these folders and everything in them? This cannot be undone.' -Word 'delete')) {
             Write-Host 'The data folders stay.' -ForegroundColor Yellow
             $data = @()
-            # Kept by the answer, so the refusals no longer matter.
+            # The answer keeps every data folder, so the folders -RemoveData refused need no mention.
             $refused.Clear()
         }
     }
@@ -8390,7 +8392,7 @@ function Uninstall-LocalAI {
             Remove-LocalAIFolder -Path $item.Path
             Write-Host "Deleted $($item.Path)."
             if ($item.Root -and $keptApp) {
-                # Its record went with state.json, so 'local-ai stop' can no longer quit it.
+                # -RemoveData deleted state.json with the app's record, so 'local-ai stop' cannot quit it.
                 Write-Host ("local-ai no longer tracks the Ollama app it started (PID $($keptApp.Pid)), which keeps running; quit it from its tray icon once " +
                     'you are done with it.') -ForegroundColor Yellow
             }
@@ -8413,7 +8415,7 @@ function Uninstall-LocalAI {
                 Write-Host "Could not remove $($launcher.Root) from your user Path: $($_.Exception.Message)" -ForegroundColor Red
             }
             if ($removed) {
-                # The entry is gone already, so only windows that run now miss the news.
+                # The entry is removed already, so a failed notice only leaves running programs with the old Path, and merely warns.
                 try {
                     Send-LauncherSettingChange
                 } catch {
@@ -9437,9 +9439,9 @@ function Invoke-LauncherChild {
     $powershell = [IO.Path]::Combine($env:SystemRoot, 'System32\WindowsPowerShell\v1.0\powershell.exe')
     $passed = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', $Script) + @($ArgumentList)
     $line = @($passed | ForEach-Object { ConvertTo-NativeArgument -Argument $_ -Quote }) -join ' '
-    # Without PSModulePath, which Windows PowerShell then builds itself: one PowerShell 7 handed on names its own modules first, which Windows
-    # PowerShell cannot load, so it would lack Get-FileHash. No -Wait, which in 5.1 also waits for every process the child leaves running, such as
-    # the Ollama app.
+    # Clear PSModulePath, so Windows PowerShell builds its own. The one PowerShell 7 hands on lists its own modules first, which Windows PowerShell
+    # cannot load, so the child would lack Get-FileHash. No -Wait: in 5.1 it also waits for every process the child leaves running, such as the
+    # Ollama app.
     $savedModulePath = $env:PSModulePath
     try {
         $env:PSModulePath = $null
@@ -9447,7 +9449,7 @@ function Invoke-LauncherChild {
     } finally {
         $env:PSModulePath = $savedModulePath
     }
-    # 5.1 reports no ExitCode unless the handle was opened while the process ran.
+    # Windows PowerShell 5.1 reports no ExitCode unless the handle was opened while the process ran.
     $null = $process.Handle
     $process.WaitForExit()
     return [int]$process.ExitCode
@@ -9647,9 +9649,9 @@ function Enable-LauncherVersion {
 }
 
 # update -Rollback, which asks GitHub nothing itself: go back to the launcher version state.json records as Launcher.Previous, when its folder in versions
-# matches its manifest. Warns that Open WebUI may meet data the newer version migrated, asks for the typed word rollback and hands over to its update (update
-# -ActivateLauncher <tag>) while current still names this version. So that run's plan starts with 'Launcher: <this> -> <tag>', and only its yes, once its
-# settings loaded, the parts were checked and what runs was stopped, points current back (Enable-LauncherVersion) and brings the parts back to its pins.
+# matches its manifest. Warns that Open WebUI may meet data the newer version migrated, asks for the typed word rollback, and hands over to that version's
+# update (update -ActivateLauncher <tag>) while current still names this version. That run's plan starts with 'Launcher: <this> -> <tag>'. Only its yes
+# points current back (Enable-LauncherVersion) and brings the parts back to its pins, once its settings loaded, the parts were checked and what runs stopped.
 # Returns that run's exit code; 2 when declined; 1 when this is no release install or there is no version to go back to.
 function Invoke-LauncherRollback {
     [CmdletBinding()]
@@ -10016,12 +10018,13 @@ function Get-LocalAIVerb {
     }
 }
 
-# Run one launcher verb under the single-instance lock, as its Lock says, with a transcript (Root\logs, or %TEMP% for status and uninstall), calling
-# its module function with a context table; first refuse it, unless its Redirected is Warn, when $LocalAppData or the known folder $ShellLocalAppData is
-# redirected into an app package's store, or Root has a private copy there. update starts with the launcher's own release (Invoke-LauncherSelfUpdate, or
-# Invoke-LauncherRollback with -Rollback), which may hand the run over to another version; -ActivateLauncher <tag> marks the run handed over to. After start,
-# Invoke-LauncherPassiveCheck; when that printed that a newer launcher is out and start ends with 0, Wait-LocalAIConsoleKey once the transcript has stopped
-# and the lock is released. Prints any error with its stack and the transcript path, as one JSON line with -Json. Returns 0, 1 or 2 (degraded).
+# Run one launcher verb: call its module function with a context table, under the single-instance lock as its Lock says, with a transcript in Root\logs,
+# or in %TEMP% for status and uninstall. Unless its Redirected is Warn, the verb is refused first when $LocalAppData or the known folder $ShellLocalAppData
+# is redirected into an app package's store, or Root has a private copy there. update starts with the launcher's own release (Invoke-LauncherSelfUpdate, or
+# Invoke-LauncherRollback with -Rollback), which may hand the run over to another version; -ActivateLauncher <tag> marks the run handed over to.
+# Invoke-LauncherPassiveCheck follows start. When that printed that a newer launcher is out and start ends with 0, Wait-LocalAIConsoleKey runs once the
+# transcript has stopped and the lock is released. Prints any error with its stack and the transcript path, as one JSON line with -Json.
+# Returns 0, 1 or 2 (degraded).
 function Invoke-LocalAI {
     [CmdletBinding()]
     [OutputType([int])]
@@ -10116,8 +10119,8 @@ function Invoke-LocalAI {
             $null = [IO.Directory]::CreateDirectory($logDir)
         }
         $transcript = Join-Path $logDir ('{0}-{1:yyyyMMdd-HHmmss-fff}-{2}.log' -f $prefix, (Get-Date), $Verb)
-        # The newest 20 per verb stay, so frequent status runs never push out the transcript of an install or update. The earlier
-        # ones are pruned to 19 before this run's starts, as Start-Transcript may create its file only once it first writes.
+        # The newest 20 per verb stay, so frequent status runs never push out the transcript of an install or update. Older ones are
+        # pruned to 19 before this run's transcript starts, as Start-Transcript may create its file only when it first writes.
         Remove-OldLogs -Directory $logDir -Filter "$prefix-*-$Verb.log" -KeepCount 19
         $null = Start-Transcript -LiteralPath $transcript
         $hold.Transcribing = $true
@@ -10202,7 +10205,7 @@ function Invoke-LocalAI {
         Exit-LocalAILock -Mutex $hold.Mutex
     }
     # Reached only when start printed that a newer launcher is out and ends with 0, which local-ai.cmd does not pause after: the window a Start menu shortcut
-    # opened stays open to read that line. Only now, so that no other run waits for the lock while this one waits for a key.
+    # opened stays open to read that line. It waits only here, after the lock is released, so no other run waits for the lock while this one waits for a key.
     Wait-LocalAIConsoleKey
     return $code
 }
