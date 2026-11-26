@@ -65,7 +65,7 @@ head_of() {
     STUB_GITLEAKS_BLIND=1 scan_event EVENT=pull_request BASE="$BASE" HEAD="$(head_of)"
     [ "$status" -eq 1 ]
     [[ $stderr == *"the gitleaks control found nothing, so gitleaks would miss a committed token"* ]]
-    # A kind of an enabled pack that the control has no sample of.
+    # Give an enabled pack a kind that the control has no sample of.
     printf 'made-up-kind|zz[0-9]{9}zz|\n' >> "$REPO/.githooks/rules/base"
     scan_event EVENT=pull_request BASE="$BASE" HEAD="$(head_of)"
     [ "$status" -eq 1 ]

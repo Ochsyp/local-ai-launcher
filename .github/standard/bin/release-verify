@@ -3,15 +3,16 @@
 # here. The verify job of release.yml (spec 3.5): it checks a published release and changes
 # nothing, neither on GitHub nor in the registry.
 #   release-verify --tag vX.Y.Z [--public]
-# Release: published, not a draft, immutable, drafted by github-actions[bot]. Assets: SHA256SUMS
-# lists exactly the assets and matches them. Archive kinds: the RELEASE_MANIFEST in the archive
-# has schema 1 and names the name, version, tag and the tag's commit, and every RELEASE_ASSETS
-# file equals its archive member. Image kind: image.json names the same, and the tag X.Y.Z
-# resolves to its digest. GitHub's checks: gh release verify, and gh release verify-asset for
-# each asset. --public, for a public repository: gh attestation verify of each asset, or of the
-# image digest, made by this repository's release.yml on refs/heads/main from the tag's commit
-# on a GitHub-hosted runner. Last, ci/release-verify, when present, with --tag and --assets DIR.
-# Reads the config of the checkout and GITHUB_REPOSITORY; gh reads GH_TOKEN.
+# The release must be published, not a draft, immutable, and drafted by github-actions[bot].
+# SHA256SUMS must list exactly the assets and match them. Archive kinds: the RELEASE_MANIFEST in
+# the archive has schema 1 and names the name, version, tag and the tag's commit, and every
+# RELEASE_ASSETS file equals its archive member. Image kind: image.json names the same, and the
+# tag X.Y.Z resolves to its digest. GitHub's checks follow: gh release verify, and gh release
+# verify-asset for each asset. --public, for a public repository, adds gh attestation verify of
+# each asset, or of the image digest. The attestation must come from this repository's
+# release.yml on refs/heads/main, from the tag's commit, on a GitHub-hosted runner. Last,
+# ci/release-verify runs, when present, with --tag and --assets DIR.
+# It reads the config of the checkout and GITHUB_REPOSITORY; gh reads GH_TOKEN.
 # Exit 0; 1 after one error per problem; 64 usage.
 set -euo pipefail
 shopt -s nullglob

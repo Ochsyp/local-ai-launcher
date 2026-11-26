@@ -199,8 +199,8 @@ control.
 ## Automated checks
 
 - **Secret scan.** The `secret-scan` workflow runs gitleaks (MIT, pinned by version and SHA-256,
-  always with its default rules) and this repository's rule packs over the commits of each pull
-  request and each push to `main`, and over the whole history every Monday and when run by hand.
+  always with its default rules) and this repository's rule packs. It scans the commits of each
+  pull request and each push to `main`, and the whole history every Monday and when run by hand.
   Positive controls run first, so a scanner that finds nothing fails. Findings are redacted.
   GitHub's secret scanning and push protection are on as well. GitHub turns the Monday run off
   after 60 days without activity in this repository.

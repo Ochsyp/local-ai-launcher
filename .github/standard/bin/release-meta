@@ -1,17 +1,17 @@
 #!/bin/bash
 # release-meta of the repository standard: the same file in every repository; never edit it
 # here. Checks that VERSION, CHANGELOG.md and the release tags agree (spec 3.8 and 3.9), and
-# prints version=, latest= and state= lines for CI. The release checks that came before the
-# standard, with the launcher's version rules and the -dev rule.
+# prints version=, latest= and state= lines for CI. It applies the launcher's version rules and
+# the -dev rule.
 #   release-meta check [--event EVENT] [--release vX.Y.Z] [--root DIR]
 #   release-meta notes X.Y.Z [--root DIR]
 # check reads the vX.Y.Z tags on stdin, one per line; other tags are ignored. The state is
 # unreleased (X.Y.Z-dev above every tag, or 0.0.0 before the first release), pending (a plain
 # VERSION above every tag) or released (VERSION is the newest tag). On --event pull_request, a
-# VERSION that the pull request changes (against BASE, its base commit) must rise and its tag must
-# not exist, and a pending release is only a notice. Elsewhere a pending release leaves
-# [Unreleased] empty. --release vX.Y.Z also requires that release: its tag on stdin, VERSION equal
-# to it, an empty [Unreleased] and notes. notes prints the body of a version's section.
+# VERSION that the pull request changes (against BASE, its base commit) must rise, and its tag
+# must not exist. There a pending release is only a notice; elsewhere it needs [Unreleased] empty.
+# --release vX.Y.Z also requires that release: its tag on stdin, VERSION equal to it, an empty
+# [Unreleased] and notes. notes prints the body of a version's section.
 # GITHUB_REPOSITORY, when set, is the owner/repo the links must name. RELEASE_META_TODAY replaces
 # today in tests. DIR defaults to the top of the repository that holds this script.
 # Exit 0; 1 after one stderr line per problem; 64 usage.

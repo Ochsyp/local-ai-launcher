@@ -1,12 +1,13 @@
 #!/bin/bash
 # release-build of the repository standard: the same file in every repository; never edit it
 # here. The build and dry-run jobs of release.yml, and the last step of image.yml (spec 3.5).
-# Archive kinds (zip, tar, stack): ci/release-build when the repository has one, else the generic
-# archive, git archive of HEAD with the RELEASE_MANIFEST added through --add-file, under TZ=UTC.
-# Then ci/release-check, when present, with --archive FILE --version X.Y.Z. Then each
-# RELEASE_ASSETS file comes out of the archive as an asset of its own; one that a hook already
-# wrote must equal its archive member byte for byte. SHA256SUMS is written, or, when a hook wrote
-# one, it must list exactly the assets. Last, notes.md gets the version's CHANGELOG section.
+# Archive kinds (zip, tar, stack): ci/release-build builds the archive when the repository has
+# one. Otherwise the build is the generic archive: git archive of HEAD under TZ=UTC, with the
+# RELEASE_MANIFEST added through --add-file. Then ci/release-check, when present, runs with
+# --archive FILE --version X.Y.Z. Then each RELEASE_ASSETS file comes out of the archive as an
+# asset of its own. An asset that a hook already wrote must equal its archive member byte for
+# byte. When a hook wrote SHA256SUMS, it must list exactly the assets; otherwise the build writes
+# it. Last, notes.md gets the version's CHANGELOG section.
 # --dry-run builds twice and compares every file. A real build refuses any ref but main.
 # The image kind (--image, in image.yml) writes image.json (schema 1) for the pushed digest,
 # SHA256SUMS and notes.md.
@@ -143,7 +144,8 @@ for asset in "${assets[@]}"; do
     seen[$base]=1
 done
 
-# The generic archive of HEAD in the folder $1, with the release manifest added under the prefix.
+# Write the generic archive of HEAD into the folder $1, with the release manifest added under
+# the prefix.
 generic_archive() {
     local format=tar.gz
     [[ $kind != zip ]] || format=zip

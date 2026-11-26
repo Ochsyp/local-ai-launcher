@@ -95,7 +95,7 @@ check_sums() {
     fi
 }
 
-# The archive comes on stdin, so no path with a colon reads as a tape host to tar.
+# tar reads the archive on stdin, so it never takes a path with a colon for a remote tape host.
 extract() {
     case $1 in
         *.zip) unzip -p "$1" "$2" ;;
@@ -113,8 +113,8 @@ json_value() {
 
 # Run ci/NAME with ARGS when it exists, then ci/NAME.ps1 with ARGS under Windows PowerShell 5.1,
 # as spec 2.6 sets it: -NoProfile -ExecutionPolicy Bypass, with TEMP and TMP set to RUNNER_TEMP.
-# Return the first failing status, or 0; a .ps1 off Windows dies. POWERSHELL names the
-# PowerShell to run (default powershell.exe).
+# Return the first failing status, or 0. Off Windows, a ci/NAME.ps1 ends the tool with an error.
+# POWERSHELL names the PowerShell to run (default powershell.exe).
 run_hook() {
     local name=$1 temp
     shift

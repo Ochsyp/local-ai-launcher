@@ -1,7 +1,7 @@
 #!/bin/bash
 # release-promote of the repository standard: the same file in every repository; never edit it
-# here. The promote job of release.yml, image kind only (spec 3.5). It builds nothing: it gives
-# the digest that a release names its tags, with docker buildx imagetools create.
+# here. The promote job of release.yml, image kind only (spec 3.5). It builds nothing. With
+# docker buildx imagetools create, it tags the digest that a release names.
 #   release-promote --tag vX.Y.Z          after a release is published or edited, and on a
 #                                         dispatch on main that repairs the tags
 #   release-promote --rehearse --dir DIR  the rehearsal: DIR/image.json of the build
@@ -9,8 +9,8 @@
 # digest X.Y.Z, and points latest at the image.json digest of the newest published release that is
 # not a pre-release, so ticking "Set as a pre-release" moves latest back. --rehearse tags the digest
 # in DIR/image.json "rehearsal" and nothing else. docker logs in to ghcr.io as GITHUB_ACTOR with
-# GH_TOKEN on stdin. Each tag must resolve to its digest afterwards. The image is ghcr.io/ and
-# GITHUB_REPOSITORY in lower case.
+# GH_TOKEN on stdin. Each tag must resolve to its digest afterwards. The image is ghcr.io/
+# followed by GITHUB_REPOSITORY in lower case.
 # Exit 0; 1 a failed step; 64 usage.
 set -euo pipefail
 here=$(CDPATH='' cd -- "${BASH_SOURCE[0]%/*}" && pwd)
@@ -47,7 +47,7 @@ umask 077
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/release-promote.XXXXXX") || die "cannot create a temp folder"
 trap 'rm -rf -- "$tmp"' EXIT
 
-# The digest that the image.json at $1 names.
+# Print the digest that the image.json at $1 names; fail unless it is a sha256 digest.
 digest_of() {
     local digest
     digest=$(json_value "$1" digest) || return 1
@@ -55,7 +55,8 @@ digest_of() {
     printf '%s\n' "$digest"
 }
 
-# The digest of the release $1: its image.json, checked against the release's own record.
+# Print the digest of the release $1 from its image.json, once the file matches the release's
+# own record of its assets.
 release_digest() {
     local folder=$tmp/$1
     mkdir -p "$folder"

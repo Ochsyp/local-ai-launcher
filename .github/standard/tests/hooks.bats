@@ -922,8 +922,8 @@ refs/heads/feat/example $(git -C "$REPO" rev-parse HEAD) refs/heads/feat/example
     refute_term_shown
 }
 
-# Bug 12: a loop per staged file took minutes on Windows. The engine runs a fixed number of
-# processes, so git and grep run as often for 50 staged files as for one.
+# The engine runs a fixed number of processes, so git and grep run as often for 50 staged files
+# as for one. A loop per staged file would take minutes on Windows (bug 12).
 @test "pre-commit runs git and grep as often for 50 staged files as for one" {
     local i one many
     make_repo

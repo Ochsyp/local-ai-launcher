@@ -1,10 +1,11 @@
 # standard:begin dependabot
 # Dependabot. The workflows here are copies from the repository standard, so their actions move
 # only with a standard release: the github-actions entry below opens no version updates
-# (open-pull-requests-limit: 0), and repo-standard takes them. Every other entry is this
-# repository's own: grouped, so it has at most one pull request open, with a cooldown of at least
-# 7 days (security updates skip it; an image the owner publishes may be excluded, because the
-# owner's publish is its gate), committing as chore(deps), or as ci for what only CI uses.
+# (open-pull-requests-limit: 0), and repo-standard takes them.
+# Every other entry is this repository's own. It is grouped, so it has at most one pull request
+# open, and commits as chore(deps), or as ci for what only CI uses. Its cooldown is at least 7 days;
+# security updates skip it, and an image the owner publishes may be excluded, since the owner's
+# publish is its gate.
 version: 2
 updates:
 # standard:end dependabot

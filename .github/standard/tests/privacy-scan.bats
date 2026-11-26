@@ -138,17 +138,17 @@ synthetic() {
     [ -z "$stderr" ]
 }
 
-@test "a label that only starts with lan, local, internal, home.arpa or ts.net is no host name" {
+@test "a label that only starts with local is no host name; one after lan, internal, home.arpa or ts.net still hits" {
     local hit
     make_repo
     git -C "$REPO" switch -q -c feat/example
     commit_config PRIVACY_RULES=base
     {
         printf 'dir x.%s-tools-old\n' local                   # 1 passes
-        printf 'dir y.%s-backup\n' lan                        # 2 passes
-        printf 'dir z.%s-tools\n' internal                    # 3 passes
-        printf 'dir n.home.%s-old\n' arpa                     # 4 passes
-        printf 'dir t.ts.%s-x\n' net                          # 5 passes
+        printf 'dir y.%s-backup\n' lan                        # 2 host-name
+        printf 'dir z.%s-tools\n' internal                    # 3 host-name
+        printf 'dir n.home.%s-old\n' arpa                     # 4 host-name
+        printf 'dir t.ts.%s-x\n' net                          # 5 host-name
         printf 'dir X.%s-AI-OLD\n' LOCAL                      # 6 passes
         printf 'host example-nas.%s-ai.%s\n' local lan        # 7 passes
         printf 'host h.%s\n' local                            # 8 host-name
@@ -162,7 +162,16 @@ synthetic() {
     git -C "$REPO" add hosts.txt
     scan --staged
     [ "$status" -eq 1 ]
-    for hit in 8 9 10 11 12 13 14; do [[ $stderr == *"hosts.txt:$hit: host-name"* ]]; done
+    for hit in 2 3 4 5 8 9 10 11 12 13 14; do [[ $stderr == *"hosts.txt:$hit: host-name"* ]]; done
+    [ "$(grep -c '^privacy-scan: .*: [a-z0-9-]*$' <<< "$stderr")" -eq 11 ]
+    # After the other suffixes, the hit is the host name alone, as in 1.0.1, so an exemption
+    # written for it fits. The scan reads the config from HEAD, so it is committed apart.
+    git -C "$REPO" reset -q -- hosts.txt
+    commit_config PRIVACY_RULES=base "$(printf 'PRIVACY_ALLOW=host-name ^hosts\\.txt$ ^(y\\.%s|z\\.%s|n\\.home\\.%s|t\\.ts\\.%s)$' lan internal arpa net)"
+    git -C "$REPO" add hosts.txt
+    scan --staged
+    [ "$status" -eq 1 ]
+    for hit in 2 3 4 5; do [[ $stderr != *"hosts.txt:$hit: host-name"* ]]; done
     [ "$(grep -c '^privacy-scan: .*: [a-z0-9-]*$' <<< "$stderr")" -eq 7 ]
 }
 
@@ -330,6 +339,8 @@ synthetic() {
     scan --history
     [ "$status" -eq 1 ] || { printf 'exit %s\n' "$status" >&2; return 1; }
     [[ $stderr == *": denylist"* ]]
+    # No record can accept a denylist term, so the scan names no commit for one.
+    [[ $stderr != *"brought in"* && $stderr != *"PRIVACY_HISTORY_ACCEPT"* ]]
 }
 
 @test "a PRIVACY_ALLOW line for the empty path does not exempt a blob that a tag names directly" {
@@ -450,6 +461,143 @@ synthetic() {
     scan --history
     [ "$status" -eq 1 ]
     [[ $stderr == *"hosts.txt:2: host-name"* ]]
+}
+
+# Commit what is staged in $REPO with the hooks off, and print the new commit's full SHA.
+commit_off() {
+    git -C "$REPO" -c core.hooksPath=no-hooks commit -q -m "$1"
+    git -C "$REPO" rev-parse HEAD
+}
+
+@test "--history names the commits that brought in each version behind a file finding" {
+    local c1 c2 c3 c v
+    make_repo
+    git -C "$REPO" switch -q -c feat/example
+    commit_config PRIVACY_RULES=base
+    stage notes.txt "$(printf 'mail someone@%s' example.de)"
+    c1=$(commit_off "docs: notes")
+    printf 'more\n' >> "$REPO/notes.txt"
+    git -C "$REPO" add notes.txt
+    c2=$(commit_off "docs: more notes")
+    printf 'end\n' >> "$REPO/notes.txt"
+    git -C "$REPO" add notes.txt
+    c3=$(commit_off "docs: end of the notes")
+    scan --history
+    [ "$status" -eq 1 ]
+    [ "$(grep -c -F 'privacy-scan: notes.txt:1: e-mail' <<< "$stderr")" -eq 1 ]
+    for c in "$c1" "$c2" "$c3"; do
+        v=$(git -C "$REPO" rev-parse "$c:notes.txt")
+        [[ $stderr == *"privacy-scan:   in version ${v:0:12}, brought in by commit $c"$'\n'* ]]
+    done
+    [ "$(grep -c 'brought in by' <<< "$stderr")" -eq 3 ]
+    # Each finding line ends in ": KIND": tools/status takes the kind from there.
+    [ "$(sed -n 's/^privacy-scan: .*: \([a-z0-9-]*\)$/\1/p' <<< "$stderr" | sort -u)" = e-mail ]
+    [[ $stderr != *"someone@"* ]]
+    # Only the history scan names commits.
+    scan --range HEAD
+    [ "$status" -eq 1 ]
+    [[ $stderr != *"brought in by"* ]]
+    scan --tracked
+    [ "$status" -eq 1 ]
+    [[ $stderr != *"brought in by"* ]]
+}
+
+@test "--history names both commits of a version a revert brings back, and their records accept it" {
+    local c1 c3 v accept=()
+    make_repo
+    git -C "$REPO" switch -q -c feat/example
+    commit_config PRIVACY_RULES=base
+    stage notes.txt "$(printf 'mail someone@%s' example.de)"
+    c1=$(commit_off "docs: notes")
+    stage notes.txt 'synthetic notes'
+    commit_off "docs: clean the notes" > /dev/null
+    git -C "$REPO" -c core.hooksPath=no-hooks revert --no-edit HEAD > /dev/null
+    c3=$(git -C "$REPO" rev-parse HEAD)
+    v=$(git -C "$REPO" rev-parse "$c1:notes.txt")
+    [ "$(git -C "$REPO" rev-parse "$c3:notes.txt")" = "$v" ]
+    scan --history
+    [ "$status" -eq 1 ]
+    [[ $stderr == *"privacy-scan:   in version ${v:0:12}, brought in by commit $c3 $c1"$'\n'* ]]
+    # Records for exactly the commits it names make the history scan pass.
+    while read -r c; do
+        accept+=("PRIVACY_HISTORY_ACCEPT=$c e-mail")
+    done < <(sed -n 's/^privacy-scan:   in version [0-9a-f]*, brought in by commit //p' <<< "$stderr" | tr ' ' '\n')
+    [ "${#accept[@]}" -eq 2 ]
+    commit_config PRIVACY_RULES=base "${accept[@]}"
+    scan --history
+    [ "$status" -eq 0 ] || { printf '%s\n' "$stderr" >&2; return 1; }
+}
+
+@test "--history names the commits in HEAD first, and marks those outside it, which secret-scan refuses" {
+    local t1 t2 m1 v1 v2
+    make_repo
+    git -C "$REPO" switch -q -c feat/example
+    commit_config PRIVACY_RULES=base
+    # A topic branch brings in a version, and a squash brings the same version into HEAD.
+    git -C "$REPO" switch -q -c feat/topic
+    stage notes.txt "$(printf 'mail someone@%s' example.de)"
+    t1=$(commit_off "docs: notes on the topic")
+    printf 'more\n' >> "$REPO/notes.txt"
+    git -C "$REPO" add notes.txt
+    t2=$(commit_off "docs: more notes on the topic")
+    git -C "$REPO" switch -q feat/example
+    stage notes.txt "$(printf 'mail someone@%s' example.de)"
+    m1=$(commit_off "docs: notes")
+    v1=$(git -C "$REPO" rev-parse "$m1:notes.txt")
+    v2=$(git -C "$REPO" rev-parse "$t2:notes.txt")
+    scan --history
+    [ "$status" -eq 1 ]
+    [[ $stderr == *"privacy-scan:   in version ${v1:0:12}, brought in by commit $m1, and outside HEAD by commit $t1"$'\n'* ]]
+    [[ $stderr == *"privacy-scan:   in version ${v2:0:12}, brought in outside HEAD only, by commit $t2"$'\n'* ]]
+    [[ $stderr == *"pick a commit that the base branch holds"* ]]
+}
+
+@test "--history names commits under a hidden path name, and shows neither the name nor a value" {
+    local c v
+    make_repo
+    git -C "$REPO" switch -q -c feat/example
+    commit_config PRIVACY_RULES=base
+    stage "$(printf 'someone@%s.txt' example.de)" "$(printf 'mail other@%s' example.de)"
+    c=$(commit_off "docs: a file with a bad name")
+    v=$(git -C "$REPO" rev-parse "$c:$(printf 'someone@%s.txt' example.de)")
+    scan --history
+    [ "$status" -eq 1 ]
+    [[ $stderr == *"path name "*" of the scanned paths:1: e-mail"* ]]
+    [[ $stderr == *"privacy-scan:   in version ${v:0:12}, brought in by commit $c"* ]]
+    [[ $stderr != *"someone@"* && $stderr != *"other@"* ]]
+}
+
+@test "--history says when no commit can accept a version: a blob that only a ref or a merge brings in" {
+    local blob v
+    make_repo
+    git -C "$REPO" switch -q -c feat/example
+    commit_config PRIVACY_RULES=base
+    blob=$(printf 'mail someone@%s\n' example.de | git -C "$REPO" hash-object -w --stdin)
+    git -C "$REPO" tag example-blob "$blob"
+    # Two branches change one line, and the merge resolves it to a third text that holds a value.
+    stage notes.txt 'base'
+    commit_off "docs: notes" > /dev/null
+    git -C "$REPO" switch -q -c feat/other
+    stage notes.txt 'other'
+    commit_off "docs: other notes" > /dev/null
+    git -C "$REPO" switch -q feat/example
+    stage notes.txt 'ours'
+    commit_off "docs: our notes" > /dev/null
+    git -C "$REPO" -c core.hooksPath=no-hooks merge -q --no-edit feat/other > /dev/null 2>&1 || true
+    stage notes.txt "$(printf 'home /%s/someone' home)"
+    git -C "$REPO" -c core.hooksPath=no-hooks commit -q --no-edit
+    v=$(git -C "$REPO" rev-parse HEAD:notes.txt)
+    scan --history
+    [ "$status" -eq 1 ]
+    [[ $stderr == *"privacy-scan: blob ${blob:0:12}, line 1: e-mail"* ]]
+    [[ $stderr == *"privacy-scan:   in version ${blob:0:12}, brought in by no commit that a PRIVACY_HISTORY_ACCEPT record can name"* ]]
+    [[ $stderr == *"privacy-scan: notes.txt:1: home-path"* ]]
+    [[ $stderr == *"privacy-scan:   in version ${v:0:12}, brought in by no commit that a PRIVACY_HISTORY_ACCEPT record can name"* ]]
+    # As the message says, a record for the merge itself does not accept that version.
+    commit_config PRIVACY_RULES=base "PRIVACY_HISTORY_ACCEPT=$(git -C "$REPO" rev-parse HEAD) home-path"
+    scan --history
+    [ "$status" -eq 1 ]
+    [[ $stderr == *"privacy-scan: notes.txt:1: home-path"* ]]
 }
 
 @test "a fullwidth at sign, a mixed fat-serial line and stdin are checked too" {
@@ -620,7 +768,7 @@ STUB
         GH_TOKEN=synthetic-token-value sh -c 'cd "$1" && exec bash .github/standard/bin/pr-title 7' sh "$REPO"
     [ "$status" -eq 1 ]
     [[ $(cat "$STUB_LOG") == *"repos/example-owner/example/pulls/7"* ]]
-    # Renamed in the browser, then the job runs again.
+    # The pull request is renamed in the browser, and the job runs again.
     printf 'feat: add a mode\n' > "$BATS_TEST_TMPDIR/title"
     run --separate-stderr env PATH="$STUB_BIN:$PATH" GITHUB_REPOSITORY=example-owner/example \
         GH_TOKEN=synthetic-token-value sh -c 'cd "$1" && exec bash .github/standard/bin/pr-title 7' sh "$REPO"

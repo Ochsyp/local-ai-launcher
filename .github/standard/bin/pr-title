@@ -1,8 +1,8 @@
 #!/bin/bash
 # pr-title of the repository standard: the same file in every repository; never edit it here.
-# In CI on a pull request: reads the pull request's current title and body through the API, so
-# a run after a rename in the browser sees the new title, and checks them with pr-text. Reads
-# GH_TOKEN and GITHUB_REPOSITORY. It never prints the title, the body or the token.
+# In CI on a pull request, reads the pull request's current title and body through the API and
+# checks them with pr-text. Through the API, a run after a rename in the browser sees the new
+# title. Reads GH_TOKEN and GITHUB_REPOSITORY. It never prints the title, the body or the token.
 #   pr-title PR_NUMBER
 # Exit 0 clean; 1 refused; 2 when a check cannot run; 64 usage.
 set -euo pipefail

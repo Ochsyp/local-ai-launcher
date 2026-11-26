@@ -131,32 +131,40 @@ guard_blob_size_staged() {
     esac
 }
 
-# Run standard-check --staged when the commit stages a path of the standard: a path that the
-# staged MANIFEST lists, anything under .githooks/, .github/standard/ or .github/workflows/, or
-# .github/standard.conf. Only in a repository that uses the standard (ROLE=consumer): without a
-# staged MANIFEST the repository has not adopted it yet, and repo-standard itself (ROLE=source)
-# changes its canonical files between releases. Call after std_load_config.
+# Run standard-check --staged when the commit stages a path of the standard. Without a staged
+# MANIFEST it does nothing: the repository has not adopted the standard yet. In a repository that
+# uses the standard (ROLE=consumer), such a path is one the staged MANIFEST lists, anything under
+# .githooks/, .github/standard/ or .github/workflows/, or .github/standard.conf. In repo-standard
+# (ROLE=source), which changes its canonical files between releases, it is a body in blocks/, a
+# document that the staged MANIFEST names a block of, or .github/standard.conf, since the config
+# selects the variants of its own blocks. Call after std_load_config.
 guard_vendored_staged() {
-    [ "$cfg_role" = consumer ] || return 0
+    case $cfg_role in
+        consumer | source) ;;
+        *) return 0 ;;
+    esac
     git cat-file -e :0:.github/standard/MANIFEST 2> /dev/null || return 0
     git cat-file blob :0:.github/standard/MANIFEST > "$std_tmp/manifest" ||
         std_fail "cannot read the staged .github/standard/MANIFEST"
     git -c core.quotePath=false diff --cached --name-only --no-renames > "$std_tmp/staged" ||
         std_fail "cannot list the staged files"
-    awk -v manifest="$std_tmp/manifest" '
+    ROLE=$cfg_role awk -v manifest="$std_tmp/manifest" '
         BEGIN {
+            source = ENVIRON["ROLE"] == "source"
             while ((getline line < manifest) > 0) {
                 if (split(line, f, " ") >= 5 && (f[1] == "file" || f[1] == "block")) {
+                    if (source && f[1] != "block") continue
                     sub(/#.*/, "", f[5])
                     listed[f[5]] = 1
                 }
             }
         }
-        $0 in listed || /^\.githooks\// || /^\.github\/standard\// || /^\.github\/workflows\// ||
-            $0 == ".github/standard.conf" { found = 1 }
+        $0 in listed || $0 == ".github/standard.conf" { found = 1 }
+        source && /^blocks\// { found = 1 }
+        !source && (/^\.githooks\// || /^\.github\/standard\// || /^\.github\/workflows\//) { found = 1 }
         END { exit !found }' "$std_tmp/staged" || return 0
-    # standard-check names the paths of the standard's folders that the index holds, also those
-    # a commit made with the hooks off brought in. Their names go through the scan first, so that
+    # standard-check names every path of the standard's folders in the index, including any that
+    # a commit made with the hooks off brought in. These names go through the scan first, so that
     # nothing shows a name that holds a finding.
     git -c core.quotePath=false ls-files -- .githooks .github/standard .github/workflows \
         > "$std_tmp/guard.names" || std_fail "cannot list the standard's folders"
@@ -373,10 +381,10 @@ deny_enforce() {
 
 # The rule engine. scan_begin makes the work folder $std_scan. The collectors add units of text:
 # blobs, commits and tag objects by object id, and a message or the identity as a file. scan_run
-# puts the path names and every unit into one stream, each behind a marker line, strips the NUL
-# bytes once (so UTF-16 text matches as UTF-8 text does), runs each rule and the denylist once
-# over the stream, maps each hit back to its unit and line, drops exempt and accepted hits, and
-# prints "privacy-scan: WHERE: KIND" per finding on stderr. A path whose name holds a hit is
+# puts the path names and every unit into one stream, each behind a marker line. It strips the NUL
+# bytes once, so UTF-16 text matches as UTF-8 text does. It runs each rule and the denylist once
+# over the stream, maps each hit back to its unit and line, and drops exempt and accepted hits.
+# It prints "privacy-scan: WHERE: KIND" per finding on stderr. A path whose name holds a hit is
 # shown only as "path name N", never by name.
 scan_begin() {
     std_tmpdir
@@ -388,6 +396,8 @@ scan_begin() {
     printf 'second pass\n' > "$std_scan/pass2"
     std_pseudo=0
     std_listing=
+    # Set by --history: name the commits behind each file finding (scan_commits).
+    std_history=
 }
 
 # Add the text of FILE as a unit of TYPE (message or identity).
@@ -592,7 +602,8 @@ scan_run() {
     done < "$std_scan/cfgoids"
     # Map each hit to its unit, in two passes over the hit files: the path names first, so that
     # every path whose name holds a hit is known before a content hit could show it. Writes
-    # rec.KIND (kind, path, where, value), vals.KIND and paths.KIND for each kind found.
+    # rec.KIND (kind, path, where, value, and the blob for a hit in file content), vals.KIND and
+    # paths.KIND for each kind found.
     LC_ALL=C awk -v us="$std_us" -v dir="$std_scan" -v mark="$std_mark" '
         function unit(n,    lo, hi, mid, at) {
             lo = 1; hi = nm; at = 0
@@ -602,10 +613,10 @@ scan_run() {
             }
             return at
         }
-        function emit(kind, id, path, where, value) {
+        function emit(kind, id, path, where, value, blob) {
             if (id != "" && (kind us id) in accu) return
             if (id == "" && path != "" && (kind us path) in accp) return
-            print kind us path us where us value > (dir "/rec." kind)
+            print kind us path us where us value us blob > (dir "/rec." kind)
             print value > (dir "/vals." kind)
             print path > (dir "/paths." kind)
             if (!(kind in found)) { found[kind] = 1; print kind > (dir "/kinds") }
@@ -649,12 +660,12 @@ scan_run() {
                 if (c == 0) { c = 1; paths[1] = "" }
                 for (j = 1; j <= c; j++) {
                     if (paths[j] == "") {
-                        emit(kind, id, "/no-path", "blob " substr(id, 1, 12) ", line " line, value)
+                        emit(kind, id, "/no-path", "blob " substr(id, 1, 12) ", line " line, value, id)
                         continue
                     }
                     if (kind != "denylist" && paths[j] == ".github/standard.conf" &&
                         ((id us line us kind) in cfga)) continue
-                    emit(kind, id, paths[j], shown(paths[j]) ":" line, value)
+                    emit(kind, id, paths[j], shown(paths[j]) ":" line, value, id)
                 }
             } else if (utype[id] == "commit") {
                 emit(kind, id, "", "commit " ulabel[id] ", line " line " of git cat-file -p", value)
@@ -685,7 +696,8 @@ scan_run() {
     for std_f in "$std_scan"/drop.*; do
         [ -e "$std_f" ] && set -- "$@" "$std_f"
     done
-    LC_ALL=C awk -v us="$std_us" '
+    : > "$std_scan/fblobs"
+    LC_ALL=C awk -v us="$std_us" -v dir="$std_scan" '
         FILENAME ~ /\/drop\.[^\/]*$/ {
             key = FILENAME; sub(/.*\/drop\./, "", key)
             i = index($0, ":"); drop[key us substr($0, 1, i - 1)] = 1
@@ -694,8 +706,10 @@ scan_run() {
         {
             kind = FILENAME; sub(/.*\/rec\./, "", kind)
             if ((kind us FNR) in drop) next
-            split($0, r, us)
+            n = split($0, r, us)
             print "privacy-scan: " r[3] ": " kind
+            # No record accepts a denylist term, so scan_commits names no commit for one.
+            if (r[n] != "" && kind != "denylist") print "privacy-scan: " r[3] ": " kind us r[n] > (dir "/fblobs")
         }' "$@" "$std_scan"/rec.* > "$std_scan/findings.raw" ||
         std_fail "cannot report the findings"
     # Each finding once, then by path and line number.
@@ -704,14 +718,79 @@ scan_run() {
     LC_ALL=C sort -t : -k 2,2 -k 3,3n "$std_scan/findings.u" > "$std_scan/findings" ||
         std_fail "cannot report the findings"
     [ -s "$std_scan/findings" ] || return 0
-    cat "$std_scan/findings" >&2
+    if [ -n "$std_history" ] && [ -s "$std_scan/fblobs" ]; then
+        scan_commits
+        cat "$std_scan/findings.out" >&2
+    else
+        cat "$std_scan/findings" >&2
+    fi
     std_count=$(awk 'END { print NR }' "$std_scan/findings")
     std_say "refused: $std_count finding(s). Use synthetic values (CONTRIBUTING.md, Test data);" \
         "a denylist term is never shown."
+    if [ -n "$std_history" ] && [ -s "$std_scan/fblobs" ] &&
+        grep -q '^privacy-scan:   in version [0-9a-f]*, brought in \(by commit\|outside\)' \
+            "$std_scan/findings.out"; then
+        std_say "a PRIVACY_HISTORY_ACCEPT record of any one commit that brought in a version" \
+            "accepts that version for the kind of its record. First check that the value is" \
+            "synthetic, and pick a commit that the base branch holds: the secret scan refuses a" \
+            "record whose commit is not an ancestor of the base."
+    fi
     if [ -n "$std_listing" ] && grep -q 'path name ' "$std_scan/findings"; then
         std_say "path name N is line N of: $std_listing"
     fi
     return 1
+}
+
+# For --history: write $std_scan/findings.out, the findings plus, under each finding in file
+# content, one line for each version (blob) behind it. That line names, by full SHA in git log
+# order, the commits whose PRIVACY_HISTORY_ACCEPT record would accept the version: those that bring
+# it in as scan_accept reads a commit, with diff-tree. Commits that HEAD holds come first. The
+# others are marked as outside HEAD, since the secret scan accepts only a record whose commit the
+# base holds. A merge brings in nothing for diff-tree, and neither does a ref that names a blob
+# directly, so a version only they bring in gets a line that says so. It makes one git log pass
+# over every ref, and only when a history scan has findings in file content.
+scan_commits() {
+    LC_ALL=C sort -u "$std_scan/fblobs" > "$std_scan/fblobs.u" ||
+        std_fail "cannot list the versions behind the findings"
+    git log --all --root --raw --no-abbrev --no-renames --diff-filter=ACMRT --diff-merges=off \
+        --no-show-signature --format='%x01%H' > "$std_scan/lograw" 2> /dev/null ||
+        std_fail "cannot list the commits of the history"
+    git rev-list HEAD > "$std_scan/headrevs" 2> /dev/null || : > "$std_scan/headrevs"
+    LC_ALL=C awk -v us="$std_us" '
+        FILENAME ~ /\/fblobs\.u$/ { want[substr($0, index($0, us) + 1)] = 1; next }
+        FILENAME ~ /\/headrevs$/ { head[$0] = 1; next }
+        /^\001/ { sha = substr($0, 2); next }
+        /^:/ {
+            split($0, m, " ")
+            if (!(m[4] in want) || (m[4] us sha) in seen) next
+            seen[m[4] us sha] = 1
+            if (sha in head) inh[m[4]] = inh[m[4]] " " sha
+            else out[m[4]] = out[m[4]] " " sha
+        }
+        END { for (b in want) print b us inh[b] us out[b] }' "$std_scan/fblobs.u" \
+        "$std_scan/headrevs" "$std_scan/lograw" > "$std_scan/bycommit" ||
+        std_fail "cannot list the commits of the history"
+    LC_ALL=C awk -v us="$std_us" '
+        FILENAME ~ /\/bycommit$/ { split($0, f, us); inh[f[1]] = f[2]; out[f[1]] = f[3]; next }
+        FILENAME ~ /\/fblobs\.u$/ { i = index($0, us); vers[substr($0, 1, i - 1)] = vers[substr($0, 1, i - 1)] us substr($0, i + 1); next }
+        {
+            print
+            if (!($0 in vers)) next
+            n = split(substr(vers[$0], 2), b, us)
+            for (j = 1; j <= n; j++) {
+                v = "privacy-scan:   in version " substr(b[j], 1, 12) ", brought in "
+                if (inh[b[j]] != "" && out[b[j]] != "")
+                    print v "by commit" inh[b[j]] ", and outside HEAD by commit" out[b[j]]
+                else if (inh[b[j]] != "")
+                    print v "by commit" inh[b[j]]
+                else if (out[b[j]] != "")
+                    print v "outside HEAD only, by commit" out[b[j]]
+                else
+                    print v "by no commit that a PRIVACY_HISTORY_ACCEPT record can name" \
+                        " (only a merge or a ref brings it in)"
+            }
+        }' "$std_scan/bycommit" "$std_scan/fblobs.u" "$std_scan/findings" > "$std_scan/findings.out" ||
+        std_fail "cannot report the findings"
 }
 
 # Find the exempt hits of each kind found: those the kind's exempt ERE matches, and those a

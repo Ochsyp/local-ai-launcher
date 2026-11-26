@@ -17,7 +17,7 @@ REPO_ROOT=$(cd "${BASH_SOURCE[0]%/*}/../../.." && pwd)
 DENY_TERM=forbidden-term-example
 # The home folder the tests started with, before isolate_home; only its name is compared.
 STANDARD_REAL_HOME=${STANDARD_REAL_HOME:-${HOME:-}}
-# Object ids for pre-push ref lines.
+# The all-zero object id, which a pre-push ref line gives for a remote ref that does not exist.
 ZERO_OID=0000000000000000000000000000000000000000
 
 # Give the test its own HOME, XDG_CONFIG_HOME, TMPDIR and global git config under

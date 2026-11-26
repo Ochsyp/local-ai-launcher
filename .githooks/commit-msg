@@ -2,7 +2,7 @@
 # commit-msg of the repository standard: the same file in every repository; never edit it here.
 # Refuses a commit message that privacy-scan refuses: a denylist term or a rule pack hit. git
 # passes the message file as $1 before its own cleanup, so the hook drops only what git's own
-# rules show git drops, and scans the rest:
+# rules say git drops, and scans the rest:
 # - The cut line is "C ------------------------ >8 ------------------------", where C is the
 #   comment string git uses. git cuts the message at it under the scissors mode or for a verbose
 #   commit, whose diff it puts below the line. The hook cuts at the first such line when
@@ -11,12 +11,12 @@
 #   never reads the notice lines under the cut line, which git translates.
 # - git drops comment lines only in the strip mode: commit.cleanup=strip, or no commit.cleanup
 #   and an editor ran. For its hooks git sets GIT_EDITOR=: when no editor runs (-m, -F,
-#   --no-edit); the default mode is then whitespace, which keeps them, as scissors and verbatim
-#   do.
+#   --no-edit). The default mode is then whitespace, which keeps comment lines, as scissors and
+#   verbatim do.
 # - Under core.commentChar=auto, or when git does not show its comment string, the hook keeps
 #   every line: fail closed.
 # A hook cannot see --cleanup, -v or -c options of the command. Where they make git drop more,
-# the hook scans more than the commit records; where they make git keep lines that the hook
+# the hook scans more than the commit records. Where they make git keep lines that the hook
 # drops (--cleanup=whitespace, scissors or verbatim with an editor), pre-push's range scan of the
 # recorded commit is the backstop. pre-push also checks the branch names.
 set -eu

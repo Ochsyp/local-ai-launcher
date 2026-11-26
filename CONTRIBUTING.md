@@ -26,10 +26,10 @@ holds for the maintainer too.
 
 One pull request holds one phase or one change.
 
-Repository work happens only on a machine with the maintainer's git configuration, which turns
-the hooks on and loads the denylists for every clone of this repository, never in a cloud
-session. That configuration matches this repository's GitHub URL: a clone made from a local path
-gets no hooks, so run `git config core.hooksPath .githooks` in it right after cloning.
+Repository work happens only on a machine with the maintainer's git configuration, never in a
+cloud session. That configuration turns the hooks on and loads the denylists for every clone of
+this repository's GitHub URL. A clone made from a local path gets no hooks, so run
+`git config core.hooksPath .githooks` in it right after cloning.
 
 An outside contributor's pull request is reviewed in the browser and through CI. Hooks run from
 the checked-out tree with the maintainer's credentials, even during a fetch, so:
@@ -41,28 +41,27 @@ the checked-out tree with the maintainer's credentials, even during a fetch, so:
 <!-- standard:begin guard-rails -->
 ## Guard rails
 
-GitHub's ruleset on `main` blocks force pushes and its deletion. Once the maintainer has updated
-it after this repository's adoption of the standard, it also blocks direct pushes, and the merge
+GitHub's ruleset on `main` blocks direct pushes, force pushes and its deletion, and the merge
 of a pull request whose `all-passed` or `scan` check failed.
 
 The hooks in `.githooks/` guard every commit and push:
-- `pre-commit` refuses a commit while `main` or `master` is checked out, a changed copy of the
-  standard, a staged file above `MAX_BLOB_KB`, and staged content, path names, author or
-  committer that hold a denylist term or a rule pack hit. `pre-merge-commit` does the same for a
-  merge.
+- `pre-commit` refuses a commit while `main` or `master` is checked out. It also refuses a changed
+  copy of the standard, a staged file above `MAX_BLOB_KB`, and staged content, path names, author
+  or committer that hold a denylist term or a rule pack hit. `pre-merge-commit` does the same for
+  a merge.
 - `commit-msg` refuses such a term or hit in the message.
-- `pre-push` refuses a push to `main` or `master`, every tag push except a `v*` tag under
-  `RELEASE_KIND=legacy` (otherwise release tags come from publishing a release), a branch or tag
-  name with a term or hit, and what the pushed commits bring in, which covers rebase, cherry-pick
-  and `am` too.
+- `pre-push` refuses a push to `main` or `master`, and a branch or tag name with a term or hit. It
+  refuses every tag push except a `v*` tag under `RELEASE_KIND=legacy`; otherwise release tags
+  come from publishing a release. It also refuses a term or hit in what the pushed commits bring
+  in, which covers rebase, cherry-pick and `am` too.
 
 The denylists hold names that must never be committed and never leave the maintainer's machine.
 The rule packs in `.githooks/rules/` hold the patterns: private addresses, local host names, MAC
-addresses, home paths, e-mail addresses, and disk and VM identifiers where the config enables
-them. A refusal names the file and line and the kind of finding, never the value.
+addresses, home paths and e-mail addresses, and disk and VM identifiers where the config enables
+them. A refusal names the file, the line and the kind of finding, never the value.
 
 The maintainer's git configuration turns the hooks on for every clone of this repository's GitHub
-URL. In a clone made from a local path, or anywhere else, turn them on once after cloning:
+URL. Anywhere else, such as a clone made from a local path, turn them on once after cloning:
 `git config core.hooksPath .githooks`. Never use `--no-verify`.
 <!-- standard:end guard-rails -->
 
@@ -75,11 +74,12 @@ CI fails when a copy differs or changes on another branch. Sync summaries and pu
 here name no other repository. An exemption, an accepted finding or a dropped check comes in a
 `chore/privacy-*` pull request of its own.
 
-A repository goes public in this order. A pull request sets `VISIBILITY=public` and brings the
-public block texts. The maintainer switches the repository to public on GitHub and turns on the
-security settings those texts promise. A new commit on that branch reruns its checks; a rerun
-from the Actions page keeps the old private flag. Then that pull request merges before anything
-else, since until then `main` says private while GitHub says public.
+When a private repository goes public, it does so in this order. A pull request sets
+`VISIBILITY=public`, and `tools/sync` writes the public block texts into it. The maintainer
+switches the repository to public on GitHub and turns on the security settings and the ruleset
+those texts promise. A new commit on that branch reruns its checks; a rerun from the Actions page
+keeps the old private flag. Then that pull request merges before anything else: until it does,
+`main` says private while GitHub says public, and CI on `main` and `tools/status` fail.
 <!-- standard:end standard -->
 
 ## Checks
@@ -149,20 +149,20 @@ GitHub Actions builds each release, and the maintainer publishes it in the brows
 1. A session opens the release pull request `chore/release-X.Y.Z`, written with
    `.github/standard/bin/release-prepare`: `VERSION`, the `VERSION_COPY` files, and the
    `CHANGELOG.md` section with its links. Its body names the dependency updates since the last
-   release. CI checks the version, the date and the links, and the `release` workflow builds the
-   release twice to compare.
+   release. CI checks the version, the date and the links. The `release` workflow builds the
+   release twice and compares the builds.
 2. The maintainer reviews and squash-merges it. The push to `main` that changes `VERSION` runs
    the `release` workflow: the checks of `ci` on that commit, the build, an attestation in the
    public repositories, and a draft release `vX.Y.Z` of that commit.
 3. The maintainer checks the draft (notes, assets, target commit, image digest) and clicks
    **Publish release**. GitHub creates the tag and the immutable release. The `verify` job then
-   checks the published release: look for it to pass.
-4. To fix a draft, merge a pull request from `fix/release-X.Y.Z-<slug>`, whose `CHANGELOG.md`
-   line goes into `## [X.Y.Z]`, then run the `release` workflow on `main` (Actions, release, Run
+   checks the published release, and the maintainer looks for it to pass.
+4. To fix a draft, merge a pull request from `fix/release-X.Y.Z-<slug>`; its `CHANGELOG.md` line
+   goes into `## [X.Y.Z]`. Then run the `release` workflow on `main` (Actions, release, Run
    workflow). Merge nothing else until the draft is published: CI says so on every pull request
    while a release waits.
-5. Never delete a published release. Tick **Set as a pre-release** on a bad one, which clients
-   and updaters then ignore, and ship X.Y.Z+1. For a container image, that edit also moves
+5. Never delete a published release. Tick **Set as a pre-release** on a bad one instead, so that
+   clients and updaters ignore it, and ship X.Y.Z+1. For a container image, the tick also moves
    `latest` back.
 
 Sessions prepare release pull requests. They never create a tag, and never publish, edit or
