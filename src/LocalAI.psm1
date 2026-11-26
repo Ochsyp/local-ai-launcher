@@ -8514,7 +8514,7 @@ function Find-PackageStoreCopy {
 }
 
 # Return @{ Package; Store } when Windows puts a folder made directly in $LocalAppData into an app package's private store instead, else $null. It does that
-# for a process inside the Claude desktop app's container, which has no package identity to ask about. Makes the empty folder $ProbeName to find out, and
+# for a process inside an app package's container, which has no package identity to ask about. Makes the empty folder $ProbeName to find out, and
 # always deletes it again, and the empty probes a killed run left; never throws, so a probe that cannot be made or a failed lookup returns $null too.
 function Get-AppDataRedirection {
     [CmdletBinding()]
@@ -10066,7 +10066,7 @@ function Invoke-LocalAI {
             if ($Rollback) { throw '-ActivateLauncher does not go with -Rollback.' }
         }
 
-        # A process inside an app package's container, such as one the Claude desktop app starts, has its new AppData folders put into the package's
+        # A process inside an app package's container, such as a terminal inside a packaged app, has its new AppData folders put into the package's
         # private store, where other windows never see them (Get-AppDataRedirection). So before the lock, the transcript, the settings or the state, a
         # verb whose Redirected is Refuse stops there, and while a private copy of Root exists; status runs and reports both.
         $resolve = $ExecutionContext.SessionState.Path
