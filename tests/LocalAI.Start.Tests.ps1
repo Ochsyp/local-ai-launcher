@@ -691,6 +691,12 @@ Describe 'Get-LocalAIService' {
         $service.Repair | Should -BeExactly 'uv tool install --python 3.11.17 open-webui==0.12.3 --reinstall'
     }
 
+    It 'resolves the repair as of the cut-off install-stamp.json recorded for the installed version' {
+        $installed.ExcludeNewer = '2026-10-01T00:00:00Z'
+        $service = @(Get-LocalAIService -Settings $settings -Paths $paths -OllamaUrl $url -OpenWebUI $installed)[0]
+        $service.Repair | Should -BeExactly 'uv tool install --python 3.11.17 open-webui==0.12.3 --exclude-newer 2026-10-01T00:00:00Z --reinstall'
+    }
+
     It 'carries the pin, its setting and the stamped version for the drift check' {
         $service.Pin.Setting | Should -Be 'OpenWebUI.Version'
         $service.Pin.Version | Should -Be '0.12.4'

@@ -667,6 +667,14 @@ Describe 'Save-UvFreeze and Restore-OpenWebUITool' {
         @($uv.Installs) | Should -Be @("tool install --python 3.11.17 open-webui==0.12.3 -c $list --reinstall")
     }
 
+    It 'resolves the old version as of the cut-off it was installed with, under the list and without it' {
+        [IO.File]::WriteAllText($list, "open-webui==0.12.3`n")
+        $uv.FailWithList = $true
+        $null = Invoke-ModuleFunction 'Restore-OpenWebUITool' @{ Version = '0.12.3'; Python = '3.11.17'; Constraints = $list; ExcludeNewer = '2026-10-01T00:00:00Z' } 6>$null
+        @($uv.Installs) | Should -Be @("tool install --python 3.11.17 open-webui==0.12.3 --exclude-newer 2026-10-01T00:00:00Z -c $list --reinstall",
+            'tool install --python 3.11.17 open-webui==0.12.3 --exclude-newer 2026-10-01T00:00:00Z --reinstall')
+    }
+
     It 'tries again without the list when the install under it fails, and installs without one when there is none' {
         [IO.File]::WriteAllText($list, "open-webui==0.12.3`n")
         $uv.FailWithList = $true
@@ -681,9 +689,9 @@ Describe 'Save-UvFreeze and Restore-OpenWebUITool' {
 
 Describe 'Get-OpenWebUIUpdatePlan' {
     BeforeEach {
-        $settings = @{ OpenWebUI = @{ Version = '0.12.4'; Python = '3.12' } }
+        $settings = @{ OpenWebUI = @{ Version = '0.12.4'; Python = '3.12'; ExcludeNewer = '2026-10-25T08:10:00Z' } }
         $uv = @{ Tool = @{ Version = '0.12.3'; Python = '3.11.17'; Path = 'C:\uv\bin\open-webui.exe' } }
-        $stamp = @{ OpenWebUI = @{ Version = '0.12.3'; Python = '3.11.17'; Path = 'C:\uv\bin\open-webui.exe' } }
+        $stamp = @{ OpenWebUI = @{ Version = '0.12.3'; Python = '3.11.17'; Path = 'C:\uv\bin\open-webui.exe'; ExcludeNewer = '2026-10-25T08:10:00Z' } }
         Mock Invoke-Native -ModuleName LocalAI -MockWith { throw "Unexpected program $FilePath $($ArgumentList -join ' ')" }
         Mock Get-UvTool -ModuleName LocalAI -ParameterFilter { $Name -eq 'open-webui' } -MockWith { $uv.Tool }
         $plan = { Invoke-ModuleFunction 'Get-OpenWebUIUpdatePlan' @{ Settings = $settings; Stamp = $stamp } }
@@ -705,6 +713,30 @@ Describe 'Get-OpenWebUIUpdatePlan' {
     It 'plans nothing when uv lists the pin on a patch of the pinned minor, as install-stamp.json records it' {
         $uv.Tool = @{ Version = '0.12.4'; Python = '3.12.16'; Path = 'C:\uv\bin\open-webui.exe' }
         $stamp.OpenWebUI = $uv.Tool.Clone()
+        $stamp.OpenWebUI.ExcludeNewer = '2026-10-25T08:10:00Z'
+        $result = & $plan
+        $result.Reinstall | Should -BeFalse
+        @($result.Changes).Count | Should -Be 0
+    }
+
+    It 'plans a reinstall of the same version when install-stamp.json records <Case>' -ForEach @(
+        @{ Case = 'another cut-off'; Recorded = '2026-10-01T00:00:00Z'; Pin = '2026-10-25T08:10:00Z'; Text = 'resolved as of 2026-10-01T00:00:00Z -> resolved as of 2026-10-25T08:10:00Z' }
+        @{ Case = 'no cut-off, as installs before 1.2.0'; Recorded = $null; Pin = '2026-10-25T08:10:00Z'; Text = 'resolved at an unrecorded time -> resolved as of 2026-10-25T08:10:00Z' }
+        @{ Case = 'a cut-off that settings.psd1 lifts'; Recorded = '2026-10-01T00:00:00Z'; Pin = ''; Text = 'resolved as of 2026-10-01T00:00:00Z -> resolved as uv picks them that day' }
+    ) {
+        $uv.Tool = @{ Version = '0.12.4'; Python = '3.12.16'; Path = 'C:\uv\bin\open-webui.exe' }
+        $stamp.OpenWebUI = $uv.Tool.Clone()
+        if ($null -ne $Recorded) { $stamp.OpenWebUI.ExcludeNewer = $Recorded }
+        $settings.OpenWebUI.ExcludeNewer = $Pin
+        $result = & $plan
+        $result.Reinstall | Should -BeTrue
+        @($result.Changes) | Should -Be @("0.12.4 on Python 3.12.16: packages $Text, after a backup of its data")
+    }
+
+    It 'plans nothing when settings.psd1 lifts the cut-off and install-stamp.json records none' {
+        $uv.Tool = @{ Version = '0.12.4'; Python = '3.12.16'; Path = 'C:\uv\bin\open-webui.exe' }
+        $stamp.OpenWebUI = $uv.Tool.Clone()
+        $settings.OpenWebUI.ExcludeNewer = ''
         $result = & $plan
         $result.Reinstall | Should -BeFalse
         @($result.Changes).Count | Should -Be 0
@@ -1323,7 +1355,7 @@ Describe 'Update-OpenWebUITool' {
         $paths = Get-LocalAIPaths -Root (Join-Path $root 'local-ai')
         $dataDir = Join-Path $root 'open-webui'
         foreach ($name in 'webui.db', 'webui.db-wal', '.webui_secret_key', 'uploads\a.txt') { $null = Write-TestFile "$leaf\open-webui\$name" $name }
-        $settings = @{ OpenWebUI = @{ Version = '0.12.4'; Python = '3.12'; DataDir = $dataDir; InstallBytes = 2987894996 }; Update = @{ KeepBackups = 3 } }
+        $settings = @{ OpenWebUI = @{ Version = '0.12.4'; Python = '3.12'; ExcludeNewer = '2026-10-25T08:10:00Z'; DataDir = $dataDir; InstallBytes = 2987894996 }; Update = @{ KeepBackups = 3 } }
         $old = @{ Version = '0.12.3'; Python = '3.11.17'; Path = 'C:\uv\bin\open-webui.exe' }
         $plan = @{ Name = 'OpenWebUI'; Reinstall = $true; Tool = $old }
         Write-LocalAIState -Path $paths.InstallStamp -State @{ OpenWebUI = $old.Clone(); Model = @{ Alias = 'local-chat' } }
@@ -1374,6 +1406,38 @@ Describe 'Update-OpenWebUITool' {
         $stamp.OpenWebUI.DataDir | Should -Be $dataDir
         $stamp.Model.Alias | Should -Be 'local-chat'
         $result.ToolDir | Should -Be 'C:\uv\tools'
+    }
+
+    It 'reinstalls as of OpenWebUI.ExcludeNewer and records it' {
+        $null = & $run 6>$null
+        Should -Invoke Install-UvTool -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Package -eq 'open-webui==0.12.4' -and $ExcludeNewer -ceq '2026-10-25T08:10:00Z' }
+        (Read-LocalAIState -Path $paths.InstallStamp).OpenWebUI.ExcludeNewer | Should -BeExactly '2026-10-25T08:10:00Z'
+    }
+
+    It 'puts an old version back as of its own recorded cut-off when the reinstall fails' {
+        $recorded = $old.Clone()
+        $recorded.ExcludeNewer = '2026-10-01T00:00:00Z'
+        Write-LocalAIState -Path $paths.InstallStamp -State @{ OpenWebUI = $recorded }
+        $uv.FailNew = $true
+        { & $run 6>$null } | Should -Throw
+        Should -Invoke Install-UvTool -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Package -eq 'open-webui==0.12.3' -and $ExcludeNewer -ceq '2026-10-01T00:00:00Z' }
+        (Read-LocalAIState -Path $paths.InstallStamp).OpenWebUI.ExcludeNewer | Should -BeExactly '2026-10-01T00:00:00Z'
+    }
+
+    It 'returns the cut-off install-stamp.json recorded for the old version with it, for a rollback' {
+        $recorded = $old.Clone()
+        $recorded.ExcludeNewer = '2026-10-01T00:00:00Z'
+        Write-LocalAIState -Path $paths.InstallStamp -State @{ OpenWebUI = $recorded }
+        (& $run 6>$null).Previous.ExcludeNewer | Should -BeExactly '2026-10-01T00:00:00Z'
+    }
+
+    It 'keeps the recorded cut-off when it only records what uv lists' {
+        $plan.Reinstall = $false
+        $recorded = $old.Clone()
+        $recorded.ExcludeNewer = '2026-10-01T00:00:00Z'
+        Write-LocalAIState -Path $paths.InstallStamp -State @{ OpenWebUI = $recorded }
+        $null = & $run 6>$null
+        (Read-LocalAIState -Path $paths.InstallStamp).OpenWebUI.ExcludeNewer | Should -BeExactly '2026-10-01T00:00:00Z'
     }
 
     It 'backs up the data before it saves the package list beside it, and both before the space check and the reinstall' {
@@ -1479,6 +1543,7 @@ Describe 'Undo-OpenWebUIUpdate' {
         }
         Mock Restore-OpenWebUITool -ModuleName LocalAI -MockWith {
             $order.Add("tool $Version $Python $Constraints")
+            $order.Add("cut-off '$ExcludeNewer'")
             @{ Version = '0.12.3'; Python = '3.11.17'; Path = 'C:\uv\bin\open-webui.exe' }
         }
         Mock Restore-OpenWebUIData -ModuleName LocalAI -MockWith {
@@ -1491,15 +1556,23 @@ Describe 'Undo-OpenWebUIUpdate' {
     It 'stops the stack, reinstalls the previous version under its package list, records it and puts the data back' {
         & $run | Should -BeExactly ('Open WebUI 0.12.3 on Python 3.11.17 is installed again, with its data back as C:\b\open-webui-20261028-120000 holds it, and the data ' +
             'the new version used is in C:\b\open-webui-failed-20261028-121500.')
-        @($order) | Should -Be @('stop', "tool 0.12.3 3.11.17 $($change.Constraints)", "data $dataDir $($change.Backup) $($paths.Backups)")
+        @($order) | Should -Be @('stop', "tool 0.12.3 3.11.17 $($change.Constraints)", "cut-off ''", "data $dataDir $($change.Backup) $($paths.Backups)")
         # The stack starts again afterwards against the same Ollama.
         Should -Invoke Stop-LocalAI -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $KeepOllama }
         $entry = (Read-LocalAIState -Path $paths.InstallStamp).OpenWebUI
         $entry.Version | Should -Be '0.12.3'
         $entry.Python | Should -Be '3.11.17'
         $entry.ContainsKey('PreviousVersion') | Should -BeFalse
+        $entry.ContainsKey('ExcludeNewer') | Should -BeFalse
         $entry.ToolDir | Should -Be 'C:\uv\tools'
         $entry.DataDir | Should -Be $dataDir
+    }
+
+    It 'puts the previous version back as of the cut-off it was installed with, and records that' {
+        $change.Previous.ExcludeNewer = '2026-10-01T00:00:00Z'
+        $null = & $run
+        @($order) | Should -Contain "cut-off '2026-10-01T00:00:00Z'"
+        (Read-LocalAIState -Path $paths.InstallStamp).OpenWebUI.ExcludeNewer | Should -BeExactly '2026-10-01T00:00:00Z'
     }
 
     It 'reinstalls nothing when the stack cannot be stopped, and says how to roll back by hand' {

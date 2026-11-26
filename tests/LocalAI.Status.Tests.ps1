@@ -78,7 +78,7 @@ Describe 'Get-LocalAIStatus' {
             Ollama    = @{ Version = '0.40.11' }
             Model     = @{ Alias = 'local-chat'; BaseDigest = $settings.Model.Sha256; ProjectorDigest = $settings.Model.ProjectorSha256
                 ModelfileSha256 = (Get-TestHash (Join-Path $repoRoot $settings.Model.Modelfile)) }
-            OpenWebUI = @{ Version = '0.12.4'; Path = 'C:\uv\bin\open-webui.exe'; Python = '3.12.16' }
+            OpenWebUI = @{ Version = '0.12.4'; Path = 'C:\uv\bin\open-webui.exe'; Python = '3.12.16'; ExcludeNewer = $settings.OpenWebUI.ExcludeNewer }
             ComfyUI   = @{ Dir = $settings.ComfyUI.Dir; Commit = $settings.ComfyUI.Commit; Python = (Join-Path $settings.ComfyUI.Dir '.venv\Scripts\python.exe') }
             Files     = @{ McpoVersion = '0.0.20'; McpoPath = 'C:\uv\bin\mcpo.exe'; Python = '3.12'; With = @($settings.Files.McpoWith)
                 ExcludeNewer = $settings.Files.McpoExcludeNewer; ServerVersion = $settings.Files.ServerVersion; ToolDir = 'C:\uv\tools'
@@ -482,6 +482,8 @@ Describe 'Get-LocalAIStatus' {
     It 'returns 2 and names local-ai update when install recorded another <Case>' -ForEach @(
         @{ Case = 'Open WebUI version'; Part = 'OpenWebUI'; Field = 'Version'; Value = '0.12.3'; Message = '*Open WebUI 0.12.3 is installed, but OpenWebUI.Version pins 0.12.4. Run ''local-ai update''.*' }
         @{ Case = 'Open WebUI Python'; Part = 'OpenWebUI'; Field = 'Python'; Value = '3.11.17'; Message = '*Open WebUI runs on Python 3.11.17, but OpenWebUI.Python pins 3.12. Run ''local-ai update''.*' }
+        @{ Case = 'Open WebUI cut-off it never recorded'; Part = 'OpenWebUI'; Field = 'ExcludeNewer'; Value = $null; Message = "*Open WebUI's packages were resolved at an unrecorded time, but OpenWebUI.ExcludeNewer pins *. Run 'local-ai update'.*" }
+        @{ Case = 'Open WebUI cut-off'; Part = 'OpenWebUI'; Field = 'ExcludeNewer'; Value = '2026-10-01T00:00:00Z'; Message = "*Open WebUI's packages were resolved as of 2026-10-01T00:00:00Z, but OpenWebUI.ExcludeNewer pins *. Run 'local-ai update'.*" }
         @{ Case = 'ComfyUI commit'; Part = 'ComfyUI'; Field = 'Commit'; Value = 'abcdef0123456789abcdef0123456789abcdef01'; Message = '*ComfyUI in * is at commit abcdef0123456789abcdef0123456789abcdef01, but ComfyUI.Commit pins 483dae4326356b81de05d27aca3f433dd323cc25 (v0.42.5). Run ''local-ai update''.*' }
         @{ Case = 'mcpo version'; Part = 'Files'; Field = 'McpoVersion'; Value = '0.0.19'; Message = "*mcpo was installed with Files.McpoVersion '0.0.19', but settings.psd1 pins '0.0.20'. Run 'local-ai update'.*" }
         @{ Case = 'mcpo requirement list'; Part = 'Files'; Field = 'With'; Value = @('mcp==1.29.0'); Message = "*mcpo was installed with Files.McpoWith 'mcp==1.29.0', but settings.psd1 pins 'mcp==1.30.0 fastapi<0.145'.*" }

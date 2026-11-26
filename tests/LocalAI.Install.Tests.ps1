@@ -995,7 +995,8 @@ Describe 'Install-LocalAI' {
             $State
         }
         Mock Install-OpenWebUI -ModuleName LocalAI -MockWith {
-            @{ Version = '0.12.4'; Path = 'C:\Users\User\.local\bin\open-webui.exe'; Python = '3.12.10'; ToolDir = 'C:\Users\User\AppData\Roaming\uv\tools' }
+            @{ Version = '0.12.4'; Path = 'C:\Users\User\.local\bin\open-webui.exe'; Python = '3.12.10'; ToolDir = 'C:\Users\User\AppData\Roaming\uv\tools'
+                ExcludeNewer = '2026-10-25T08:10:00Z' }
         }
         $comfyPython = 'C:\Users\User\ComfyUI\.venv\Scripts\python.exe'
         $comfyCommit = $context.Settings.ComfyUI.Commit
@@ -1021,6 +1022,20 @@ Describe 'Install-LocalAI' {
 
     AfterEach {
         $env:OLLAMA_MODELS = $savedStore
+    }
+
+    It 'keeps the cut-off install-stamp.json recorded for an Open WebUI it left as it was, and records none it does not know' -ForEach @(
+        @{ Case = 'recorded'; Recorded = @{ Version = '0.12.4'; ExcludeNewer = '2026-10-01T00:00:00Z' }; Expected = '2026-10-01T00:00:00Z' }
+        @{ Case = 'never recorded'; Recorded = @{ Version = '0.12.4' }; Expected = $null }
+    ) {
+        Write-LocalAIState -Path (Join-Path $root 'install-stamp.json') -State @{ OpenWebUI = $Recorded }
+        Mock Install-OpenWebUI -ModuleName LocalAI -MockWith {
+            @{ Version = '0.12.4'; Path = 'C:\Users\User\.local\bin\open-webui.exe'; Python = '3.12.10'; ToolDir = 'C:\Users\User\AppData\Roaming\uv\tools' }
+        }
+        $null = @(Install-LocalAI -Context $context 6>&1)
+        $entry = (Read-LocalAIState -Path (Join-Path $root 'install-stamp.json')).OpenWebUI
+        $entry.Version | Should -Be '0.12.4'
+        if ($null -eq $Expected) { $entry.ContainsKey('ExcludeNewer') | Should -BeFalse } else { $entry.ExcludeNewer | Should -BeExactly $Expected }
     }
 
     It 'installs Ollama, uv, Git, the chat model, Open WebUI, ComfyUI and the checkpoint and writes the stamp and state, returning 0' {
@@ -1055,6 +1070,7 @@ Describe 'Install-LocalAI' {
         # What uninstall goes by: the tool folder, and the data folder when settings.psd1 does not load.
         $stamp.OpenWebUI.ToolDir | Should -Be 'C:\Users\User\AppData\Roaming\uv\tools'
         $stamp.OpenWebUI.DataDir | Should -Be ([IO.Path]::GetFullPath($context.Settings.OpenWebUI.DataDir))
+        $stamp.OpenWebUI.ExcludeNewer | Should -BeExactly '2026-10-25T08:10:00Z'
         $stamp.ComfyUI.Dir | Should -Be 'C:\Users\User\ComfyUI'
         $stamp.ComfyUI.Commit | Should -Be $comfyCommit
         $stamp.ComfyUI.Ref | Should -Be 'v0.42.5'
@@ -1426,7 +1442,7 @@ Describe 'Install-OpenWebUI' {
         $root = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
         $dataDir = Join-Path $root 'open-webui'
         $paths = Get-LocalAIPaths -Root (Join-Path $root 'local-ai')
-        $settings = @{ OpenWebUI = @{ Version = '0.12.4'; Python = '3.12'; DataDir = $dataDir; InstallBytes = 2987894996 } }
+        $settings = @{ OpenWebUI = @{ Version = '0.12.4'; Python = '3.12'; ExcludeNewer = '2026-10-25T08:10:00Z'; DataDir = $dataDir; InstallBytes = 2987894996 } }
         $uv = @{ Lines = $installed; Backups = $null }
         Mock Invoke-Native -ModuleName LocalAI -ParameterFilter { $ArgumentList[1] -eq 'list' } -MockWith {
             foreach ($line in $uv.Lines) { $Capture.Add($line) }
@@ -1444,16 +1460,25 @@ Describe 'Install-OpenWebUI' {
         Mock Test-FreeSpace -ModuleName LocalAI
     }
 
-    It 'installs the pin on OpenWebUI.Python, on the console, when uv lists no open-webui' {
+    It 'installs the pin on OpenWebUI.Python, resolved as of OpenWebUI.ExcludeNewer, on the console, when uv lists no open-webui' {
         $uv.Lines = @('No tools installed')
         $tool = Install-OpenWebUI -Settings $settings -Paths $paths 6>$null
         Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter {
-            $FilePath -eq 'uv' -and ($ArgumentList -join ' ') -eq 'tool install --python 3.12 open-webui==0.12.4' -and [bool]$Console
+            $FilePath -eq 'uv' -and ($ArgumentList -join ' ') -eq 'tool install --python 3.12 open-webui==0.12.4 --exclude-newer 2026-10-25T08:10:00Z' -and [bool]$Console
         }
+        $tool.ExcludeNewer | Should -BeExactly '2026-10-25T08:10:00Z'
         $tool.Version | Should -Be '0.12.4'
         $tool.Path | Should -Be 'C:\Users\User\.local\bin\open-webui.exe'
         $tool.Python | Should -Be '3.12.10'
         $tool.ToolDir | Should -Be 'C:\Users\User\AppData\Roaming\uv\tools'
+    }
+
+    It 'installs without a cut-off when OpenWebUI.ExcludeNewer is empty, and says so in what it returns' {
+        $uv.Lines = @('No tools installed')
+        $settings.OpenWebUI.ExcludeNewer = ''
+        $tool = Install-OpenWebUI -Settings $settings -Paths $paths 6>$null
+        Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { ($ArgumentList -join ' ') -eq 'tool install --python 3.12 open-webui==0.12.4' }
+        $tool.ExcludeNewer | Should -BeExactly ''
     }
 
     It 'checks free space for InstallBytes on the uv tools folder before the install' {
@@ -1505,6 +1530,8 @@ Describe 'Install-OpenWebUI' {
         $null = Write-TestFile ((Split-Path $root -Leaf) + '\open-webui\webui.db') 'database'
         $tool = Install-OpenWebUI -Settings $settings -Paths $paths -WarningVariable warnings 3>$null 6>$null
         $tool.Version | Should -Be '0.12.4'
+        # It installed nothing, so it cannot say as of when the installed packages were resolved.
+        $tool.ContainsKey('ExcludeNewer') | Should -BeFalse
         $warnings.Count | Should -Be 0
         Should -Invoke Invoke-Native -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $ArgumentList[1] -eq 'install' }
         Should -Invoke Test-FreeSpace -ModuleName LocalAI -Times 0 -Exactly
@@ -2715,7 +2742,7 @@ Describe 'Install-ImageModel' {
         $staging = Join-Path $dir 'models\.local-ai-download'
         $settings = @{
             ComfyUI = @{ Dir = $dir }
-            HfCli   = @{ Version = '2.2.0' }
+            HfCli   = @{ Version = '2.2.0'; ExcludeNewer = '2026-10-08T15:31:00Z' }
             Images  = @{ Repo = 'Lykon/dreamshaper-xl-lightning'; File = 'Test.safetensors'; Revision = '561086c22aba3925b1e8803a73857f061635c7c3'; Size = $size; Sha256 = $sha }
         }
         $verified = @{}
@@ -2763,7 +2790,7 @@ Describe 'Install-ImageModel' {
         $result = Install-ImageModel -Settings $settings -Verified $verified 6>$null
         Should -Invoke Test-FreeSpace -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter { $Path -eq $folder -and $RequiredBytes -eq $size }
         Should -Invoke Invoke-Native -ModuleName LocalAI -Times 1 -Exactly -ParameterFilter {
-            ($ArgumentList -join ' ') -eq ("--from huggingface_hub==2.2.0 hf download Lykon/dreamshaper-xl-lightning Test.safetensors " +
+            ($ArgumentList -join ' ') -eq ("--from huggingface_hub==2.2.0 --exclude-newer 2026-10-08T15:31:00Z hf download Lykon/dreamshaper-xl-lightning Test.safetensors " +
                 "--revision 561086c22aba3925b1e8803a73857f061635c7c3 --local-dir $staging") -and [bool]$Console -and $ArgumentList -notcontains '--token'
         }
         Get-Content -LiteralPath $target -Raw | Should -BeExactly $content
