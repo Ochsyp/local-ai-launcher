@@ -18,7 +18,7 @@
     )
 
     Rules        = @{
-        # Syntax must parse on 5.1; 7.6 keeps the door open for pwsh later.
+        # Syntax must parse on 5.1, which the launcher targets, and on 7.6, so pwsh can run it too.
         PSUseCompatibleSyntax         = @{
             Enable         = $true
             TargetVersions = @('5.1', '7.6')

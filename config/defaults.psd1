@@ -70,41 +70,43 @@
         # startup, which on a fresh machine includes downloading its embedding model (about 1 GB).
         HealthTimeoutSeconds = 600
         # More variable names that Open WebUI inherits from the window that runs start, such as
-        # HTTPS_PROXY. Open WebUI, and the tools and functions inside it, get only what Windows and
-        # Python need, where huggingface_hub and sentence-transformers keep the embedding model
-        # (HF_HOME, HF_HUB_CACHE, HUGGINGFACE_HUB_CACHE, XDG_CACHE_HOME, SENTENCE_TRANSFORMERS_HOME),
-        # HF_HUB_OFFLINE, Env with the keys the launcher computes, and the names listed here. A name
-        # ending in _TOKEN or _API_KEY, and PYTHONHOME, PYTHONPATH, PYTHONSTARTUP, PYTHONUSERBASE,
-        # NODE_OPTIONS and NODE_PATH, never reach a service from the window, so the settings check
-        # refuses them here. Env sets a value in settings.psd1; a name listed here passes the
-        # window's value on instead. Either way the tools and functions inside Open WebUI can read
-        # the value, such as a password in a proxy address.
+        # HTTPS_PROXY. Besides them, Open WebUI and the tools and functions inside it get only what Windows
+        # and Python need, the folders where huggingface_hub and sentence-transformers keep the embedding
+        # model (HF_HOME, HF_HUB_CACHE, HUGGINGFACE_HUB_CACHE, XDG_CACHE_HOME, SENTENCE_TRANSFORMERS_HOME),
+        # HF_HUB_OFFLINE, and Env with the keys the launcher computes.
+        # The settings check refuses here a name ending in _TOKEN or _API_KEY, and PYTHONHOME, PYTHONPATH,
+        # PYTHONSTARTUP, PYTHONUSERBASE, NODE_OPTIONS and NODE_PATH: those never reach a service from the
+        # window. Env sets a value in settings.psd1; a name listed here passes the window's value on
+        # instead. Either way the tools and functions inside Open WebUI can read the value, such as a
+        # password in a proxy address.
         InheritEnvironment   = @()
-        # Environment for every start. With ENABLE_PERSISTENT_CONFIG False these values win over
-        # the database and Admin Settings edits revert on restart, so add any further Open WebUI
-        # setting here; any key is accepted, and an empty value removes the variable. The launcher
-        # adds DATA_DIR, OLLAMA_BASE_URL, CORS_ALLOW_ORIGIN, ENABLE_OLLAMA_API and an empty
-        # OLLAMA_BASE_URLS, which this table cannot change, and DEFAULT_MODELS, TASK_MODEL,
-        # ENABLE_SIGNUP ('False') and an empty DATABASE_URL, which it can. The empty values remove
-        # copies inherited from Windows, which Open WebUI would use instead of the computed ones.
-        # It also sets the image keys from Images, Ports.ComfyUI and Ports.ImageGate, which this table
-        # cannot change: ENABLE_IMAGE_GENERATION, IMAGE_GENERATION_ENGINE, IMAGE_GENERATION_MODEL,
-        # IMAGE_SIZE, IMAGE_STEPS, COMFYUI_BASE_URL (the image gate while it runs, else ComfyUI), an
-        # empty COMFYUI_API_KEY, COMFYUI_WORKFLOW, COMFYUI_WORKFLOW_NODES and ENABLE_IMAGE_EDIT
-        # ('False'; no edit workflow is set up). Images are on only for a start that launches ComfyUI;
-        # Open WebUI reads these when it starts. From Files and Ports.Files it sets
-        # TOOL_SERVER_CONNECTIONS (the file tools, or '[]' for a start without them), which this table
-        # cannot change either. OLLAMA_API_CONFIGS lists only Model.Alias, the model the image gate
-        # unloads; an empty value here lists every Ollama model. NO_PROXY gets 127.0.0.1, localhost
-        # and ::1 added to any inherited or given value, so no proxy sees the file tools' key; with
-        # NO_PROXY set Python ignores the Windows proxy setting, so a PC that reaches the internet
-        # only through one needs HTTPS_PROXY here, or in InheritEnvironment, for the Hugging Face
-        # check. DEFAULT_MODEL_METADATA,
-        # merged into a model's metadata where it has none, turns the file tools on in every new chat
-        # (checked in the browser with 0.12.3) and is '{}' without them, which leaves Open WebUI's
-        # built-in tools as it ships them; a JSON object given here is merged in, for example
-        # {"builtinTools":{"notes":false}}. A model saved in Workspace > Models keeps the tools it was
-        # saved with instead, so turn on Workspace files there.
+        # Environment for every start. Any key is accepted, and an empty value removes the variable. With
+        # ENABLE_PERSISTENT_CONFIG False these values win over the database, and Admin Settings edits
+        # revert on restart, so set any further Open WebUI setting here.
+        # The launcher also sets keys that this table cannot change:
+        # - DATA_DIR, OLLAMA_BASE_URL, CORS_ALLOW_ORIGIN, ENABLE_OLLAMA_API and an empty OLLAMA_BASE_URLS.
+        # - From Images, Ports.ComfyUI and Ports.ImageGate: ENABLE_IMAGE_GENERATION,
+        #   IMAGE_GENERATION_ENGINE, IMAGE_GENERATION_MODEL, IMAGE_SIZE, IMAGE_STEPS, COMFYUI_BASE_URL (the
+        #   image gate while it runs, else ComfyUI), an empty COMFYUI_API_KEY, COMFYUI_WORKFLOW,
+        #   COMFYUI_WORKFLOW_NODES and ENABLE_IMAGE_EDIT ('False'; no edit workflow is set up). Images are
+        #   on only for a start that launches ComfyUI; Open WebUI reads these when it starts.
+        # - From Files and Ports.Files: TOOL_SERVER_CONNECTIONS (the file tools, or '[]' for a start
+        #   without them).
+        # It also sets keys that this table can change:
+        # - DEFAULT_MODELS, TASK_MODEL, ENABLE_SIGNUP ('False') and an empty DATABASE_URL. The empty values
+        #   in both lists remove copies inherited from Windows, which Open WebUI would use instead of the
+        #   computed ones.
+        # - OLLAMA_API_CONFIGS lists only Model.Alias, the model the image gate unloads; an empty value
+        #   here lists every Ollama model.
+        # - DEFAULT_MODEL_METADATA, merged into a model's metadata where it has none, turns the file tools
+        #   on in every new chat (checked in the browser with 0.12.3). Without them it is '{}', which leaves
+        #   Open WebUI's built-in tools as it ships them. A JSON object given here is merged in, for example
+        #   {"builtinTools":{"notes":false}}. A model saved in Workspace > Models keeps the tools it was
+        #   saved with instead, so turn on Workspace files there.
+        # NO_PROXY gets 127.0.0.1, localhost and ::1 added to any inherited or given value, so no proxy sees
+        # the file tools' key. With NO_PROXY set, Python ignores the Windows proxy setting, so a PC that
+        # reaches the internet only through one needs HTTPS_PROXY here, or in InheritEnvironment, for the
+        # Hugging Face check.
         Env                  = @{
             ENABLE_PERSISTENT_CONFIG                     = 'False'
             WEBUI_AUTH                                   = 'True'
@@ -168,12 +170,12 @@
         # Width x height, also IMAGE_SIZE; 1024x1024 is SDXL's native size.
         Resolution           = '1024x1024'
         # $true: images go through the image gate (src\image_gate.py on Ports.ImageGate), which unloads
-        # Model.Alias from Ollama before each one. On the test GPU: about 8 s per image
-        # instead of 32 to 38 s, chat keeps its full speed, and the next chat reloads local-chat in 7 to
-        # 10 s. That reload commits about 11 GB of virtual memory; when a system-managed page file has
-        # shrunk on a PC with little RAM, such a reload can fail ('CUDA error: shared object
-        # initialization failed'). A fixed page file of about 20 GB or more should avoid that (not yet
-        # measured). $false: Open WebUI talks to ComfyUI directly and no gate runs.
+        # Model.Alias from Ollama before each one. On the test GPU an image then takes about 8 s instead of
+        # 32 to 38 s, chat keeps its full speed, and the next chat reloads local-chat in 7 to 10 s. That
+        # reload commits about 11 GB of virtual memory, so it can fail ('CUDA error: shared object
+        # initialization failed') on a PC with little RAM whose system-managed page file has shrunk. A
+        # fixed page file of about 20 GB or more should avoid that; this is not measured yet.
+        # $false: Open WebUI talks to ComfyUI directly and no gate runs.
         UnloadChat           = $true
         # How long the gate waits for that unload, an answer still streaming included, before it sends
         # the image to ComfyUI anyway. An idle unload takes about 0.3 s, and an image beside a loaded
@@ -199,11 +201,11 @@
         # requirements are kept, also when they are newer.
         ExcludeNewer         = '2026-10-23T00:07:14Z'
         # Minor version of the .venv. install creates a missing one on a uv-managed CPython
-        # (--managed-python), through uv's link for this minor, so 'uv python upgrade' moves it to a new
-        # patch version; without that flag uv may take the Microsoft Store Python, whose launches can
-        # fail or hang until Windows restarts. An existing .venv keeps its interpreter if the minor
-        # matches, except one on the Store Python: status and start flag it, and update makes it anew on
-        # a uv-managed CPython with the same pins.
+        # (--managed-python) through uv's link for this minor, so 'uv python upgrade' moves it to a new
+        # patch version. Without that flag uv may take the Microsoft Store Python, whose launches can fail
+        # or hang until Windows restarts. An existing .venv keeps its interpreter if the minor matches,
+        # except one on the Store Python: status and start flag it, and update makes it anew on a
+        # uv-managed CPython with the same pins.
         Python               = '3.13'
         # uv --torch-backend: CUDA 13.0 wheels, because PyPI's Windows torch is CPU-only.
         TorchBackend         = 'cu130'
@@ -227,34 +229,33 @@
         # --enable-cors-header, their abbreviations and '--' from this list, then passes
         # --listen 127.0.0.1 and --port after it, since ComfyUI takes the last value given.
         Args                 = @('--disable-all-custom-nodes', '--offline', '--disable-smart-memory', '--fp8_e4m3fn-unet', '--fp8_e4m3fn-text-enc')
-        # More variable names that ComfyUI, not the image gate, inherits from the window that runs
-        # start. ComfyUI gets only what Windows and Python need, the GPU choice and allocator
-        # settings (CUDA_VISIBLE_DEVICES, CUDA_DEVICE_ORDER, PYTORCH_CUDA_ALLOC_CONF,
-        # PYTORCH_ALLOC_CONF), CUDA_PATH and the names listed here; the names OpenWebUI.InheritEnvironment refuses are refused
-        # here too. The image gate gets only what Windows and Python need.
+        # More variable names that ComfyUI, not the image gate, inherits from the window that runs start.
+        # Besides them, ComfyUI gets only what Windows and Python need, the GPU choice and allocator
+        # settings (CUDA_VISIBLE_DEVICES, CUDA_DEVICE_ORDER, PYTORCH_CUDA_ALLOC_CONF, PYTORCH_ALLOC_CONF)
+        # and CUDA_PATH. The names OpenWebUI.InheritEnvironment refuses are refused here too. The image gate
+        # gets only what Windows and Python need.
         InheritEnvironment   = @()
     }
 
     # Read-only file tools: mcpo serving @modelcontextprotocol/server-filesystem to Open WebUI, which
     # offers them to the model through native function calling.
     Files     = @{
-        # The only folder the tools may read, as a full path on a drive letter; empty turns them off
-        # and needs no Node.js. Use a dedicated folder that only you write to and that holds nothing
-        # secret: the model may quote any file in it. On Windows the server refuses a path that
-        # names an NTFS alternate stream, such as file.txt:Zone.Identifier, or that has a part which
-        # is a device name, such as NUL or aux.txt, or ends in a dot or a space; search_files skips
-        # such names without a word, and start refuses a Root whose own path holds one. It cannot
-        # read a file in a folder whose path is longer than 258 characters, since Windows does not
-        # let it enter such a folder.
-        # read_text_file returns a whole file unless the model asks for its head or tail, and a text
-        # file of 300 KB overflows local-chat's 32K context, which leaves the answer unusable.
-        # start refuses a drive root, %USERPROFILE% or a folder above it, a path through a link, a
-        # folder inside or around %LOCALAPPDATA%\local-ai, this repository, uv's tool folder,
-        # OpenWebUI.DataDir or ComfyUI.Dir, and a folder holding a hard link to a file with a name
-        # outside it, as a uv-made .venv has. Each start checks the folder against DenyPatterns;
-        # files added while mcpo runs are not checked. The server gets the folder spelled as on disk
-        # and repeats its full path on every search result line, so a short path such as C:\AI-Files
-        # works best.
+        # The only folder the tools may read, as a full path on a drive letter; empty turns them off and
+        # needs no Node.js. Use a dedicated folder that only you write to and that holds nothing secret:
+        # the model may quote any file in it. A short path such as C:\AI-Files works best, since the server
+        # gets the folder spelled as on disk and repeats its full path on every search result line.
+        # start refuses a drive root, %USERPROFILE% or a folder above it, a path through a link, a folder
+        # inside or around %LOCALAPPDATA%\local-ai, this repository, uv's tool folder, OpenWebUI.DataDir or
+        # ComfyUI.Dir, and a folder holding a hard link to a file with a name outside it, as a uv-made
+        # .venv has. Each start checks the folder against DenyPatterns; files added while mcpo runs are not
+        # checked.
+        # On Windows the server refuses a path that names an NTFS alternate stream, such as
+        # file.txt:Zone.Identifier, or that has a part which is a device name, such as NUL or aux.txt, or
+        # ends in a dot or a space. search_files skips such names silently, and start refuses a Root whose
+        # own path holds one. The server cannot read a file in a folder whose path is longer than 258
+        # characters, since Windows does not let it enter such a folder.
+        # read_text_file returns a whole file unless the model asks for its head or tail, so a text file
+        # of 300 KB overflows local-chat's 32K context and leaves the answer unusable.
         Root                 = ''
         # mcpo, installed as a uv tool on a uv-managed Python of this minor version. install
         # reinstalls it when McpoVersion, McpoWith, McpoExcludeNewer or Python differ from what
@@ -264,57 +265,57 @@
         # TOOL_SERVER_CONNECTIONS.
         McpoVersion          = '0.0.20'
         Python               = '3.12'
-        # Passed with --with, since mcpo 0.0.20 sets no upper bounds: mcp 2.x removed
-        # streamablehttp_client, which mcpo imports at startup (open-webui/mcpo#303), and FastAPI
-        # 0.145.0 removed the **extra that mcpo's FastAPI(ssl_certfile=...) call needs. pydantic
-        # 2.14.1 works with server-filesystem 2.0.1, whose tool schemas 2.1.0 keeps, so it needs no cap;
-        # 2.2.0 only makes read_text_file's head and tail integers, which mcpo maps to int, and 2.3.0
-        # only adds descriptions; mcpo served 2.3.0's five offered tools on 2026-11-14.
+        # Passed with --with, since mcpo 0.0.20 sets no upper bounds. mcp 2.x lacks streamablehttp_client,
+        # which mcpo imports at startup (open-webui/mcpo#303), and FastAPI 0.145.0 and later lack the
+        # **extra that mcpo's FastAPI(ssl_certfile=...) call needs. pydantic needs no cap: 2.14.1 works with
+        # server-filesystem 2.0.1, whose tool schemas 2.1.0 keeps; 2.2.0 only makes read_text_file's head
+        # and tail integers, which mcpo maps to int, and 2.3.0 only adds descriptions. mcpo served 2.3.0's
+        # five offered tools on 2026-11-14.
         McpoWith             = @('mcp==1.30.0', 'fastapi<0.145')
         # Passed as --exclude-newer: mcpo's other dependencies resolve to their newest release
         # uploaded before this time (44 packages, tested with server-filesystem 2.0.1). Empty lifts
         # it, and the fastapi cap above still holds: on 2026-10-27 that resolved FastAPI 0.144.0 with
         # mcp 1.30.0 (44 packages), and mcpo started and served the tools.
         McpoExcludeNewer     = '2026-10-13T00:00:00Z'
-        # @modelcontextprotocol/server-filesystem, which needs node >= 24. 2.0.1 was the first release
-        # with the 2026-10-25 path-check fixes (GHSA-7rgq-gccq-qphx, GHSA-4gxg-m5jx-9j57), which
-        # affect its read tools in 1.0.0 and 2.0.0; every later release keeps them. 2.1.0 serves a
-        # path that spells Root in another letter case, adds a hardLinks line to get_file_info, and
-        # stops a search_files that visits more than 100000 entries or waits 15 s on one filesystem
-        # call. 2.2.0 adds the write tools append_file and copy_file, which DisabledTools hides; its
-        # search_files names the folders it could not read and fails on a pattern over 64 KB, its
-        # read_text_file takes head and tail as whole numbers and returns nothing for 0, a path
-        # through a dangling link reports 'Broken symlink', and a path that starts with ~\ means the
-        # home folder, which the path check refuses unless it lies in Root.
-        # 2.3.0 (2026-11-11) serves the same 16 tools. It fixes GHSA-p9cv-8g75-4xcg, a race between
-        # read_text_file's path check and its open: reads now enter the checked folder and open the
-        # file there, which closes the race on Linux and macOS and, by its own account, only narrows
-        # it on Windows. It fixes GHSA-7m4x-rv66-mxhh in move_file, which DisabledTools hides. On
-        # Windows it refuses alternate streams, device names and names ending in a dot or a space,
-        # and cannot read a file in a folder longer than 258 characters (see Root above). A bare
-        # name in search_files' excludePatterns now matches at any depth, and list_directory's
-        # description names the hidden list_directory_with_sizes and directory_tree. Its file:// resources and
-        # --confine-roots go unused, since mcpo 0.0.20 serves only tools and offers no MCP Roots.
-        # The launcher starts it with --read-only, which withholds every tool it does not mark
-        # read-only before mcpo connects; DisabledTools and start's route check stay a
-        # second guard. --read-only-dir must stay unused: it adds a block to list_allowed_directories,
-        # which start's check reads as a second folder. 2.3.0 was taken on 2026-11-14 for its
-        # advisory fixes, before it was 14 days old (2026-11-25T07:10Z), at the maintainer's word.
-        # Must equal the version that ServerPackage\package.json pins; install runs npm ci on that
-        # folder's lockfile.
-        # Its overrides hold @modelcontextprotocol/server and core at 2.3.1 (2026-10-05), the SDK the
-        # server ran on from 2.0.1 to 2.3.0, which server-filesystem's ^2.3.1 accepts. They hold
-        # minimatch at 11.0.8 (2026-11-11) and brace-expansion at 5.0.13 (2026-11-11). Those fix
-        # GHSA-hqmv-qgp3-jx75 and GHSA-cf2h-pxjq-68xw in minimatch and GHSA-6jwq-xf8q-xcwh in
-        # brace-expansion, patterns that could tie up search_files, and GHSA-c859-jr93-m5j4 in
-        # minimatch's escape(), which the server does not call. The server's own ^11.0.4 and
-        # minimatch's own ^5.0.12 admit the versions before those fixes, and npm audit does not list
-        # these advisories yet, so the overrides keep a lockfile made again from falling back to
-        # them. Both were taken before they
-        # were 14 days old, at the maintainer's word, as was @isaacs/nonrecursive-glob-match 1.1.0
-        # (2026-11-05), which minimatch 11.0.8 needs. The lockfile was made with npm's --before
-        # 2026-11-11T12:28:00Z, so it holds nothing newer. 2.2.0 and later need no glob, so
-        # GHSA-3g3m-2fjr-6pw4 no longer applies.
+        # @modelcontextprotocol/server-filesystem, which needs node >= 24. Must equal the version that
+        # ServerPackage\package.json pins; install runs npm ci on that folder's lockfile.
+        # Every release from 2.0.1 on has the 2026-10-25 path-check fixes (GHSA-7rgq-gccq-qphx,
+        # GHSA-4gxg-m5jx-9j57), which affect the read tools of 1.0.0 and 2.0.0. 2.3.0 (2026-11-11) fixes
+        # GHSA-p9cv-8g75-4xcg, a race between read_text_file's path check and its open: reads enter the
+        # checked folder and open the file there, which closes the race on Linux and macOS and, by its own
+        # account, only narrows it on Windows. It also fixes GHSA-7m4x-rv66-mxhh in move_file, which
+        # DisabledTools hides. 2.3.0 was taken on 2026-11-14 for its advisory fixes, before it was 14 days
+        # old (2026-11-25T07:10Z), at the maintainer's word.
+        # How 2.3.0 behaves, by the release each part came with:
+        # - 2.1.0: it serves a path that spells Root in another letter case, get_file_info has a hardLinks
+        #   line, and search_files stops once it visits more than 100000 entries or waits 15 s on one
+        #   filesystem call.
+        # - 2.2.0: it has the write tools append_file and copy_file, which DisabledTools hides. search_files
+        #   names the folders it could not read and fails on a pattern over 64 KB. read_text_file takes
+        #   head and tail as whole numbers and returns nothing for 0. A path through a dangling link reports
+        #   'Broken symlink', and a path that starts with ~\ means the home folder, which the path check
+        #   refuses unless it lies in Root.
+        # - 2.3.0: it serves the same 16 tools. On Windows it refuses alternate streams, device names and
+        #   names ending in a dot or a space, and cannot read a file in a folder longer than 258 characters
+        #   (see Root above). A bare name in search_files' excludePatterns matches at any depth, and
+        #   list_directory's description names the hidden list_directory_with_sizes and directory_tree.
+        # Its file:// resources and --confine-roots go unused, since mcpo 0.0.20 serves only tools and
+        # offers no MCP Roots.
+        # The launcher starts it with --read-only, which withholds every tool it does not mark read-only
+        # before mcpo connects; DisabledTools and start's route check stay a second guard. --read-only-dir
+        # must stay unused: it adds a block to list_allowed_directories, which start's check reads as a
+        # second folder.
+        # The overrides in ServerPackage\package.json hold @modelcontextprotocol/server and core at 2.3.1
+        # (2026-10-05), the SDK the server ran on from 2.0.1 to 2.3.0, which server-filesystem's ^2.3.1
+        # accepts. They hold minimatch at 11.0.8 (2026-11-11) and brace-expansion at 5.0.13 (2026-11-11),
+        # which fix GHSA-hqmv-qgp3-jx75 and GHSA-cf2h-pxjq-68xw in minimatch and GHSA-6jwq-xf8q-xcwh in
+        # brace-expansion, patterns that could tie up search_files, and GHSA-c859-jr93-m5j4 in minimatch's
+        # escape(), which the server does not call. The server's own ^11.0.4 and minimatch's own ^5.0.12
+        # admit the versions before those fixes, and npm audit does not list these advisories yet, so the
+        # overrides keep a lockfile made again from falling back to them. Both were taken before they were
+        # 14 days old, at the maintainer's word, as was @isaacs/nonrecursive-glob-match 1.1.0 (2026-11-05),
+        # which minimatch 11.0.8 needs. The lockfile was made with npm's --before 2026-11-11T12:28:00Z, so
+        # it holds nothing newer. 2.2.0 and later need no glob, so GHSA-3g3m-2fjr-6pw4 does not apply.
         ServerVersion        = '2.3.0'
         ServerPackage        = 'config\files-server'
         # The tools Open WebUI offers the model, as the server names them. Open WebUI sees them under
@@ -356,7 +357,7 @@
         # Prerequisites, installed when missing and upgraded only by `update -Tools`. Id is the
         # winget package, Command the program whose presence on PATH counts as installed, and
         # Scope the winget --scope: 'user', or 'machine', which asks for administrator approval.
-        # unverified: whether uv's Microsoft.VCRedist.2015+.x64 dependency asks for elevation.
+        # It is not verified whether uv's Microsoft.VCRedist.2015+.x64 dependency asks for elevation.
         Packages = @{
             Ollama = @{ Id = 'Ollama.Ollama'; Command = 'ollama'; Scope = 'user' }
             Uv     = @{ Id = 'astral-sh.uv'; Command = 'uv'; Scope = 'user' }
