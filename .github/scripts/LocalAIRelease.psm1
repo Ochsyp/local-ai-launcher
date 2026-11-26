@@ -5,7 +5,8 @@
 # Functions behind ci\release-build.ps1, which the standard's release.yml runs: the release zip
 # with its manifest, the check of that zip, the asset install.ps1 taken from it, and SHA256SUMS.
 # The standard's own tools check VERSION, CHANGELOG.md and the tags, and write the release notes.
-# CONTRIBUTING.md describes the release contract they keep, and tests\Release.Tests.ps1 tests them. They run in Windows PowerShell 5.1 with git on PATH.
+# CONTRIBUTING.md describes the release contract they keep, and tests\Release.Tests.ps1 tests them.
+# They run in Windows PowerShell 5.1 with git on PATH.
 # Every function takes its inputs as parameters, so importing the module runs nothing.
 
 # Errors stop the module's functions whatever preference the importing session has.
