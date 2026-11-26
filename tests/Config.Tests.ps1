@@ -96,7 +96,8 @@ Describe 'config\defaults.psd1' {
     }
 
     # The lists of names Open WebUI and ComfyUI inherit beyond their own stay empty lists a settings.psd1 can fill; the rules for those
-    # names are tested with Get-LocalAISettings, and the names each service inherits with Get-LocalAIService, in LocalAI.Core.Tests.ps1 and LocalAI.Start.Tests.ps1.
+    # names are tested with Get-LocalAISettings, and the names each service inherits with Get-LocalAIService, in
+    # LocalAI.Core.Tests.ps1 and LocalAI.Start.Tests.ps1.
     It 'names no further variable for Open WebUI or ComfyUI to inherit, as empty lists' {
         $defaults = Import-PowerShellDataFile -LiteralPath $defaultsPath
         $settings = Get-LocalAISettings -DefaultsPath $defaultsPath
