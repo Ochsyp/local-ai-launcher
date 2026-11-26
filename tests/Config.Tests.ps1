@@ -3,12 +3,14 @@
 # -------------------------------------------------------
 #
 # Pester 6 checks on the tracked configuration and source files: defaults.psd1 must load and
-# validate on its own, its hash and commit pins, shortcut folder and backup count must be set,
-# it must list no superseded alias and no further variable for a service to inherit, the
-# tracked Modelfile must match Model.Source, the ComfyUI workflow, node mapping and constraints
-# must have the shape the image path needs, the files server's package.json and lockfile must
-# pin Files.ServerVersion and the overridden MCP packages, the launcher's own releases come from
-# its repository, and source files must stay ASCII.
+# validate on its own, its hash and commit pins and shortcut folder must be set, it must list no
+# superseded alias and no further variable for a service to inherit, the tracked Modelfile must
+# match Model.Source, the ComfyUI workflow, node mapping and constraints must have the shape the
+# image path needs, the files server's package.json and lockfile must pin Files.ServerVersion and
+# overrides that fit the ranges of the packages that ask for them, the launcher's own releases
+# come from its repository, and source files must stay ASCII. The checks hold across files and
+# forms, and a pin's value lives in its own file only, so a version bump changes no test unless
+# it changes what the launcher relies on, such as the files server's list of tools.
 
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', '',
     Justification = 'Pester shares BeforeDiscovery and BeforeAll variables with the It blocks.')]
@@ -47,14 +49,12 @@ Describe 'config\defaults.psd1' {
         $settings.Images.Sha256 | Should -Match '^[0-9a-f]{64}$'
     }
 
-    It 'pins ComfyUI to the v0.42.5 tag and its full lowercase commit' {
+    # Get-LocalAISettings also checks that ComfyUI.ExcludeNewer is a UTC time.
+    It 'pins ComfyUI to a release tag and its full lowercase commit' {
         $settings = Get-LocalAISettings -DefaultsPath $defaultsPath
-        $settings.ComfyUI.Ref | Should -BeExactly 'v0.42.5'
+        $settings.ComfyUI.Ref | Should -MatchExactly '^v\d+\.\d+\.\d+$'
         $settings.ComfyUI.Commit | Should -MatchExactly '^[0-9a-f]{40}$'
-        $settings.ComfyUI.Commit | Should -BeExactly '483dae4326356b81de05d27aca3f433dd323cc25'
         $settings.ComfyUI.Repo | Should -BeExactly 'https://github.com/Comfy-Org/ComfyUI.git'
-        # The time of that commit, so unpinned requirements resolve as they stood when v0.42.5 was cut.
-        $settings.ComfyUI.ExcludeNewer | Should -BeExactly '2026-10-23T00:07:14Z'
     }
 
     It 'pins the checkpoint download to a full Hugging Face commit' {
@@ -105,10 +105,6 @@ Describe 'config\defaults.psd1' {
             @($defaults[$service].InheritEnvironment).Count | Should -Be 0
             @($settings[$service].InheritEnvironment) | Should -BeNullOrEmpty
         }
-    }
-
-    It 'keeps the 3 newest Open WebUI backups that update makes' {
-        (Get-LocalAISettings -DefaultsPath $defaultsPath).Update.KeepBackups | Should -Be 3
     }
 
     # The rules for each Launcher value are tested with Get-LocalAISettings in LocalAI.Tests.ps1.
@@ -244,11 +240,10 @@ Describe 'config\comfyui' {
         $parsed.Count | Should -Be $nodes.Count
     }
 
-    It 'pins torch and torchvision in the constraints' {
+    It 'pins exactly torch and torchvision in the constraints, each to one version' {
         $lines = @([IO.File]::ReadAllLines((Join-Path $repoRoot $settings.ComfyUI.Constraints)) | Where-Object { $_ -match '^\s*[^#\s]' } | ForEach-Object { $_.Trim() })
-        $lines | Should -Contain 'torch==2.14.1'
-        $lines | Should -Contain 'torchvision==0.29.1'
-        $lines.Count | Should -Be 2
+        foreach ($line in $lines) { $line | Should -MatchExactly '^[a-z]+==\d+\.\d+\.\d+$' }
+        @($lines | ForEach-Object { ($_ -split '==')[0] } | Sort-Object) | Should -Be @('torch', 'torchvision')
     }
 }
 
@@ -261,6 +256,15 @@ Describe 'config\files-server' {
         $manifest = ConvertFrom-LocalAIJson -Text ([IO.File]::ReadAllText((Join-Path $folder 'package.json')))
         # Windows PowerShell 5.1's ConvertFrom-Json refuses the lockfile's empty key for the root package.
         $lock = ConvertFrom-LocalAIJson -Text ([IO.File]::ReadAllText((Join-Path $folder 'package-lock.json')))
+
+        # True when the version X.Y.Z $Version fits the npm range $Range, an exact X.Y.Z or a ^X.Y.Z with X above 0, the only
+        # forms the packages here ask for. Any other range throws, so a new form gets a rule here first.
+        function Test-NpmRange([string]$Version, [string]$Range) {
+            if ($Range -match '^\d+\.\d+\.\d+$') { return $Version -ceq $Range }
+            if ($Range -notmatch '^\^([1-9]\d*)\.\d+\.\d+$') { throw "No rule for the npm range '$Range'." }
+            $low = [version]$Range.Substring(1)
+            return ([version]$Version).Major -eq $low.Major -and [version]$Version -ge $low
+        }
     }
 
     It 'is a private package that depends on exactly Files.ServerVersion of the server and nothing else' {
@@ -284,27 +288,47 @@ Describe 'config\files-server' {
         }
     }
 
-    It 'pins the version 2.3.0, which fixes GHSA-p9cv-8g75-4xcg and keeps the 2026-10-25 path-check fixes that came with 2.0.1' {
-        $settings.Files.ServerVersion | Should -BeExactly '2.3.0'
-    }
-
     It 'holds every override at an exact version, and the lockfile at those' {
         @($manifest.overrides.Keys | Sort-Object) | Should -Be @('@modelcontextprotocol/core', '@modelcontextprotocol/server', 'brace-expansion', 'minimatch')
         foreach ($package in $manifest.overrides.Keys) {
             $manifest.overrides[$package] | Should -MatchExactly '^\d+\.\d+\.\d+$' -Because "$package is pinned exactly"
             $lock.packages["node_modules/$package"].version | Should -BeExactly $manifest.overrides[$package]
         }
-        # 2.3.1 is the SDK that server versions 2.0.1 to 2.3.0 run on, and it satisfies the server's ^2.3.1.
-        $manifest.overrides['@modelcontextprotocol/server'] | Should -BeExactly '2.3.1'
-        $lock.packages["node_modules/$name"].dependencies['@modelcontextprotocol/server'] | Should -BeExactly '^2.3.1'
     }
 
-    It 'holds minimatch at 11.0.8 and brace-expansion at 5.0.13, which fix GHSA-hqmv-qgp3-jx75, GHSA-cf2h-pxjq-68xw and GHSA-6jwq-xf8q-xcwh, and locks no glob' {
-        # The server's own ^11.0.4 and minimatch's own ^5.0.12 also admit unfixed versions, so the overrides pin both.
-        $manifest.overrides['minimatch'] | Should -BeExactly '11.0.8'
-        $manifest.overrides['brace-expansion'] | Should -BeExactly '5.0.13'
-        $lock.packages["node_modules/$name"].dependencies['minimatch'] | Should -BeExactly '^11.0.4'
-        $lock.packages['node_modules/minimatch'].dependencies['brace-expansion'] | Should -BeExactly '^5.0.12'
+    It 'holds each override within the range of every package in the lockfile that asks for it' {
+        foreach ($package in $manifest.overrides.Keys) {
+            $asked = 0
+            foreach ($key in @($lock.packages.Keys | Where-Object { $_ })) {
+                foreach ($kind in 'dependencies', 'peerDependencies', 'optionalDependencies') {
+                    $wanted = $lock.packages[$key][$kind]
+                    if ($wanted -and $wanted.ContainsKey($package)) {
+                        $asked++
+                        Test-NpmRange -Version $manifest.overrides[$package] -Range $wanted[$package] |
+                            Should -BeTrue -Because "$key asks for $package $($wanted[$package]) in $kind"
+                    }
+                }
+            }
+            # A package nothing asks for gains nothing from an override.
+            $asked | Should -BeGreaterThan 0 -Because "some package must ask for $package"
+        }
+    }
+
+    It 'reads the npm ranges the lockfile uses' {
+        Test-NpmRange -Version '2.3.1' -Range '2.3.1' | Should -BeTrue
+        Test-NpmRange -Version '2.3.2' -Range '2.3.1' | Should -BeFalse
+        Test-NpmRange -Version '11.0.8' -Range '^11.0.4' | Should -BeTrue
+        Test-NpmRange -Version '11.0.3' -Range '^11.0.4' | Should -BeFalse
+        Test-NpmRange -Version '12.0.0' -Range '^11.0.4' | Should -BeFalse
+        { Test-NpmRange -Version '1.0.0' -Range '~1.0.0' } | Should -Throw -ExpectedMessage "No rule for the npm range '~1.0.0'."
+        { Test-NpmRange -Version '0.1.0' -Range '^0.1.0' } | Should -Throw
+    }
+
+    It 'locks one copy each of minimatch and brace-expansion, the overridden ones, and no glob' {
+        # The server's own range for minimatch, and minimatch's for brace-expansion, also admit versions without the fixes that
+        # config\defaults.psd1 names, so the overrides pin both.
+        @($manifest.overrides.Keys) | Should -Contain 'minimatch'
+        @($manifest.overrides.Keys) | Should -Contain 'brace-expansion'
         # The server does not depend on glob, so GHSA-3g3m-2fjr-6pw4 does not apply.
         $lock.packages["node_modules/$name"].dependencies.ContainsKey('glob') | Should -BeFalse
         # One copy each of minimatch and brace-expansion, and none of glob, so no older one stays nested under another package.
@@ -344,10 +368,10 @@ Describe 'Files tool lists and mcpo pins' {
         $files.HealthTimeoutSeconds | Should -Be 20
     }
 
-    It 'installs mcpo 0.0.20 with mcp 1.30.0 and FastAPI below 0.145 on Python 3.12, resolved as of a fixed time' {
-        $files.McpoVersion | Should -BeExactly '0.0.20'
-        $files.McpoWith | Should -Be @('mcp==1.30.0', 'fastapi<0.145')
-        $files.Python | Should -BeExactly '3.12'
+    It 'installs mcpo at one version with mcp pinned and FastAPI capped, resolved as of a fixed time' {
+        $files.McpoVersion | Should -MatchExactly '^\d+\.\d+\.\d+$'
+        @($files.McpoWith | Where-Object { $_ -match '^mcp==\d+\.\d+\.\d+$' }).Count | Should -Be 1
+        @($files.McpoWith | Where-Object { $_ -match '^fastapi<\d+(\.\d+)*$' }).Count | Should -Be 1
         $files.McpoExcludeNewer | Should -MatchExactly '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$'
     }
 }
