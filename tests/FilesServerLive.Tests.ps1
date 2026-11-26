@@ -8,7 +8,7 @@ param()
 BeforeDiscovery {
     # Pester builds -ForEach data here, before BeforeAll runs.
     $discoveredTools = @((Import-PowerShellDataFile -LiteralPath (Join-Path $PSScriptRoot '..\config\defaults.psd1')).Files.AllowedTools)
-    # As $readOnlyTools below.
+    # The same list as $readOnlyTools below.
     $discoveredReadOnly = @($discoveredTools) + @('read_file', 'read_multiple_files', 'read_media_file', 'directory_tree', 'list_directory_with_sizes')
 }
 
@@ -152,11 +152,12 @@ Describe 'Get-LiveFailureText' {
 
 Describe 'Invoke-LiveCheck against a stand-in for mcpo' {
     BeforeAll {
-        # A compiled program, as a PowerShell stand-in costs seconds per start on a CI runner. It answers with
-        # spec.json from its folder, or spec-open.json when mcpo.json hides no tool, follows mode.txt, adds its port
-        # and PID to started.txt, and what mcpo.json hides and whether it passes --read-only to config.txt. As the real server
-        # does, it lists the folder that the mcpo.json named by --config gives, then those in extra.txt; with mode
-        # KeepFolder it lists the folder of its first start instead, as an mcpo that kept its old settings would.
+        # A compiled stand-in, since a PowerShell one costs seconds per start on a CI runner. It answers with
+        # spec.json from its folder, or spec-open.json when mcpo.json hides no tool, and follows mode.txt. It adds
+        # its port and PID to started.txt, and to config.txt what mcpo.json hides and whether it passes --read-only.
+        # Like the real server, it lists the folder that the mcpo.json named by --config gives, then those in
+        # extra.txt; in mode KeepFolder it lists the folder of its first start instead, as an mcpo that kept its old
+        # settings would.
         $standInDir = Join-Path $TestDrive 'stand-in'
         $null = New-Item -ItemType Directory -Path $standInDir
         $standIn = Join-Path $standInDir 'mcpo.exe'
