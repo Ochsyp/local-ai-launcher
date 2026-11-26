@@ -7,6 +7,10 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Repository standard 1.3.1: the copies and blocks of this release.
+
 ## [1.2.0] - 2026-11-26
 
 ### Added

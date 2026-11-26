@@ -27,9 +27,9 @@ holds for the maintainer too.
 One pull request holds one phase or one change.
 
 Repository work happens only on a machine with the maintainer's git configuration, never in a
-cloud session. That configuration turns the hooks on and loads the denylists for every clone of
-this repository's GitHub URL. A clone made from a local path gets no hooks, so run
-`git config core.hooksPath .githooks` in it right after cloning.
+hosted environment such as a codespace or a cloud workspace. That configuration turns the hooks
+on and loads the denylists for every clone of this repository's GitHub URL. A clone made from a
+local path gets no hooks, so run `git config core.hooksPath .githooks` in it right after cloning.
 
 An outside contributor's pull request is reviewed in the browser and through CI. Hooks run from
 the checked-out tree with the maintainer's credentials, even during a fetch, so:
@@ -70,9 +70,8 @@ URL. Anywhere else, such as a clone made from a local path, turn them on once af
 
 Files listed in `.github/standard/MANIFEST` are copies of the repository standard. Never edit
 them here: change repo-standard, release it, and sync with a `chore/standard-X.Y.Z` pull request.
-CI fails when a copy differs or changes on another branch. Sync summaries and pull request texts
-here name no other repository. An exemption, an accepted finding or a dropped check comes in a
-`chore/privacy-*` pull request of its own.
+CI fails when a copy differs or changes on another branch. An exemption, an accepted finding or a
+dropped check comes in a `chore/privacy-*` pull request of its own.
 
 When a private repository goes public, it does so in this order. A pull request sets
 `VISIBILITY=public`, and `tools/sync` writes the public block texts into it. The maintainer
@@ -161,11 +160,11 @@ comment above each exemption says what it covers.
 
 GitHub Actions builds each release, and the maintainer publishes it in the browser.
 
-1. A session opens the release pull request `chore/release-X.Y.Z`, written with
+1. The maintainer opens the release pull request `chore/release-X.Y.Z`, written with
    `.github/standard/bin/release-prepare`: `VERSION`, the `VERSION_COPY` files, and the
    `CHANGELOG.md` section with its links. Its body names the dependency updates since the last
-   release. CI checks the version, the date and the links. The `release` workflow builds the
-   release twice and compares the builds.
+   release. CI checks the version, the date and the links. For a zip, tar or stack release, the
+   `release` workflow builds it twice and compares the builds.
 2. The maintainer reviews and squash-merges it. The push to `main` that changes `VERSION` runs
    the `release` workflow: the checks of `ci` on that commit, the build, an attestation in the
    public repositories, and a draft release `vX.Y.Z` of that commit.
@@ -180,8 +179,8 @@ GitHub Actions builds each release, and the maintainer publishes it in the brows
    clients and updaters ignore it, and ship X.Y.Z+1. For a container image, the tick also moves
    `latest` back.
 
-Sessions prepare release pull requests. They never create a tag, and never publish, edit or
-delete a release.
+Only the maintainer publishes a release. No one creates a release tag by hand, and no script or
+automation publishes a release, or edits or deletes a published one.
 <!-- standard:end releasing -->
 
 In this repository, each release pull request also points the README's *Install from a release*
