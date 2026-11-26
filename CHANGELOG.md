@@ -7,6 +7,11 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The README has a section "Who it is for" after its introduction, and "What can go wrong" after
+  "Logs": a list of known problems, each with its cause, its fix and the section that explains it.
+
 ### Changed
 
 - Repository standard 1.2.0: the copies and blocks of this release.
