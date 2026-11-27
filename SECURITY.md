@@ -209,7 +209,7 @@ control.
   pull request and each push to `main`, and the whole history every Monday and when run by hand.
   Positive controls run first, so a scanner that finds nothing fails. Findings are redacted.
   GitHub's secret scanning and push protection are on as well. GitHub turns the Monday run off
-  after 60 days without activity in this repository.
+  after 60 days without activity in this repository; repo-standard's `tools/status` reports it.
 - **Hooks.** The hooks in `.githooks/` check every commit and push on the maintainer's machine:
   content, path names, messages, ref names and identities, against the rule packs and a denylist
   that never leaves that machine. The maintainer also checks regularly, with repo-standard's
