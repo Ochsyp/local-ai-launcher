@@ -1085,13 +1085,51 @@ Describe 'Install-LocalAI' {
         $state.Images.VerifiedFiles[$checkpointSha].Length | Should -Be 6939220250
     }
 
-    It 'sets up ComfyUI and then the checkpoint after Open WebUI' {
+    It 'installs Git in the images step: after the chat parts and the file tools, before ComfyUI and the checkpoint' {
+        $context.Settings.Files.Root = 'C:\Users\User\Documents'
         $order = New-Object System.Collections.Generic.List[string]
+        Mock Install-WingetPackage -ModuleName LocalAI -MockWith { $order.Add($Package.Id); 'present' }
+        Mock Install-ChatModel -ModuleName LocalAI -MockWith {
+            $order.Add('ChatModel')
+            $State['Model'] = @{ Alias = 'local-chat'; BaseDigest = $pin; ModelfileSha256 = ('d' * 64) }
+            $State
+        }
         Mock Install-OpenWebUI -ModuleName LocalAI -MockWith { $order.Add('OpenWebUI'); @{ Version = '0.12.4'; Path = 'C:\x\open-webui.exe'; Python = '3.12.10' } }
+        Mock Install-FilesServer -ModuleName LocalAI -MockWith { $order.Add('Files'); $filesEntry }
         Mock Install-ComfyUI -ModuleName LocalAI -MockWith { $order.Add('ComfyUI'); @{ Commit = $comfyCommit; Pinned = $true; Python = $comfyPython } }
         Mock Install-ImageModel -ModuleName LocalAI -MockWith { $order.Add('ImageModel'); @{ Path = 'C:\x'; Sha256 = $checkpointSha } }
         $null = Install-LocalAI -Context $context 6>$null
-        $order | Should -Be @('OpenWebUI', 'ComfyUI', 'ImageModel')
+        $order | Should -Be @('Ollama.Ollama', 'astral-sh.uv', 'ChatModel', 'OpenWebUI', 'Files', 'Git.Git', 'ComfyUI', 'ImageModel')
+    }
+
+    It 'still installs the chat model and Open WebUI when Git fails, warns that images are not set up, and returns 2' {
+        $said = 'winget could not install Git.Git (exit code 0x8A15000F); see C:\x\winget-Git.Git.log.'
+        Mock Install-WingetPackage -ModuleName LocalAI -ParameterFilter { $Package.Id -eq 'Git.Git' } -MockWith { throw $said }
+        $output = @(Install-LocalAI -Context $context 3>&1 6>&1)
+        @($output | Where-Object { $_ -is [int] }) | Should -Be @(2)
+        $warning = @($output | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message })
+        $warning.Count | Should -Be 1
+        $warning[0] | Should -BeLike "Images are not set up: $said Chat works without them*'local-ai install' again*Images.Enabled*"
+        ($output -join "`n") | Should -BeLike '*Install finished with 1 warning(s); see above.*'
+        Should -Invoke Install-ChatModel -ModuleName LocalAI -Times 1 -Exactly
+        Should -Invoke Install-OpenWebUI -ModuleName LocalAI -Times 1 -Exactly
+        Should -Invoke Install-ComfyUI -ModuleName LocalAI -Times 0 -Exactly
+        Should -Invoke Install-ImageModel -ModuleName LocalAI -Times 0 -Exactly
+        $stamp = Read-LocalAIState -Path (Join-Path $root 'install-stamp.json')
+        $stamp.Model.Alias | Should -Be 'local-chat'
+        $stamp.OpenWebUI.Version | Should -Be '0.12.4'
+        $stamp.ContainsKey('ComfyUI') | Should -BeFalse
+        $stamp.ContainsKey('Images') | Should -BeFalse
+    }
+
+    It 'stops with no chat model when <Id> fails, as before' -ForEach @(
+        @{ Id = 'Ollama.Ollama' }
+        @{ Id = 'astral-sh.uv' }
+    ) {
+        Mock Install-WingetPackage -ModuleName LocalAI -ParameterFilter { $Package.Id -eq $Id } -MockWith { throw 'winget failed' }
+        { Install-LocalAI -Context $context 6>$null } | Should -Throw -ExpectedMessage 'winget failed'
+        Should -Invoke Install-ChatModel -ModuleName LocalAI -Times 0 -Exactly
+        Should -Invoke Install-WingetPackage -ModuleName LocalAI -Times 0 -Exactly -ParameterFilter { $Package.Id -eq 'Git.Git' }
     }
 
     It 'passes the checkpoint record state.json keeps to the checkpoint step' {

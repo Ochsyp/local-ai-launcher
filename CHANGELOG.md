@@ -17,6 +17,9 @@ All notable changes to this project are listed here. The format follows
 - A failed save no longer loses `state.json`, `install-stamp.json` or the file `current`. When
   Windows has removed the old file but cannot move the new one into place, as when a scanner holds
   it, the launcher moves the new file there, or keeps it as `.tmp` and names it in the error.
+- A failed Git install no longer stops `install` before the chat model and Open WebUI. Git, which
+  only ComfyUI needs, now comes with the images, after the chat parts and the file tools. When it
+  fails, `install` warns that images are not set up and ends with exit code 2, as the README says.
 
 ## [1.2.0] - 2026-11-26
 
