@@ -1756,16 +1756,6 @@ Describe 'Start-LocalAI' {
         $repoRoot = Split-Path $PSScriptRoot -Parent
         $python = [pscustomobject]@{ Id = 1624; Name = 'python'; Path = 'C:\uv\python\python.exe'; StartTicks = 222 }
 
-        # Run Start-LocalAI and return @{ Code; Printed; Warnings } with host text and warnings joined.
-        function Invoke-StartVerb([hashtable]$Context) {
-            $output = @(Start-LocalAI -Context $Context 3>&1 6>&1)
-            return @{
-                Code     = @($output | Where-Object { $_ -is [int] })
-                Printed  = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$($_.MessageData)" }) -join "`n"
-                Warnings = @($output | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message }) -join "`n"
-            }
-        }
-
         # Leave what install sets up for the file tools: a served folder beside Paths.Root holding one file, the programs and script
         # the stamp names, files.key, and the Files entry, added to $Complete and saved. Sets Files.Root and Ports.Files; returns @{ Root; Key }.
         function Initialize-TestFileTool([hashtable]$Settings, [hashtable]$Paths, [hashtable]$Complete) {

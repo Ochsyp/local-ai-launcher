@@ -8,7 +8,8 @@
 # match Model.Source, the ComfyUI workflow, node mapping and constraints must have the shape the
 # image path needs, the files server's package.json and lockfile must pin Files.ServerVersion and
 # overrides that fit the ranges of the packages that ask for them, the launcher's own releases
-# come from its repository, and source files must stay ASCII. The checks hold across files and
+# come from its repository, the image gate's test packages must carry hashes that CI requires,
+# and source files must stay ASCII. The checks hold across files and
 # forms, and a pin's value lives in its own file only, so a version bump changes no test unless
 # it changes what the launcher relies on, such as the files server's list of tools.
 
@@ -374,6 +375,26 @@ Describe 'Files tool lists and mcpo pins' {
         @($files.McpoWith | Where-Object { $_ -match '^mcp==\d+\.\d+\.\d+$' }).Count | Should -Be 1
         @($files.McpoWith | Where-Object { $_ -match '^fastapi<\d+(\.\d+)*$' }).Count | Should -Be 1
         $files.McpoExcludeNewer | Should -MatchExactly '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$'
+    }
+}
+
+Describe 'tests\requirements.txt' {
+    It 'pins every package to one version with SHA-256 hashes, and ci\test.ps1 installs it with --require-hashes as wheels only' {
+        $repoRoot = Split-Path $PSScriptRoot -Parent
+        $text = [IO.File]::ReadAllText((Join-Path $repoRoot 'tests\requirements.txt'))
+        # A requirement may go on over continuation lines, as uv and Dependabot write its hashes.
+        $joined = $text -replace '\\\r?\n', ' '
+        $lines = @($joined -split '\r?\n' | Where-Object { $_.Trim() -and -not $_.TrimStart().StartsWith('#') })
+        $names = @(foreach ($line in $lines) {
+                $line | Should -Match '^[A-Za-z0-9][A-Za-z0-9._-]*==[0-9][^\s;]*\s+--hash=sha256:[0-9a-f]{64}(\s+--hash=sha256:[0-9a-f]{64})*\s*$'
+                ($line -split '==')[0].ToLowerInvariant()
+            })
+        # The two that the image gate imports; every package they pull in must be listed too, or --require-hashes refuses the install.
+        $names | Should -Contain 'aiohttp'
+        $names | Should -Contain 'yarl'
+        @($names | Select-Object -Unique).Count | Should -Be $names.Count
+        $stage = [IO.File]::ReadAllText((Join-Path $repoRoot 'ci\test.ps1'))
+        $stage | Should -Match "pip install [^\r\n]*--require-hashes --only-binary :all: -r \(Join-Path \`$root 'tests\\requirements\.txt'\)"
     }
 }
 

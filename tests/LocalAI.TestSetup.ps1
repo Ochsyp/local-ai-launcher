@@ -170,6 +170,28 @@ $fakeGit = {
 # Return the lowercase hex SHA-256 of the file $Path.
 function Get-TestFileSha256([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 
+# Run the verb function $Command with the context $Context and the further arguments $Arguments, and return @{ Code; Printed; Warnings; Records;
+# Other }: the exit codes it returned, its host text and its warnings each joined with new lines, the host records, and any other pipeline output.
+function Invoke-TestLauncherVerb([string]$Command, [hashtable]$Context, [hashtable]$Arguments = @{}) {
+    $output = @(& $Command -Context $Context @Arguments 3>&1 6>&1)
+    $records = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] })
+    return @{
+        Code     = @($output | Where-Object { $_ -is [int] })
+        Printed  = @($records | ForEach-Object { "$($_.MessageData)" }) -join "`n"
+        Warnings = @($output | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message }) -join "`n"
+        Records  = $records
+        Other    = @($output | Where-Object { $_ -isnot [int] -and $_ -isnot [System.Management.Automation.InformationRecord] -and $_ -isnot [System.Management.Automation.WarningRecord] })
+    }
+}
+
+# Each verb the tests run, through Invoke-TestLauncherVerb.
+function Invoke-StartVerb([hashtable]$Context) { Invoke-TestLauncherVerb -Command 'Start-LocalAI' -Context $Context }
+function Invoke-StopVerb([hashtable]$Context, [hashtable]$Arguments = @{}) { Invoke-TestLauncherVerb -Command 'Stop-LocalAI' -Context $Context -Arguments $Arguments }
+function Invoke-StatusVerb([hashtable]$Context) { Invoke-TestLauncherVerb -Command 'Get-LocalAIStatus' -Context $Context }
+function Invoke-UpdateVerb([hashtable]$Context) { Invoke-TestLauncherVerb -Command 'Update-LocalAI' -Context $Context }
+function Invoke-UninstallVerb([hashtable]$Context) { Invoke-TestLauncherVerb -Command 'Uninstall-LocalAI' -Context $Context }
+function Invoke-ShortcutVerb([hashtable]$Context) { Invoke-TestLauncherVerb -Command 'Set-LocalAIShortcut' -Context $Context }
+
 # Write a release folder of the launcher for $Tag at $Path: local-ai.cmd, src\local-ai.ps1, VERSION and the files $Files (path with '/' -> text), and the
 # manifest local-ai-release.json listing them with the commit $Commit, as the release workflow writes it; $Manifest replaces its fields, $null leaving one
 # out. Returns $Path.

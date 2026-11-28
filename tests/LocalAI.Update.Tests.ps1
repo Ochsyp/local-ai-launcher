@@ -1823,16 +1823,6 @@ Describe 'Update-LocalAI' {
     BeforeAll {
         $repoRoot = Split-Path $PSScriptRoot -Parent
 
-        # Run Update-LocalAI and return @{ Code; Printed; Warnings } with the host text and the warnings joined.
-        function Invoke-UpdateVerb([hashtable]$Context) {
-            $output = @(Update-LocalAI -Context $Context 3>&1 6>&1)
-            return @{
-                Code     = @($output | Where-Object { $_ -is [int] })
-                Printed  = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$($_.MessageData)" }) -join "`n"
-                Warnings = @($output | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message }) -join "`n"
-            }
-        }
-
         # Return a part of update's plan called $Name, shown as the plan functions show it, with the changes $Changes and the fields $Extra.
         function Get-TestPlanPart([string]$Name, [string[]]$Changes = @(), [hashtable]$Extra = @{}) {
             $displays = @{ OpenWebUI = 'Open WebUI'; Files = 'File tools' }
@@ -2723,16 +2713,6 @@ Describe 'Uninstall-LocalAI' {
     BeforeAll {
         $repoRoot = Split-Path $PSScriptRoot -Parent
         $shortcutNames = @('Start Local AI.lnk', 'Stop Local AI.lnk', 'Status Local AI.lnk', 'Update Local AI.lnk')
-
-        # Run Uninstall-LocalAI and return @{ Code; Printed; Warnings } with the host text and the warnings joined.
-        function Invoke-UninstallVerb([hashtable]$Context) {
-            $output = @(Uninstall-LocalAI -Context $Context 3>&1 6>&1)
-            return @{
-                Code     = @($output | Where-Object { $_ -is [int] })
-                Printed  = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$($_.MessageData)" }) -join "`n"
-                Warnings = @($output | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message }) -join "`n"
-            }
-        }
 
         # Lay out what install leaves, all below TestDrive: the four shortcuts, the open-webui and mcpo tool folders in $ToolDir, a ComfyUI checkout (marked as cloned
         # when $Cloned) whose venv marker records $CreatedVenv ($null: no marker), the file tools' files, Open WebUI's data, a file in Files.Root, state.json and the stamp.
