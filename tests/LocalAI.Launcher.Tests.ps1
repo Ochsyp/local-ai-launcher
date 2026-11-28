@@ -776,6 +776,26 @@ Describe 'Get-LauncherCurrent and Set-LauncherCurrent' {
         ($null -eq (Invoke-ModuleFunction 'Get-LauncherCurrent' @{ InstallRoot = $root })) | Should -BeTrue
         ($null -eq (Invoke-ModuleFunction 'Get-LauncherCurrent' @{ InstallRoot = '' })) | Should -BeTrue
     }
+
+    It 'moves the new tag into place when the replace removed the old current but could not move the new one' {
+        Invoke-ModuleFunction 'Set-LauncherCurrent' @{ InstallRoot = $root; Tag = 'v1.2.3' }
+        # As ReplaceFile fails with ERROR_UNABLE_TO_MOVE_REPLACEMENT and no backup name: the old file is gone, the new one keeps its temporary name.
+        Mock Invoke-LocalAIFileReplace -ModuleName LocalAI -MockWith {
+            [IO.File]::Delete($Destination)
+            throw (New-Object IO.IOException 'Unable to move the replacement file to the file to be replaced.')
+        }
+        Invoke-ModuleFunction 'Set-LauncherCurrent' @{ InstallRoot = $root; Tag = 'v1.3.0' }
+        [IO.File]::ReadAllText($current) | Should -BeExactly "v1.3.0`r`n"
+        @(Get-ChildItem -LiteralPath $root | ForEach-Object { $_.Name }) | Should -Be @('current')
+    }
+
+    It 'keeps the old current and removes the .tmp when the replace fails with the old file in place' {
+        Invoke-ModuleFunction 'Set-LauncherCurrent' @{ InstallRoot = $root; Tag = 'v1.2.3' }
+        Mock Invoke-LocalAIFileReplace -ModuleName LocalAI -MockWith { throw (New-Object IO.IOException 'The process cannot access the file.') }
+        { Invoke-ModuleFunction 'Set-LauncherCurrent' @{ InstallRoot = $root; Tag = 'v1.3.0' } } | Should -Throw -ExpectedMessage "Cannot write *current: *"
+        [IO.File]::ReadAllText($current) | Should -BeExactly "v1.2.3`r`n"
+        @(Get-ChildItem -LiteralPath $root | ForEach-Object { $_.Name }) | Should -Be @('current')
+    }
 }
 
 Describe 'Install-LocalAILauncher and the shim' {
