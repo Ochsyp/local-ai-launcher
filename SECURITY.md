@@ -187,8 +187,9 @@ control.
 
 - `.github/workflows/release.yml` builds each release on GitHub's hosted runners from a commit
   on `main`, and only as a draft. The maintainer reviews and publishes it; publishing creates the
-  tag. Each job gets only the permissions it needs, and the job that writes the draft runs no
-  repository code.
+  tag. Each job gets only the permissions it needs. The job that writes the draft checks out only
+  the standard's `.github/standard/bin` of that commit and runs its `release-draft`, never the
+  launcher's own code or the build.
 - Releases are immutable once published: GitHub refuses to change their assets or move their
   tag, and records a release attestation, which `gh release verify` checks.
 - Each asset (the zip, `install.ps1` and `SHA256SUMS`) carries a build provenance attestation,

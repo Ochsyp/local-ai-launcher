@@ -20,6 +20,10 @@ All notable changes to this project are listed here. The format follows
 - A failed Git install no longer stops `install` before the chat model and Open WebUI. Git, which
   only ComfyUI needs, now comes with the images, after the chat parts and the file tools. When it
   fails, `install` warns that images are not set up and ends with exit code 2, as the README says.
+- The README, CONTRIBUTING and SECURITY now match the code where they had drifted. A set
+  `Ollama.Url` must name the server `OLLAMA_HOST` names. The advice for an Ollama that listens
+  beyond loopback includes `OLLAMA_HOST`. The release job that writes the draft runs the
+  standard's `release-draft`. Smaller points from the final check are corrected as well.
 
 ## [1.2.0] - 2026-11-26
 
