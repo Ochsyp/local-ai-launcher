@@ -18,23 +18,6 @@ Describe 'Get-LocalAIStatus' {
     BeforeAll {
         $repoRoot = Split-Path $PSScriptRoot -Parent
 
-        # Run Get-LocalAIStatus and return @{ Code; Printed; Warnings; Records; Other }: host text and warnings joined, the host records, and any
-        # other pipeline output.
-        function Invoke-StatusVerb([hashtable]$Context) {
-            $output = @(Get-LocalAIStatus -Context $Context 3>&1 6>&1)
-            $records = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] })
-            return @{
-                Code     = @($output | Where-Object { $_ -is [int] })
-                Printed  = @($records | ForEach-Object { "$($_.MessageData)" }) -join "`n"
-                Warnings = @($output | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message }) -join "`n"
-                Records  = $records
-                Other    = @($output | Where-Object { $_ -isnot [int] -and $_ -isnot [System.Management.Automation.InformationRecord] -and $_ -isnot [System.Management.Automation.WarningRecord] })
-            }
-        }
-
-        # Return the lowercase SHA-256 of the file $Path.
-        function Get-TestHash([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
-
         # Return @{ <service name> = @{ EnvironmentSha256; ConfigSha256 } } as a start that brings every service up records them for $Settings, $Paths,
         # the stamp $Stamp and the key $Key. Built the way Start-LocalAI builds its table, with the real image workflow and mcpo.json's entry, and not
         # through status's own code, so a status that hashes anything else shows an advice line on a healthy stack.
@@ -77,19 +60,19 @@ Describe 'Get-LocalAIStatus' {
         $stamp = @{
             Ollama    = @{ Version = '0.40.11' }
             Model     = @{ Alias = 'local-chat'; BaseDigest = $settings.Model.Sha256; ProjectorDigest = $settings.Model.ProjectorSha256
-                ModelfileSha256 = (Get-TestHash (Join-Path $repoRoot $settings.Model.Modelfile)) }
+                ModelfileSha256 = (Get-TestFileSha256 (Join-Path $repoRoot $settings.Model.Modelfile)) }
             OpenWebUI = @{ Version = '0.12.4'; Path = 'C:\uv\bin\open-webui.exe'; Python = '3.12.16'; ExcludeNewer = $settings.OpenWebUI.ExcludeNewer }
             ComfyUI   = @{ Dir = $settings.ComfyUI.Dir; Commit = $settings.ComfyUI.Commit; Python = (Join-Path $settings.ComfyUI.Dir '.venv\Scripts\python.exe') }
             Files     = @{ McpoVersion = '0.0.20'; McpoPath = 'C:\uv\bin\mcpo.exe'; Python = '3.12'; With = @($settings.Files.McpoWith)
                 ExcludeNewer = $settings.Files.McpoExcludeNewer; ServerVersion = $settings.Files.ServerVersion; ToolDir = 'C:\uv\tools'
-                LockSha256 = (Get-TestHash (Join-Path $repoRoot 'config\files-server\package-lock.json'))
+                LockSha256 = (Get-TestFileSha256 (Join-Path $repoRoot 'config\files-server\package-lock.json'))
                 Script = (Join-Path $root 'files-server\node_modules\@modelcontextprotocol\server-filesystem\dist\index.js')
                 Node = @{ Path = 'C:\nodejs\node.exe'; Version = '24.22.1' } }
         }
         Write-LocalAIState -Path $paths.InstallStamp -State $stamp
         # A checkout at the pin with origin ComfyUI.Repo, whose venv marker is what Install-ComfyUI writes for it (it holds no requirements.txt).
         $null = New-Item -ItemType Directory -Force -Path (Join-Path $settings.ComfyUI.Dir '.git')
-        $venvMarker = @{ RequirementsSha256 = ''; ConstraintsSha256 = (Get-TestHash (Join-Path $repoRoot $settings.ComfyUI.Constraints)); Backend = $settings.ComfyUI.TorchBackend
+        $venvMarker = @{ RequirementsSha256 = ''; ConstraintsSha256 = (Get-TestFileSha256 (Join-Path $repoRoot $settings.ComfyUI.Constraints)); Backend = $settings.ComfyUI.TorchBackend
             ExcludeNewer = $settings.ComfyUI.ExcludeNewer; Torch = '2.14.1+cu130'; CreatedVenv = $true }
         Write-LocalAIState -Path (Join-Path $settings.ComfyUI.Dir '.venv\local-ai-install.json') -State $venvMarker
         $git = Get-FakeGit -Head $settings.ComfyUI.Commit -Commit $settings.ComfyUI.Commit
@@ -213,12 +196,12 @@ Describe 'Get-LocalAIStatus' {
     It 'never writes state.json, the stamp, the settings or the key, and never starts or stops anything' {
         $null = Write-TestFile ((Split-Path $root -Leaf) + '\settings.psd1') '@{ }'
         $files = @($paths.State, $paths.InstallStamp, $paths.Settings, $paths.FilesKey)
-        $before = @(foreach ($file in $files) { '{0}|{1}' -f (Get-TestHash $file), (Get-Item -LiteralPath $file).LastWriteTimeUtc.Ticks })
+        $before = @(foreach ($file in $files) { '{0}|{1}' -f (Get-TestFileSha256 $file), (Get-Item -LiteralPath $file).LastWriteTimeUtc.Ticks })
         $world.Live.Clear()
         $world.Ollama = $null
         $null = Invoke-StatusVerb -Context $context
         $null = Invoke-StatusVerb -Context $context
-        @(foreach ($file in $files) { '{0}|{1}' -f (Get-TestHash $file), (Get-Item -LiteralPath $file).LastWriteTimeUtc.Ticks }) | Should -Be $before
+        @(foreach ($file in $files) { '{0}|{1}' -f (Get-TestFileSha256 $file), (Get-Item -LiteralPath $file).LastWriteTimeUtc.Ticks }) | Should -Be $before
         Should -Invoke Write-LocalAIState -ModuleName LocalAI -Times 0 -Exactly
         Should -Invoke Start-LocalAIService -ModuleName LocalAI -Times 0 -Exactly
         Should -Invoke Stop-LocalAIService -ModuleName LocalAI -Times 0 -Exactly
@@ -1031,13 +1014,13 @@ Describe 'Get-LocalAIStatus' {
         It 'stays read-only and never shows the key, on screen or in -Json, when settings changed' {
             $settings.Ports.Files = 18435
             $settings.OpenWebUI.InheritEnvironment = @('HF_ENDPOINT')
-            $before = Get-TestHash $paths.State
+            $before = Get-TestFileSha256 $paths.State
             $run = Invoke-StatusVerb -Context $context
             $run.Printed | Should -BeLike '*older settings*'
             "$($run.Printed)`n$($run.Warnings)" | Should -Not -BeLike "*$key*"
             $context.Json = $true
             [string](Invoke-StatusVerb -Context $context).Records[0].MessageData | Should -Not -BeLike "*$key*"
-            Get-TestHash $paths.State | Should -Be $before
+            Get-TestFileSha256 $paths.State | Should -Be $before
             Test-Path -LiteralPath $paths.McpoConfig | Should -BeFalse
             Should -Invoke Write-LocalAIState -ModuleName LocalAI -Times 0 -Exactly
             Should -Invoke Stop-LocalAIService -ModuleName LocalAI -Times 0 -Exactly
@@ -1192,15 +1175,6 @@ Describe 'Set-LocalAIShortcut' {
     BeforeAll {
         $repoRoot = Split-Path $PSScriptRoot -Parent
         $target = Join-Path $repoRoot 'local-ai.cmd'
-
-        # Run Set-LocalAIShortcut and return @{ Code; Printed } with the host text joined.
-        function Invoke-ShortcutVerb([hashtable]$Context) {
-            $output = @(Set-LocalAIShortcut -Context $Context 6>&1)
-            return @{
-                Code    = @($output | Where-Object { $_ -is [int] })
-                Printed = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$($_.MessageData)" }) -join "`n"
-            }
-        }
     }
 
     BeforeEach {

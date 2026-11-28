@@ -1265,16 +1265,6 @@ Describe 'Invoke-LauncherSelfUpdate' {
 Describe 'Update-LocalAI with -ActivateLauncher' {
     BeforeAll {
         $repoRoot = Split-Path $PSScriptRoot -Parent
-
-        # Run Update-LocalAI and return @{ Code; Printed; Warnings } with the host text and the warnings joined.
-        function Invoke-UpdateVerb([hashtable]$Context) {
-            $output = @(Update-LocalAI -Context $Context 3>&1 6>&1)
-            return @{
-                Code     = @($output | Where-Object { $_ -is [int] })
-                Printed  = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$($_.MessageData)" }) -join "`n"
-                Warnings = @($output | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message }) -join "`n"
-            }
-        }
     }
 
     BeforeEach {

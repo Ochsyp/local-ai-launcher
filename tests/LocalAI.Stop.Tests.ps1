@@ -17,15 +17,6 @@ BeforeAll {
 Describe 'Stop-LocalAI and Stop-LocalAIService' {
     BeforeAll {
         $exe = 'C:\Users\User\.local\bin\open-webui.exe'
-
-        # Run Stop-LocalAI and return @{ Code; Printed } with the host text joined.
-        function Invoke-StopVerb([hashtable]$Context) {
-            $output = @(Stop-LocalAI -Context $Context 6>&1)
-            return @{
-                Code    = @($output | Where-Object { $_ -is [int] })
-                Printed = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$($_.MessageData)" }) -join "`n"
-            }
-        }
     }
 
     BeforeEach {
@@ -526,17 +517,6 @@ Describe 'Stop-OllamaApp' {
 }
 
 Describe 'Stop-LocalAI and the Ollama app' {
-    BeforeAll {
-        # Run Stop-LocalAI with $Arguments added and return @{ Code; Printed } with the host text joined.
-        function Invoke-StopVerb([hashtable]$Context, [hashtable]$Arguments = @{}) {
-            $output = @(Stop-LocalAI -Context $Context @Arguments 6>&1)
-            return @{
-                Code    = @($output | Where-Object { $_ -is [int] })
-                Printed = @($output | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$($_.MessageData)" }) -join "`n"
-            }
-        }
-    }
-
     BeforeEach {
         $root = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
         $paths = Get-LocalAIPaths -Root $root
