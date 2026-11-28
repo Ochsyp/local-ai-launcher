@@ -8,7 +8,8 @@
 # match Model.Source, the ComfyUI workflow, node mapping and constraints must have the shape the
 # image path needs, the files server's package.json and lockfile must pin Files.ServerVersion and
 # overrides that fit the ranges of the packages that ask for them, the launcher's own releases
-# come from its repository, and source files must stay ASCII. The checks hold across files and
+# come from its repository, the image gate's test packages must carry hashes that CI requires,
+# and source files must stay ASCII. The checks hold across files and
 # forms, and a pin's value lives in its own file only, so a version bump changes no test unless
 # it changes what the launcher relies on, such as the files server's list of tools.
 
