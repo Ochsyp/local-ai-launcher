@@ -400,9 +400,52 @@ function ConvertTo-LocalAIStateValue {
     return $base
 }
 
+# Replace the file $Destination with the file $Source in one step, without a backup. Its own function, so that tests can make it fail.
+function Invoke-LocalAIFileReplace {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$Destination
+    )
+    [IO.File]::Replace($Source, $Destination, [NullString]::Value)
+}
+
+# Put the finished file $Temp in place of $Path, or at $Path when there is none. ReplaceFile without a backup can fail after it
+# removed the old file but before it moved the new one (ERROR_UNABLE_TO_MOVE_REPLACEMENT), as when a scanner holds the new file;
+# then this moves the new file to $Path, trying for about a second, so that the one copy left is not lost. Throws when $Path does
+# not end up as the new file.
+function Move-LocalAIFileIntoPlace {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Temp,
+        [Parameter(Mandatory)][string]$Path
+    )
+    if (-not [IO.File]::Exists($Path)) {
+        [IO.File]::Move($Temp, $Path)
+        return
+    }
+    try {
+        Invoke-LocalAIFileReplace -Source $Temp -Destination $Path
+    } catch {
+        if ([IO.File]::Exists($Path) -or -not [IO.File]::Exists($Temp)) { throw }
+        $failure = $_
+        foreach ($attempt in 1..5) {
+            try {
+                [IO.File]::Move($Temp, $Path)
+                return
+            } catch {
+                $failure = $_
+                Start-Sleep -Milliseconds 200
+            }
+        }
+        throw $failure
+    }
+}
+
 # Save $State to $Path as UTF-8 JSON without BOM (-Ascii: characters above 0x7F as \uXXXX escapes, for readers using the ANSI
 # code page) through a flushed .tmp that replaces the file in one step, so a crash never leaves it truncated. Values must be plain
-# data (store times as [long] UTC ticks); anything else, or a failed save, throws naming the path and removes the .tmp.
+# data (store times as [long] UTC ticks); anything else, or a failed save, throws naming the path. The .tmp is removed then, unless
+# it holds the only whole copy of the new state because the old file is gone; the message then names it.
 function Write-LocalAIState {
     [CmdletBinding()]
     param(
@@ -416,6 +459,7 @@ function Write-LocalAIState {
     if ($Ascii) { $json = [regex]::Replace($json, '[^\x00-\x7F]', { param($found) '\u{0:x4}' -f [int][char]$found.Value }) }
     $bytes = (New-Object Text.UTF8Encoding $false).GetBytes($json)
     $temp = "$fullPath.tmp"
+    $written = $false
     try {
         $null = [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($fullPath))
         $stream = New-Object IO.FileStream -ArgumentList $temp, ([IO.FileMode]::Create), ([IO.FileAccess]::Write), ([IO.FileShare]::None)
@@ -425,14 +469,15 @@ function Write-LocalAIState {
         } finally {
             $stream.Dispose()
         }
-        if ([IO.File]::Exists($fullPath)) {
-            [IO.File]::Replace($temp, $fullPath, [NullString]::Value)
-        } else {
-            [IO.File]::Move($temp, $fullPath)
-        }
+        $written = $true
+        Move-LocalAIFileIntoPlace -Temp $temp -Path $fullPath
     } catch {
         $reason = $_.Exception
         while ($reason.InnerException) { $reason = $reason.InnerException }
+        if ($written -and -not [IO.File]::Exists($fullPath) -and [IO.File]::Exists($temp)) {
+            throw ("Cannot save state file '$fullPath': $($reason.Message) The new state is in '$temp'; rename it to " +
+                "$([IO.Path]::GetFileName($fullPath)) once no program holds it.")
+        }
         Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
         throw "Cannot save state file '$fullPath': $($reason.Message)"
     }
@@ -9329,7 +9374,8 @@ function Get-LauncherInstallKind {
 }
 
 # Point the file current in the install folder $InstallRoot at the version $Tag, written as the tag and CRLF in ASCII to a flushed .tmp that replaces it in one
-# step, so the shim never reads half a name. Throws naming the file when $Tag is no tag vX.Y.Z or the write fails, and removes the .tmp.
+# step, so the shim never reads half a name. Throws naming the file when $Tag is no tag vX.Y.Z or the write fails, and removes the .tmp,
+# unless it holds the only copy of the new tag because the old file is gone; the message then names it.
 function Set-LauncherCurrent {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'Called by install.ps1 and the update verb, which ask before they change anything.')]
@@ -9342,6 +9388,7 @@ function Set-LauncherCurrent {
     $path = [IO.Path]::Combine([IO.Path]::GetFullPath($InstallRoot), 'current')
     $temp = "$path.tmp"
     $bytes = [Text.Encoding]::ASCII.GetBytes("$Tag`r`n")
+    $written = $false
     try {
         $null = [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($path))
         $stream = New-Object IO.FileStream -ArgumentList $temp, ([IO.FileMode]::Create), ([IO.FileAccess]::Write), ([IO.FileShare]::None)
@@ -9351,14 +9398,14 @@ function Set-LauncherCurrent {
         } finally {
             $stream.Dispose()
         }
-        if ([IO.File]::Exists($path)) {
-            [IO.File]::Replace($temp, $path, [NullString]::Value)
-        } else {
-            [IO.File]::Move($temp, $path)
-        }
+        $written = $true
+        Move-LocalAIFileIntoPlace -Temp $temp -Path $path
     } catch {
         $reason = $_.Exception
         while ($reason.InnerException) { $reason = $reason.InnerException }
+        if ($written -and -not [IO.File]::Exists($path) -and [IO.File]::Exists($temp)) {
+            throw "Cannot write $path`: $($reason.Message) The new tag is in '$temp'; rename it to current once no program holds it."
+        }
         Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
         throw "Cannot write $path`: $($reason.Message)"
     }

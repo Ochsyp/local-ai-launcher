@@ -12,6 +12,12 @@ All notable changes to this project are listed here. The format follows
 - Repository standard 1.4.0: the copies and blocks of this release.
 - Repository standard 1.3.1: the copies and blocks of this release.
 
+### Fixed
+
+- A failed save no longer loses `state.json`, `install-stamp.json` or the file `current`. When
+  Windows has removed the old file but cannot move the new one into place, as when a scanner holds
+  it, the launcher moves the new file there, or keeps it as `.tmp` and names it in the error.
+
 ## [1.2.0] - 2026-11-26
 
 ### Added
