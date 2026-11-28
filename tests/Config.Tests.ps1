@@ -377,6 +377,26 @@ Describe 'Files tool lists and mcpo pins' {
     }
 }
 
+Describe 'tests\requirements.txt' {
+    It 'pins every package to one version with SHA-256 hashes, and ci\test.ps1 installs it with --require-hashes as wheels only' {
+        $repoRoot = Split-Path $PSScriptRoot -Parent
+        $text = [IO.File]::ReadAllText((Join-Path $repoRoot 'tests\requirements.txt'))
+        # A requirement may go on over continuation lines, as uv and Dependabot write its hashes.
+        $joined = $text -replace '\\\r?\n', ' '
+        $lines = @($joined -split '\r?\n' | Where-Object { $_.Trim() -and -not $_.TrimStart().StartsWith('#') })
+        $names = @(foreach ($line in $lines) {
+                $line | Should -Match '^[A-Za-z0-9][A-Za-z0-9._-]*==[0-9][^\s;]*\s+--hash=sha256:[0-9a-f]{64}(\s+--hash=sha256:[0-9a-f]{64})*\s*$'
+                ($line -split '==')[0].ToLowerInvariant()
+            })
+        # The two that the image gate imports; every package they pull in must be listed too, or --require-hashes refuses the install.
+        $names | Should -Contain 'aiohttp'
+        $names | Should -Contain 'yarl'
+        @($names | Select-Object -Unique).Count | Should -Be $names.Count
+        $stage = [IO.File]::ReadAllText((Join-Path $repoRoot 'ci\test.ps1'))
+        $stage | Should -Match "pip install [^\r\n]*--require-hashes --only-binary :all: -r \(Join-Path \`$root 'tests\\requirements\.txt'\)"
+    }
+}
+
 Describe 'Source file encoding' {
     It '<Name> is ASCII-only' -ForEach $sourceFiles {
         # Latin-1 maps each byte to one character, so a BOM or UTF-8 sequence shows up as well.

@@ -8,7 +8,8 @@ $ErrorActionPreference = 'Continue'
 $root = Split-Path $PSScriptRoot -Parent
 powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'tests\run-checks.ps1') -SkipAnalyzer
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-python -m pip install --disable-pip-version-check --no-input -r (Join-Path $root 'tests\requirements.txt')
+# Every package with its hashes and as a wheel, as the live check installs uv, so no new upload of a dependency reaches the job that gates releases.
+python -m pip install --disable-pip-version-check --no-input --require-hashes --only-binary :all: -r (Join-Path $root 'tests\requirements.txt')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 python -I -B -m unittest discover -s (Join-Path $root 'tests') -p 'test_*.py'
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

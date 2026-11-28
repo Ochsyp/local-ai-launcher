@@ -893,7 +893,7 @@ tests\Release.Tests.ps1             Pester tests for the release scripts and the
 tests\FilesServerLive.Tests.ps1     Pester tests for the live check of the files server
 tests\test_image_gate.py            unittest tests for the image gate
 tests\run-checks.ps1                runs PSScriptAnalyzer and the Pester tests
-tests\requirements.txt              Python packages the image gate tests need
+tests\requirements.txt              Python packages the image gate tests need, pinned with hashes
 tests\requirements-live.txt         the uv that only the live check uses, pinned with hashes
 ci\lint.ps1, ci\test.ps1            the CI stages lint and test: run-checks.ps1, the image gate tests,
                                     and on CI the live check of the files server

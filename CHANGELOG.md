@@ -11,6 +11,10 @@ All notable changes to this project are listed here. The format follows
 
 - Repository standard 1.4.0: the copies and blocks of this release.
 - Repository standard 1.3.1: the copies and blocks of this release.
+- CI installs the image gate's test packages with the hashes of their files, and as wheels only:
+  `tests\requirements.txt` lists aiohttp and yarl and every package they pull in, resolved as of
+  `ComfyUI.ExcludeNewer`. The test helpers that the split of the module tests left duplicated
+  live in `tests\LocalAI.TestSetup.ps1` now.
 
 ### Fixed
 
