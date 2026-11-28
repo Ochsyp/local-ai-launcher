@@ -7,6 +7,8 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-11-28
+
 ### Changed
 
 - Repository standard 1.4.0: the copies and blocks of this release.
@@ -22,8 +24,10 @@ All notable changes to this project are listed here. The format follows
   Windows has removed the old file but cannot move the new one into place, as when a scanner holds
   it, the launcher moves the new file there, or keeps it as `.tmp` and names it in the error.
 - A failed Git install no longer stops `install` before the chat model and Open WebUI. Git, which
-  only ComfyUI needs, now comes with the images, after the chat parts and the file tools. When it
-  fails, `install` warns that images are not set up and ends with exit code 2, as the README says.
+  only ComfyUI needs, now comes with the images, after the chat model, Open WebUI and the file
+  tools. When its install fails, `install` sets up chat anyway, warns `Images are not set up: ...`
+  and ends with exit code 2 instead of 1, as the README says. `start` then brings up chat with
+  images off until an `install` succeeds. With `Images.Enabled = $false` nothing changes.
 - The README, CONTRIBUTING and SECURITY now match the code where they had drifted. A set
   `Ollama.Url` must name the server `OLLAMA_HOST` names. The advice for an Ollama that listens
   beyond loopback includes `OLLAMA_HOST`. The release job that writes the draft runs the
@@ -423,7 +427,8 @@ service that an earlier start left running keeps the environment it started with
   folder of the working folder. SECURITY.md describes what this trusts, also for
   `Launcher.Repo` and the one-liner.
 
-[Unreleased]: https://github.com/Ochsyp/local-ai-launcher/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/Ochsyp/local-ai-launcher/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/Ochsyp/local-ai-launcher/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/Ochsyp/local-ai-launcher/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/Ochsyp/local-ai-launcher/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Ochsyp/local-ai-launcher/compare/v1.0.1...v1.1.0
