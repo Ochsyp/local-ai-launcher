@@ -122,7 +122,7 @@ CI adds the rest:
 - `release.yml` builds the release twice and compares the builds for a pull request that changes
   `VERSION`, `.gitattributes`, `.github/standard.conf`, the release workflows or tools, or
   `ci/release-build.ps1`. A change to `.github/scripts/` alone gets no dry run;
-  `tests/Release.Tests.ps1` checks it. Nor does a change to `src\` or `config\`, although both
+  `tests/Release.Tests.ps1` checks it. Nor does a change to `src/` or `config/`, although both
   ship in the zip; the release run on `main` builds them before anything is drafted.
 
 CI fails on any skipped bats test. A Pester test skips only where the runner lacks what it needs,
