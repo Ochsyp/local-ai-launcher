@@ -26,13 +26,14 @@ app chooses its own address, so the stack is not for sharing over a network.
 | Ollama, with an OpenAI-compatible API under `/v1` | `http://127.0.0.1:11434` | always; the Ollama tray app, which the launcher starts when it does not run |
 | Open WebUI 0.12.4 | `http://127.0.0.1:8080` | always |
 | ComfyUI v0.42.5 | `http://127.0.0.1:8188` | `Images.Enabled` is `$true` (the default) |
-| Image gate (`src\image_gate.py`) | `http://127.0.0.1:8190` | `Images.UnloadChat` is `$true` (the default) |
+| Image gate (`src\image_gate.py`) | `http://127.0.0.1:8190` | ComfyUI runs, `Images.UnloadChat` is `$true` (the default) and Ollama is on a loopback address |
 | File tools (mcpo and the files server) | `http://127.0.0.1:8189` | `Files.Root` names a folder |
 
 The launcher starts every service on `127.0.0.1` only. Ollama is the one exception: the Ollama
 app chooses its own bind address. The launcher never sets `OLLAMA_HOST`. `install`, `start` and
 `status` warn when Ollama listens beyond loopback. If that happens, turn off *Expose Ollama to
-the network* in the Ollama app's settings and restart the app.
+the network* in the Ollama app's settings, make sure `OLLAMA_HOST` is unset or names
+`127.0.0.1`, then quit and restart the app.
 
 The launcher never runs `ollama serve`. When Ollama does not answer, `install`, `start`,
 `update` and `uninstall` start the Ollama app hidden, as the `ollama` program does:
@@ -56,7 +57,9 @@ and the one it starts again when `update -Tools` upgrades an app the launcher st
   connected to it, while the Ollama window is open, or while it runs in another Windows session,
   whose windows `stop` cannot see. `stop` then says so.
 
-After you point `Ollama.Url` at another server, run `local-ai stop` before `start` or `update`.
+To point `Ollama.Url` at another server, set `OLLAMA_HOST` to the same server too, since the
+`ollama` program reads only that (see [Settings](#settings)). Then run `local-ai stop` in a new
+window before `start` or `update`.
 Until then `status` names the app the launcher recorded for the old server, and `stop` quits it.
 When `start` runs, also the start that `update` runs for its check, the launcher forgets that
 app. The app then keeps running until you quit it from its tray icon.
@@ -217,7 +220,7 @@ move it out of `%LOCALAPPDATA%\Packages`.
 | Command | What it does |
 |---|---|
 | `local-ai install` | Installs what is missing: the winget packages, the chat model, Open WebUI, and with their settings the file tools and ComfyUI with its checkpoint. It never changes an installed Open WebUI version; that is `update`'s job. |
-| `local-ai start [-NoBrowser]` | Runs `install` first when parts are missing. Starts ComfyUI, the image gate, the file tools and Open WebUI, then opens the browser unless `-NoBrowser` is given. It prints the web address and the endpoint for coding tools. |
+| `local-ai start [-NoBrowser]` | Runs `install` first when Ollama, the chat model or Open WebUI is not installed yet; a missing image or file part only turns that part off, with a warning. Starts ComfyUI, the image gate, the file tools and Open WebUI, then opens the browser unless `-NoBrowser` is given. It prints the web address and the endpoint for coding tools. |
 | `local-ai stop` | Stops what `start` started, unloads `local-chat` and quits the Ollama app when the launcher started it. An Ollama that already ran keeps running, and so does one that holds another program's model, still has another program connected, such as a coding tool on the `/v1` endpoint, or shows its window. |
 | `local-ai status [-Json]` | Reports what runs and what needs attention, and changes nothing. `-Json` prints one line of JSON and nothing else. |
 | `local-ai update [-Tools] [-Rollback]` | Brings a release install of the launcher to its latest release, and every part to the versions the settings pin (`config\defaults.psd1`, or `settings.psd1` where it sets a pin), after it shows the plan and you confirm. `-Tools` also upgrades the winget packages. `-Rollback` returns to the launcher version before; see [Updates and backups](#updates-and-backups). |
@@ -314,18 +317,18 @@ Common keys:
 | `Model.Modelfile` | `'config\local-chat.Modelfile'` | Context length (32768), template and sampling. A copy at `%LOCALAPPDATA%\local-ai\local-chat.Modelfile` replaces it. |
 | `Model.SupersededAliases` | `@()` | Aliases of earlier chat models. `status` lists those Ollama still holds, and `update` offers to remove each one. Never `Model.Alias` or `Model.Source`. |
 | `Ports.OpenWebUI`, `.ComfyUI`, `.Files`, `.ImageGate` | 8080, 8188, 8189, 8190 | Loopback ports, each from 1024 to 65535 and distinct. |
-| `Ollama.Url` | `''` | Empty: `OLLAMA_HOST`, else `http://127.0.0.1:11434`. |
+| `Ollama.Url` | `''` | Empty: `OLLAMA_HOST`, else `http://127.0.0.1:11434`. A set value must name the server that `OLLAMA_HOST` in the launcher's window names, or `http://127.0.0.1:11434` when it is unset, because the `ollama` program reads only that. Otherwise `install`, `start` and `update` stop with exit code 1. |
 | `Images.Enabled` | `$true` | `$false` skips ComfyUI and turns Open WebUI's image button off. |
 | `Images.UnloadChat` | `$true` | Send images through the image gate, which unloads `local-chat` first. |
 | `Files.Root` | `''` | The one folder the file tools may read. Empty turns them off. |
-| `OpenWebUI.Env` | a table | Open WebUI's environment for every start. Any key is accepted, and an empty value removes the variable. |
+| `OpenWebUI.Env` | a table | Open WebUI's environment for every start. Any key is accepted, and an empty value removes the variable, except `NO_PROXY` and `DEFAULT_MODEL_METADATA`, which the launcher merges with its own values. |
 | `OpenWebUI.InheritEnvironment` | `@()` | More variable names that Open WebUI inherits from the window that runs `start`, such as `HTTPS_PROXY`. |
 | `OpenWebUI.DataDir` | `'%LOCALAPPDATA%\open-webui'` | Open WebUI's database, uploads and secret key. |
 | `OpenWebUI.ExcludeNewer`, `HfCli.ExcludeNewer` | a UTC time | Open WebUI's and the `hf` CLI's dependencies install as they stood at this time, as mcpo's and ComfyUI's do. uv then finds no release newer than this time, the pinned one included, so when you raise `OpenWebUI.Version` or `HfCli.Version`, move this time past that release too, or empty it. Empty lifts it. A change makes `update` reinstall Open WebUI, after a backup. |
 | `ComfyUI.Dir` | `'%USERPROFILE%\ComfyUI'` | The ComfyUI checkout, at most 133 characters. |
 | `ComfyUI.InheritEnvironment` | `@()` | More variable names that ComfyUI, not the image gate, inherits from the window that runs `start`. |
 | `Update.KeepBackups` | 3 | How many of its own Open WebUI backups `update` keeps. |
-| `Launcher.CheckForUpdates` | `$true` | `start` checks for a newer launcher release, at most once per `Launcher.CheckIntervalHours` (24, from 1 to 168). |
+| `Launcher.CheckForUpdates` | `$true` | For a release install, `start` checks for a newer launcher release, at most once per `Launcher.CheckIntervalHours` (24, from 1 to 168). |
 | `Launcher.KeepVersions` | 2 | How many launcher versions `update` keeps once it has added one, from 2 to 5. It never deletes the new, the active or the previous version, so 2 keeps three. |
 | `Launcher.RequireImmutable` | `$true` | Install only immutable releases, whose files and tag cannot change. |
 | `Launcher.Repo` | `'Ochsyp/local-ai-launcher'` | The GitHub repository whose releases `update` installs. Another one runs whatever its owner publishes; see [SECURITY.md](SECURITY.md). |
@@ -357,9 +360,10 @@ For a proxy, `OpenWebUI.InheritEnvironment = @('HTTPS_PROXY')` keeps a password 
 address out of `settings.psd1`. Open WebUI and the tools and functions inside it can still read
 it.
 
-The settings check refuses a name that ends in `_TOKEN` or `_API_KEY`, and `PYTHONHOME`,
-`PYTHONPATH`, `PYTHONSTARTUP`, `PYTHONUSERBASE`, `NODE_OPTIONS` and `NODE_PATH`: none of these
-services inherits those. The Ollama app is the exception: when the launcher starts it, it
+In either `InheritEnvironment` list, the settings check refuses a name that ends in `_TOKEN` or
+`_API_KEY`, and `PYTHONHOME`, `PYTHONPATH`, `PYTHONSTARTUP`, `PYTHONUSERBASE`, `NODE_OPTIONS` and
+`NODE_PATH`: none of these services inherits those. A variable that `OpenWebUI.Env` sets itself
+still reaches Open WebUI. The Ollama app is the exception: when the launcher starts it, it
 inherits the whole environment of that window.
 
 ## Signing in
@@ -447,10 +451,10 @@ only the tools the server marks read-only, also in a later release. mcpo also hi
 tool, `append_file` and `copy_file` among them. The settings check refuses a
 `Files.DisabledTools` that leaves one out.
 
-Each `start` checks the folder first. It leaves the file tools off, with a warning, when
-`Files.Root`:
+The settings check already refuses a `Files.Root` that is not a full path on a drive letter. Each
+`start` checks the folder first. It leaves the file tools off, with a warning, when `Files.Root`:
 
-- is not a full path on a drive letter, or is a drive root;
+- is a drive root, or is not an existing folder;
 - is `%USERPROFILE%` or a folder above it;
 - is a link (a junction or symbolic link), or has one on its path;
 - has a name on its path that the files server refuses: a Windows device name, such as `aux` or
@@ -460,7 +464,8 @@ Each `start` checks the folder first. It leaves the file tools off, with a warni
 - holds a file or folder whose name matches `Files.DenyPatterns`, such as `.env`, `*.key`,
   `*secret*`, `.git` or `.ssh`;
 - holds a hard link to a file that also has a name outside it, as a `.venv` that uv made does;
-- holds a folder this account cannot list, or more than 100000 entries.
+- holds a folder this account cannot list, a file it cannot open to count its names, or more
+  than 100000 entries.
 
 The check does not follow links inside the folder; the files server refuses those that lead
 outside it. Files added while mcpo runs are not checked. `status` shows under **File tools
@@ -529,8 +534,8 @@ ollama launch qwen --model local-chat --config --yes
 
 For a release install, `local-ai update`, or the Start menu shortcut **Update Local AI**, first
 asks GitHub for the latest release of `Launcher.Repo`, and waits at most 15 s. It takes only a
-release tagged `vX.Y.Z` that is no draft or prerelease and is immutable. When that release is
-newer than the version that runs, `update`:
+release tagged `vX.Y.Z` that is no draft or prerelease and, while `Launcher.RequireImmutable` is
+on (the default), is immutable. When that release is newer than the version that runs, `update`:
 
 1. downloads its zip into `staging`;
 2. checks the zip's SHA-256 against the digest GitHub lists, and every file against the
@@ -648,11 +653,14 @@ stops the stack and removes:
 - ComfyUI's `.venv`, when `install` or `update` created it, and an old venv that `update` left
   aside as `<ComfyUI.Dir>.local-ai-old-venv`;
 - the files server, `files.key` and mcpo's configuration;
+- the working folders of the image gate and mcpo in `%LOCALAPPDATA%\local-ai`;
+- what an interrupted install left beside ComfyUI: `<ComfyUI.Dir>.local-ai-clone` and
+  `models\.local-ai-download`;
 - the Ollama model `local-chat`. The weights of `Model.Source` stay in Ollama.
 
 Last it quits the Ollama app when the launcher started it, as `stop` does. It keeps Ollama, uv,
-Git, Node.js and every other Ollama model, and prints the `winget uninstall` commands for them.
-Your data stays as well.
+Git, Node.js and every other Ollama model. It prints the `winget uninstall` commands for Ollama,
+uv and Git, and for Node.js only when `install` put it in. Your data stays as well.
 
 For a release install, it then removes the entry of `%LOCALAPPDATA%\Programs\local-ai-launcher`
 from your user Path. That folder goes once the window has closed: a hidden process waits for the
@@ -732,7 +740,8 @@ days. When a verb stops on an error, it prints the path of its transcript.
 - **`start` stops at once with exit code 1.** Another launcher run is active, and `start` does not
   wait for it. See [Commands](#commands).
 - **`status` warns that Ollama listens beyond loopback.** Turn off *Expose Ollama to the network*
-  in the Ollama app's settings and restart the app. See [What it runs](#what-it-runs).
+  in the Ollama app's settings, make sure `OLLAMA_HOST` is unset or names `127.0.0.1`, then quit
+  and restart the app. See [What it runs](#what-it-runs).
 - **A reload of `local-chat` after an image fails with `CUDA error: shared object initialization
   failed`.** On a PC with little RAM, a system-managed page file that Windows has shrunk is too
   small. A fixed page file of about 20 GB or more should avoid it; see [Page file](#page-file).
@@ -814,10 +823,10 @@ Use the stack only on a single-user PC you trust.
 - Any program on this PC can reach those ports. Ollama and ComfyUI have no sign-in. Never expose
   the ports beyond the machine.
 - Open WebUI asks for a sign-in, and its CORS setting allows only its own local address.
-- `update` installs only immutable releases of `Launcher.Repo`, and `install.ps1` those of
-  `Ochsyp/local-ai-launcher`. The release's zip must match the digest GitHub lists, and its files
-  must match the manifest. Nothing is signed with Authenticode; [SECURITY.md](SECURITY.md)
-  describes what that trusts.
+- `update` installs only immutable releases of `Launcher.Repo` while `Launcher.RequireImmutable`
+  is on (the default), and `install.ps1` only those of `Ochsyp/local-ai-launcher`. The release's
+  zip must match the digest GitHub lists, and its files must match the manifest. Nothing is
+  signed with Authenticode; [SECURITY.md](SECURITY.md) describes what that trusts.
 - The file tools' key is readable by other programs of the same user; see
   [File tools](#file-tools).
 - Open WebUI gets `NO_PROXY` with `127.0.0.1`, `localhost` and `::1` added, so no proxy sees
@@ -885,7 +894,7 @@ tests\FilesServerLive.Tests.ps1     Pester tests for the live check of the files
 tests\test_image_gate.py            unittest tests for the image gate
 tests\run-checks.ps1                runs PSScriptAnalyzer and the Pester tests
 tests\requirements.txt              Python packages the image gate tests need
-tests\requirements-live.txt         the uv that only the live check uses, pinned with a hash
+tests\requirements-live.txt         the uv that only the live check uses, pinned with hashes
 ci\lint.ps1, ci\test.ps1            the CI stages lint and test: run-checks.ps1, the image gate tests,
                                     and on CI the live check of the files server
 ci\files-server-live.ps1            the live check: installs the pinned mcpo and files server and checks them
@@ -901,6 +910,8 @@ PSScriptAnalyzerSettings.psd1       PSScriptAnalyzer rules
 .editorconfig, .gitattributes       editor settings and line endings
 .shellcheckrc                       ShellCheck settings for the standard's shell scripts
 .gitignore                          keeps secrets, weights and logs out of git
+VERSION                             the launcher's version, X.Y.Z
+README.md                           this file
 SECURITY.md                         security policy
 CHANGELOG.md                        changes
 CONTRIBUTING.md                     how changes reach main
