@@ -84,6 +84,10 @@ app. The app then keeps running until you quit it from its tray icon.
 
 uv then installs Open WebUI and mcpo as uv tools, and the Pythons they need.
 
+Git comes last of these, with the images, after the chat model, Open WebUI and the file tools.
+When its install fails, chat still works: `install` warns that images are not set up and ends
+with exit code 2.
+
 ## Quick start
 
 1. Install the launcher from a release, as [Install from a release](#install-from-a-release)
@@ -236,7 +240,8 @@ run is active, it stops at once with exit code 1. `install`, `stop`, `update`, `
 
 By verb:
 
-- `install`: 2 when a step warned, or when the file tools or images failed while chat works.
+- `install`: 2 when a step warned, or when the file tools or images (Git, ComfyUI or the
+  checkpoint) failed while chat works.
   1 when Ollama, uv, the chat model or Open WebUI failed.
 - `start`: 2 when it started with warnings, for example with images or file tools off.
   1 when Open WebUI did not come up.

@@ -1850,9 +1850,8 @@ function Install-LocalAI {
             Write-Verbose "The Ollama apps cannot be listed, so install records no app the Ollama installer starts: $($_.Exception.Message)"
         }
         $since = [DateTime]::UtcNow.AddSeconds(-1).Ticks
+        # Git, which only ComfyUI needs, comes with the images below, so a failed Git install leaves chat working.
         $packages = @($settings.Winget.Packages.Ollama, $settings.Winget.Packages.Uv)
-        # ComfyUI is a git checkout.
-        if ($settings.Images.Enabled) { $packages += $settings.Winget.Packages.Git }
         foreach ($package in $packages) {
             $null = Install-WingetPackage -Package $package -LogDir $paths.Logs -WarningVariable +warned
         }
@@ -1911,6 +1910,8 @@ function Install-LocalAI {
         $imagesReady = $false
         if ($settings.Images.Enabled) {
             try {
+                # ComfyUI is a git checkout.
+                $null = Install-WingetPackage -Package $settings.Winget.Packages.Git -LogDir $paths.Logs -WarningVariable +warned
                 $comfy = Install-ComfyUI -Settings $settings -RepoRoot $Context.RepoRoot -WarningVariable +warned
                 $stamp['ComfyUI'] = @{
                     Dir           = $comfy.Dir
