@@ -514,6 +514,42 @@ Describe 'Read-LocalAIState and Write-LocalAIState' {
         @(Get-ChildItem -LiteralPath $folder -Force | ForEach-Object Name) | Should -Be @('state.json')
         (Read-LocalAIState -Path $path).Run | Should -Be 1
     }
+
+    It 'moves the new file into place when the replace removed the old one but could not move the new one' {
+        $folder = Join-Path $TestDrive 'replace-lost'
+        $path = Join-Path $folder 'state.json'
+        Write-LocalAIState -Path $path -State @{ Run = 1 }
+        # As ReplaceFile fails with ERROR_UNABLE_TO_MOVE_REPLACEMENT and no backup name: the old file is gone, the new one keeps its temporary name.
+        Mock Invoke-LocalAIFileReplace -ModuleName LocalAI -MockWith {
+            [IO.File]::Delete($Destination)
+            throw (New-Object IO.IOException 'Unable to move the replacement file to the file to be replaced.')
+        }
+        Write-LocalAIState -Path $path -State @{ Run = 2 }
+        (Read-LocalAIState -Path $path).Run | Should -Be 2
+        @(Get-ChildItem -LiteralPath $folder -Force | ForEach-Object Name) | Should -Be @('state.json')
+    }
+
+    It 'keeps the new file under its temporary name, and names it, when it cannot be moved into place either' {
+        $folder = Join-Path $TestDrive 'replace-held'
+        $path = Join-Path $folder 'state.json'
+        Write-LocalAIState -Path $path -State @{ Run = 1 }
+        # A program that holds the new file, as a scanner may, also blocks the move.
+        Mock Invoke-LocalAIFileReplace -ModuleName LocalAI -MockWith {
+            [IO.File]::Delete($Destination)
+            [AppDomain]::CurrentDomain.SetData('LocalAITestHeld', [IO.File]::Open($Source, 'Open', 'Read', 'None'))
+            throw (New-Object IO.IOException 'Unable to move the replacement file to the file to be replaced.')
+        }
+        try {
+            { Write-LocalAIState -Path $path -State @{ Run = 2 } } |
+                Should -Throw -ExpectedMessage "*Cannot save state file '*replace-held\state.json'*'*replace-held\state.json.tmp'*"
+        } finally {
+            $held = [AppDomain]::CurrentDomain.GetData('LocalAITestHeld')
+            if ($held) { $held.Dispose() }
+            [AppDomain]::CurrentDomain.SetData('LocalAITestHeld', $null)
+        }
+        @(Get-ChildItem -LiteralPath $folder -Force | ForEach-Object Name) | Should -Be @('state.json.tmp')
+        (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText("$path.tmp"))).Run | Should -Be 2
+    }
 }
 
 Describe 'Invoke-LogRotation' {
